@@ -57,6 +57,7 @@ import {
   type FormEvent,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -783,7 +784,7 @@ function QuickAccountingDrawer({
 
   useEffect(() => {
     if (!open) return;
-    const timer = window.setTimeout(() => projectInput.current?.focus(), 120);
+    const timer = window.setTimeout(() => projectInput.current?.focus({ preventScroll: true }), 120);
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
@@ -905,6 +906,13 @@ function DashboardLayout({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [success, setSuccess] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const scrollingElement = document.scrollingElement;
+    if (scrollingElement) scrollingElement.scrollTop = 0;
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, [activeNav]);
 
   const changePage = (value: string) => {
     setActiveNav(value);
@@ -1089,6 +1097,15 @@ export function App() {
       setLoadError(true);
     }
   };
+
+  useEffect(() => {
+    if (!("scrollRestoration" in window.history)) return;
+    const previous = window.history.scrollRestoration;
+    window.history.scrollRestoration = "manual";
+    return () => {
+      window.history.scrollRestoration = previous;
+    };
+  }, []);
 
   useEffect(() => {
     void loadDashboard();
