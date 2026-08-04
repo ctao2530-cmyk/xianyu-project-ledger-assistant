@@ -116,6 +116,20 @@ function BusinessMetric({
   return <Surface className={`business-metric business-${tone}`}><span className="business-metric-icon"><Icon size={24} weight="duotone" /></span><small>{label}</small><strong>{value}</strong><p>{detail}</p></Surface>;
 }
 
+function BusinessEmptyState({
+  icon: Icon,
+  title,
+  description,
+  action,
+}: {
+  icon: PhosphorIcon;
+  title: string;
+  description: string;
+  action?: ReactNode;
+}) {
+  return <Surface className="business-empty-state"><i><Icon size={42} weight="duotone" /></i><h3>{title}</h3><p>{description}</p>{action}</Surface>;
+}
+
 function BarProgress({ value, tone = "purple" }: { value: number; tone?: string }) {
   return <div className="business-progress"><i className={`business-progress-${tone}`} style={{ width: `${Math.min(100, Math.max(0, value))}%` }} /></div>;
 }
@@ -190,7 +204,7 @@ function ProjectDetail({
   </div>;
 }
 
-export function EnhancedProjectManagementPage({ snapshot }: { snapshot: LedgerSnapshot }) {
+export function EnhancedProjectManagementPage({ snapshot, onQuickAdd }: { snapshot: LedgerSnapshot; onQuickAdd: () => void }) {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const financials = useMemo(() => getProjectFinancials(snapshot), [snapshot]);
@@ -200,7 +214,9 @@ export function EnhancedProjectManagementPage({ snapshot }: { snapshot: LedgerSn
   });
   if (selectedProject) return <ProjectDetail snapshot={snapshot} projectId={selectedProject} onBack={() => setSelectedProject(null)} />;
   const active = snapshot.projects.filter((item) => item.status === "in_progress");
-  const averageDuration = snapshot.projects.reduce((sum, item) => sum + daysBetween(item.startDate, item.dueDate), 0) / snapshot.projects.length;
+  const averageDuration = snapshot.projects.length
+    ? snapshot.projects.reduce((sum, item) => sum + daysBetween(item.startDate, item.dueDate), 0) / snapshot.projects.length
+    : 0;
   const outstanding = financials.reduce((sum, item) => sum + item.outstanding, 0);
   return <div className="business-page enhanced-project-page">
     <section className="business-metrics-grid">
@@ -209,17 +225,18 @@ export function EnhancedProjectManagementPage({ snapshot }: { snapshot: LedgerSn
       <BusinessMetric label="待回款" value={money.format(outstanding)} detail="来自所有未结清付款节点" tone="orange" icon={BellRinging} />
       <BusinessMetric label="平均工期" value={`${averageDuration.toFixed(1)} 天`} detail="根据开始与交付日期自动计算" tone="green" icon={Clock} />
     </section>
-    <div className="project-list-layout"><main><Surface className="project-list-toolbar"><label><MagnifyingGlass size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或客户" /></label><button>全部状态</button><button>按交付时间排序</button><button className="business-primary"><Plus size={16} />新建项目</button></Surface><div className="enhanced-project-list">{filtered.map(({ project, income, outstanding: due, paymentProgress, profit }) => { const customer = snapshot.customers.find((item) => item.id === project.customerId); const projectTasks = snapshot.tasks.filter((task) => task.projectId === project.id); return <Surface className="enhanced-project-row" key={project.id}><div className={`project-avatar project-${project.accent}`}><Briefcase size={24} weight="duotone" /></div><div className="enhanced-project-main"><span><small>{project.type || "定制开发"} · {customer?.name}</small><h3>{project.name}</h3></span><div className="enhanced-progress-copy"><span>开发进度 <b>{project.progress}%</b></span><BarProgress value={project.progress} tone={project.accent} /></div></div><div className="project-row-stat"><small>合同 / 已收</small><b>{money.format(project.totalAmount)} / {money.format(income)}</b><em>未收 {money.format(due)}</em></div><div className="project-row-stat"><small>任务 / 自动工期</small><b>{projectTasks.filter((item) => item.status === "done").length}/{projectTasks.length} · {daysBetween(project.startDate, project.dueDate)}天</b><em>{Math.max(0, daysUntil(project.dueDate))} 天后交付</em></div><div className="project-row-stat"><small>利润 / 回款</small><b className="positive">{money.format(profit)}</b><em>{paymentProgress.toFixed(0)}%</em></div><button className="project-detail-button" onClick={() => setSelectedProject(project.id)}>项目详情 <ArrowRight size={14} /></button></Surface>; })}</div></main><aside><Surface><SurfaceTitle eyebrow="AUTO SCHEDULE" title="工期自动计算" /><div className="schedule-illustration"><CalendarBlank size={42} weight="duotone" /><strong>{averageDuration.toFixed(1)}<small> 天</small></strong><span>平均项目工期</span></div><p className="business-note">工期由项目开始日、任务排期和交付日自动计算；任务变更后可实时评估延期风险。</p></Surface><Surface><SurfaceTitle eyebrow="UPCOMING" title="近期交付" /><div className="upcoming-list">{active.slice().sort((a, b) => daysUntil(a.dueDate) - daysUntil(b.dueDate)).map((project) => <button key={project.id} onClick={() => setSelectedProject(project.id)}><i className={`project-${project.accent}`}><Clock size={16} /></i><span><b>{project.name}</b><small>{shortDate(project.dueDate)} 交付</small></span><em>{Math.max(0, daysUntil(project.dueDate))}天</em></button>)}</div></Surface></aside></div>
+    <div className="project-list-layout"><main><Surface className="project-list-toolbar"><label><MagnifyingGlass size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或客户" /></label><button>全部状态</button><button>按交付时间排序</button><button className="business-primary" onClick={onQuickAdd}><Plus size={16} />新建项目</button></Surface><div className="enhanced-project-list">{filtered.length ? filtered.map(({ project, income, outstanding: due, paymentProgress, profit }) => { const customer = snapshot.customers.find((item) => item.id === project.customerId); const projectTasks = snapshot.tasks.filter((task) => task.projectId === project.id); return <Surface className="enhanced-project-row" key={project.id}><div className={`project-avatar project-${project.accent}`}><Briefcase size={24} weight="duotone" /></div><div className="enhanced-project-main"><span><small>{project.type || "定制开发"} · {customer?.name}</small><h3>{project.name}</h3></span><div className="enhanced-progress-copy"><span>开发进度 <b>{project.progress}%</b></span><BarProgress value={project.progress} tone={project.accent} /></div></div><div className="project-row-stat"><small>合同 / 已收</small><b>{money.format(project.totalAmount)} / {money.format(income)}</b><em>未收 {money.format(due)}</em></div><div className="project-row-stat"><small>任务 / 自动工期</small><b>{projectTasks.filter((item) => item.status === "done").length}/{projectTasks.length} · {daysBetween(project.startDate, project.dueDate)}天</b><em>{Math.max(0, daysUntil(project.dueDate))} 天后交付</em></div><div className="project-row-stat"><small>利润 / 回款</small><b className="positive">{money.format(profit)}</b><em>{paymentProgress.toFixed(0)}%</em></div><button className="project-detail-button" onClick={() => setSelectedProject(project.id)}>项目详情 <ArrowRight size={14} /></button></Surface>; }) : <BusinessEmptyState icon={Briefcase} title="还没有项目数据" description="示例项目已经清空。记录第一笔收款即可同时创建客户和项目。" action={<button className="business-primary" onClick={onQuickAdd}><Plus size={16} />录入我的第一个项目</button>} />}</div></main><aside><Surface><SurfaceTitle eyebrow="AUTO SCHEDULE" title="工期自动计算" /><div className="schedule-illustration"><CalendarBlank size={42} weight="duotone" /><strong>{averageDuration.toFixed(1)}<small> 天</small></strong><span>平均项目工期</span></div><p className="business-note">工期由项目开始日、任务排期和交付日自动计算；任务变更后可实时评估延期风险。</p></Surface><Surface><SurfaceTitle eyebrow="UPCOMING" title="近期交付" /><div className="upcoming-list">{active.length ? active.slice().sort((a, b) => daysUntil(a.dueDate) - daysUntil(b.dueDate)).map((project) => <button key={project.id} onClick={() => setSelectedProject(project.id)}><i className={`project-${project.accent}`}><Clock size={16} /></i><span><b>{project.name}</b><small>{shortDate(project.dueDate)} 交付</small></span><em>{Math.max(0, daysUntil(project.dueDate))}天</em></button>) : <p className="business-note">暂无近期交付项目</p>}</div></Surface></aside></div>
   </div>;
 }
 
 export function EnhancedIncomeRecordsPage({ snapshot, onQuickAdd }: { snapshot: LedgerSnapshot; onQuickAdd: () => void }) {
   const summary = getBusinessSummary(snapshot);
   const [selected, setSelected] = useState(snapshot.projects[0]?.id || "");
-  const selectedProject = snapshot.projects.find((item) => item.id === selected)!;
-  const selectedFinancial = summary.projectFinancials.find((item) => item.project.id === selected)!;
+  const selectedProject = snapshot.projects.find((item) => item.id === selected);
+  const selectedFinancial = summary.projectFinancials.find((item) => item.project.id === selected);
   const projectPayments = snapshot.payments.filter((item) => item.projectId === selected);
   const pending = snapshot.payments.filter((item) => item.status === "pending").sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+  if (!selectedProject || !selectedFinancial) return <div className="business-page enhanced-income-page"><section className="business-metrics-grid"><BusinessMetric label="累计到账" value={money.format(0)} detail="已确认的项目收款" tone="purple" icon={Wallet} /><BusinessMetric label="未收金额" value={money.format(0)} detail="0 个付款节点待处理" tone="orange" icon={BellRinging} /><BusinessMetric label="本月到账" value={money.format(0)} detail="本月利润 ¥0" tone="green" icon={TrendUp} /><BusinessMetric label="整体回款率" value="0%" detail="按合同总金额计算" tone="blue" icon={Gauge} /></section><BusinessEmptyState icon={Wallet} title="还没有收款记录" description="定金、阶段款、尾款和全款都已清空，可以从第一笔真实收款开始。" action={<button className="business-primary" onClick={onQuickAdd}><Plus size={16} />记录第一笔收款</button>} /></div>;
   return <div className="business-page enhanced-income-page">
     <section className="business-metrics-grid">
       <BusinessMetric label="累计到账" value={money.format(summary.totalIncome)} detail="已确认的项目收款" tone="purple" icon={Wallet} />
@@ -240,21 +257,23 @@ export function ProfitAnalysisPage({ snapshot }: { snapshot: LedgerSnapshot }) {
     <BusinessMetric label="本月利润" value={money.format(summary.monthlyProfit)} detail={`${money.format(summary.monthlyIncome)} 收入 - ${money.format(summary.monthlyExpenses)} 支出`} tone="purple" icon={CalendarBlank} />
     <BusinessMetric label="年度利润" value={money.format(summary.yearlyProfit)} detail="按本年度已确认流水计算" tone="blue" icon={ChartLineUp} />
     <BusinessMetric label="平均小时收益" value={`${money.format(summary.averageHourlyIncome)}/h`} detail={`累计有效投入 ${summary.actualHours} 小时`} tone="orange" icon={Timer} />
-  </section><section className="profit-layout"><main><Surface><SurfaceTitle eyebrow="PROJECT PROFIT" title="项目收益排行" action={<span className="profit-formula">收入 - 支出 = 实际利润</span>} /><div className="profit-ranking-chart">{ranking.map((item, index) => <article key={item.project.id}><i>{index + 1}</i><span><b>{item.project.name}</b><small>收入 {money.format(item.income)} · 成本 {money.format(item.expenses)} · {item.actualHours}h</small><BarProgress value={item.profit / maxProfit * 100} tone={index === 0 ? "green" : "purple"} /></span><strong>{money.format(item.profit)}<small>{money.format(item.hourlyIncome)}/h</small></strong></article>)}</div></Surface><Surface><SurfaceTitle eyebrow="PROFIT STRUCTURE" title="月度与年度利润结构" /><div className="profit-compare"><article><span>本月</span><b>{money.format(summary.monthlyIncome)}</b><i style={{ height: `${Math.max(28, summary.monthlyIncome / Math.max(summary.monthlyIncome, summary.yearlyIncome) * 150)}px` }} /><small>收入</small></article><article className="expense"><span>本月</span><b>{money.format(summary.monthlyExpenses)}</b><i style={{ height: `${Math.max(18, summary.monthlyExpenses / Math.max(summary.monthlyIncome, 1) * 150)}px` }} /><small>支出</small></article><article><span>本年</span><b>{money.format(summary.yearlyIncome)}</b><i style={{ height: "150px" }} /><small>收入</small></article><article className="expense"><span>本年</span><b>{money.format(summary.yearlyExpenses)}</b><i style={{ height: `${Math.max(18, summary.yearlyExpenses / Math.max(summary.yearlyIncome, 1) * 150)}px` }} /><small>支出</small></article></div></Surface></main><aside><Surface className="profit-insight"><Sparkle size={28} weight="fill" /><SurfaceTitle eyebrow="SMART INSIGHT" title="经营洞察" /><h3>高价值项目正在形成</h3><p>「{ranking[0]?.project.name}」当前贡献最高利润，小时收益为 {money.format(ranking[0]?.hourlyIncome || 0)}。建议把同类项目报价提高 12%–18%。</p><div><span>利润率</span><b>{summary.totalIncome ? Math.round(summary.actualProfit / summary.totalIncome * 100) : 0}%</b><BarProgress value={summary.totalIncome ? summary.actualProfit / summary.totalIncome * 100 : 0} tone="green" /></div></Surface><Surface><SurfaceTitle eyebrow="COST ALERT" title="成本结构" /><div className="cost-breakdown">{["outsourcing", "software", "server", "other"].map((category) => { const amount = snapshot.expenses.filter((item) => item.category === category).reduce((sum, item) => sum + item.amount, 0); return <p key={category}><span>{category === "outsourcing" ? "外包成本" : category === "software" ? "软件订阅" : category === "server" ? "服务器" : "其他成本"}</span><b>{money.format(amount)}</b></p>; })}</div></Surface></aside></section></div>;
+  </section><section className="profit-layout"><main><Surface><SurfaceTitle eyebrow="PROJECT PROFIT" title="项目收益排行" action={<span className="profit-formula">收入 - 支出 = 实际利润</span>} /><div className="profit-ranking-chart">{ranking.length ? ranking.map((item, index) => <article key={item.project.id}><i>{index + 1}</i><span><b>{item.project.name}</b><small>收入 {money.format(item.income)} · 成本 {money.format(item.expenses)} · {item.actualHours}h</small><BarProgress value={item.profit / maxProfit * 100} tone={index === 0 ? "green" : "purple"} /></span><strong>{money.format(item.profit)}<small>{money.format(item.hourlyIncome)}/h</small></strong></article>) : <BusinessEmptyState icon={ChartLineUp} title="暂无收益排行" description="导入项目、收入和支出后，这里会自动计算真实利润。" />}</div></Surface><Surface><SurfaceTitle eyebrow="PROFIT STRUCTURE" title="月度与年度利润结构" /><div className="profit-compare"><article><span>本月</span><b>{money.format(summary.monthlyIncome)}</b><i style={{ height: `${summary.monthlyIncome ? Math.max(28, summary.monthlyIncome / Math.max(summary.monthlyIncome, summary.yearlyIncome) * 150) : 0}px` }} /><small>收入</small></article><article className="expense"><span>本月</span><b>{money.format(summary.monthlyExpenses)}</b><i style={{ height: `${summary.monthlyExpenses ? Math.max(18, summary.monthlyExpenses / Math.max(summary.monthlyIncome, 1) * 150) : 0}px` }} /><small>支出</small></article><article><span>本年</span><b>{money.format(summary.yearlyIncome)}</b><i style={{ height: summary.yearlyIncome ? "150px" : "0px" }} /><small>收入</small></article><article className="expense"><span>本年</span><b>{money.format(summary.yearlyExpenses)}</b><i style={{ height: `${summary.yearlyExpenses ? Math.max(18, summary.yearlyExpenses / Math.max(summary.yearlyIncome, 1) * 150) : 0}px` }} /><small>支出</small></article></div></Surface></main><aside><Surface className="profit-insight"><Sparkle size={28} weight="fill" /><SurfaceTitle eyebrow="SMART INSIGHT" title="经营洞察" /><h3>{ranking.length ? "高价值项目正在形成" : "等待真实经营数据"}</h3><p>{ranking.length ? `「${ranking[0].project.name}」当前贡献最高利润，小时收益为 ${money.format(ranking[0].hourlyIncome)}。建议把同类项目报价提高 12%–18%。` : "录入自己的项目、收入、支出与工时后，这里会生成针对你的利润洞察。"}</p><div><span>利润率</span><b>{summary.totalIncome ? Math.round(summary.actualProfit / summary.totalIncome * 100) : 0}%</b><BarProgress value={summary.totalIncome ? summary.actualProfit / summary.totalIncome * 100 : 0} tone="green" /></div></Surface><Surface><SurfaceTitle eyebrow="COST ALERT" title="成本结构" /><div className="cost-breakdown">{["outsourcing", "software", "server", "other"].map((category) => { const amount = snapshot.expenses.filter((item) => item.category === category).reduce((sum, item) => sum + item.amount, 0); return <p key={category}><span>{category === "outsourcing" ? "外包成本" : category === "software" ? "软件订阅" : category === "server" ? "服务器" : "其他成本"}</span><b>{money.format(amount)}</b></p>; })}</div></Surface></aside></section></div>;
 }
 
 export function EnhancedCustomerManagementPage({ snapshot }: { snapshot: LedgerSnapshot }) {
   const [selected, setSelected] = useState(snapshot.customers[0]?.id || "");
   const [statuses, setStatuses] = useState<Record<string, CustomerFollowUpStatus>>({});
-  const customer = snapshot.customers.find((item) => item.id === selected)!;
+  const customer = snapshot.customers.find((item) => item.id === selected);
   const selectedBusiness = getCustomerBusiness(snapshot, selected);
   const nextStatus = () => {
+    if (!customer) return;
     const flow: CustomerFollowUpStatus[] = ["new", "contacted", "proposal", "won"];
     const current = statuses[selected] || customer.followUpStatus;
     const index = flow.indexOf(current);
     setStatuses((items) => ({ ...items, [selected]: flow[Math.min(flow.length - 1, Math.max(0, index + 1))] }));
   };
   const totalSpend = snapshot.customers.reduce((sum, item) => sum + getCustomerBusiness(snapshot, item.id).totalSpend, 0);
+  if (!customer) return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid"><BusinessMetric label="客户总数" value="0 位" detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} /><BusinessMetric label="累计消费" value={money.format(0)} detail="按已确认收款统计" tone="green" icon={Wallet} /><BusinessMetric label="A级客户" value="0 位" detail="高价值与高复购潜力" tone="orange" icon={Sparkle} /><BusinessMetric label="跟进中" value="0 位" detail="需要继续联系的客户" tone="blue" icon={BellRinging} /></section><BusinessEmptyState icon={UsersThree} title="还没有客户资料" description="客户示例数据已经清空。首次记账时会自动创建对应客户。" /></div>;
   return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid">
     <BusinessMetric label="客户总数" value={`${snapshot.customers.length} 位`} detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} />
     <BusinessMetric label="累计消费" value={money.format(totalSpend)} detail="按已确认收款统计" tone="green" icon={Wallet} />
@@ -285,7 +304,7 @@ function analyzeRequirement(content: string): RequirementResult {
 
 export function AIWorkspacePage({ snapshot }: { snapshot: LedgerSnapshot }) {
   const [tool, setTool] = useState<"requirements" | "quote" | "review">("requirements");
-  const [content, setContent] = useState("客户想做一个校园二手交易小程序，需要商品发布、搜索筛选、收藏、聊天、订单支付和管理后台，希望三周内上线。");
+  const [content, setContent] = useState("");
   const [requirement, setRequirement] = useState<RequirementResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [quoteReady, setQuoteReady] = useState(false);
@@ -295,7 +314,16 @@ export function AIWorkspacePage({ snapshot }: { snapshot: LedgerSnapshot }) {
     setBusy(true);
     window.setTimeout(() => { callback(); setBusy(false); }, 760);
   };
-  const review = getProjectFinancials(snapshot).find((item) => item.project.id === reviewProject)!;
+  const review = getProjectFinancials(snapshot).find((item) => item.project.id === reviewProject) || {
+    project: { id: "", name: "尚未导入项目", customerId: "", totalAmount: 0, startDate: "2026-05-28", dueDate: "2026-05-28", progress: 0, status: "pending" as const, accent: "blue" as const, type: "等待项目数据" },
+    income: 0,
+    expenses: 0,
+    profit: 0,
+    outstanding: 0,
+    paymentProgress: 0,
+    actualHours: 0,
+    hourlyIncome: 0,
+  };
   const tools = [["requirements", "AI 需求分析", Brain, "把聊天内容变成可执行方案"], ["quote", "AI 报价生成", FileText, "生成报价单、付款计划与交付说明"], ["review", "AI 项目复盘", ChartLineUp, "分析收益、时间成本与定价空间"]] as const;
   return <div className="business-page ai-workspace-page"><section className="ai-hero"><div><span><Sparkle size={15} weight="fill" /> PERSONAL BUSINESS COPILOT</span><h2>AI 经营助手</h2><p>从客户聊天到项目报价，再到交付后的利润复盘，把经验沉淀成下一次更好的经营决策。</p></div><i><Robot size={76} weight="duotone" /></i></section><section className="ai-layout"><nav>{tools.map(([key, label, Icon, description]) => <button className={tool === key ? "active" : ""} onClick={() => setTool(key)} key={key}><i><Icon size={22} weight="duotone" /></i><span><b>{label}</b><small>{description}</small></span><CaretRight size={16} /></button>)}<div className="ai-privacy"><CheckCircle size={18} weight="fill" /><span><b>独立工作区</b><small>分析结果只用于当前经营决策</small></span></div></nav><main>
     {tool === "requirements" && <><Surface className="ai-input-card"><SurfaceTitle eyebrow="01 / REQUIREMENT" title="粘贴客户聊天内容" /><textarea value={content} onChange={(event) => setContent(event.target.value)} rows={7} placeholder="粘贴客户的聊天记录、需求描述或语音转文字内容…" /><div><span>{content.length} 字 · 内容越完整，分析越准确</span><button className="ai-run-button" disabled={busy || !content.trim()} onClick={() => run(() => setRequirement(analyzeRequirement(content)))}>{busy ? <CircleNotch className="spin" size={18} /> : <MagicWand size={18} weight="fill" />}开始智能分析</button></div></Surface>{requirement && <div className="ai-result-grid"><Surface><SurfaceTitle eyebrow="PROJECT TYPE" title="项目类型" /><strong className="ai-result-primary">{requirement.type}</strong><p>匹配度 92% · 建议采用敏捷里程碑交付</p></Surface><Surface><SurfaceTitle eyebrow="ESTIMATE" title="工期与报价" /><div className="ai-estimate"><span><small>工期预测</small><b>{requirement.days}–{requirement.days + 4} 天</b></span><span><small>报价建议</small><b>{money.format(requirement.price[0])}–{money.format(requirement.price[1])}</b></span></div></Surface><Surface className="ai-feature-result"><SurfaceTitle eyebrow="SCOPE" title="功能列表" /><ul>{requirement.features.map((feature) => <li key={feature}><CheckCircle size={16} weight="fill" />{feature}</li>)}</ul></Surface><Surface className="ai-risk-result"><SurfaceTitle eyebrow="RISKS" title="风险提醒" /><ul>{requirement.risks.map((risk) => <li key={risk}><WarningCircle size={16} weight="fill" />{risk}</li>)}</ul></Surface><button className="ai-next-step" onClick={() => { setTool("quote"); setQuoteReady(false); }}>使用本次分析生成报价 <ArrowRight size={16} /></button></div>}</>}

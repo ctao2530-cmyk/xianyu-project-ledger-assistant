@@ -775,6 +775,9 @@ a {
   gap: 9px;
   margin-top: 13px;
 }
+.dashboard-empty { display: grid; min-height: 210px; place-content: center; justify-items: center; gap: 8px; color: #7658eb; text-align: center; }
+.dashboard-empty strong { color: #3d4864; font-size: 13px; }
+.dashboard-empty span { color: #929aaf; font-size: 10px; }
 
 .project-row {
   position: relative;
@@ -954,6 +957,8 @@ a {
 .payment-table {
   margin-top: 11px;
 }
+.payment-table-empty { display: flex; min-height: 190px; align-items: center; justify-content: center; gap: 10px; color: #7658eb; }
+.payment-table-empty span { color: #8992a8; font-size: 10px; }
 
 .payment-table-head,
 .payment-table-row {
@@ -1173,6 +1178,7 @@ a {
   font-size: 7px;
   cursor: pointer;
 }
+.reminder-card .reminder-empty { justify-content: center; color: #18b76e; }
 
 .goal-card {
   background:

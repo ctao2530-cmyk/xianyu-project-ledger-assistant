@@ -338,11 +338,13 @@ function TopHeader({
   onSearch,
   onMenu,
   activePage,
+  notificationCount,
 }: {
   search: string;
   onSearch: (value: string) => void;
   onMenu: () => void;
   activePage: string;
+  notificationCount: number;
 }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -376,13 +378,12 @@ function TopHeader({
             onClick={() => setNotificationsOpen((value) => !value)}
           >
             <Bell size={23} />
-            <b>3</b>
+            {notificationCount > 0 && <b>{notificationCount}</b>}
           </button>
           {notificationsOpen && (
             <div className="header-popover notification-popover">
               <strong>智能提醒</strong>
-              <p>2 个项目即将交付</p>
-              <p>1 笔尾款待跟进</p>
+              {notificationCount > 0 ? <p>{notificationCount} 条经营事项待处理</p> : <p>暂无待处理提醒</p>}
             </div>
           )}
         </div>
@@ -408,12 +409,13 @@ function TopHeader({
   );
 }
 
-function MiniChart({ type, color }: { type: "line" | "bar"; color: string }) {
+function MiniChart({ type, color, empty = false }: { type: "line" | "bar"; color: string; empty?: boolean }) {
+  const chartData = (type === "line" ? miniLineData : miniBars).map((item) => ({ value: empty ? 0 : item.value }));
   return (
     <div className="mini-chart" aria-hidden="true">
       <ResponsiveContainer width="100%" height="100%">
         {type === "line" ? (
-          <AreaChart data={miniLineData} margin={{ top: 8, right: 2, bottom: 0, left: 2 }}>
+          <AreaChart data={chartData} margin={{ top: 8, right: 2, bottom: 0, left: 2 }}>
             <Area
               type="monotone"
               dataKey="value"
@@ -425,7 +427,7 @@ function MiniChart({ type, color }: { type: "line" | "bar"; color: string }) {
             />
           </AreaChart>
         ) : (
-          <BarChart data={miniBars} margin={{ top: 8, right: 2, bottom: 0, left: 2 }}>
+          <BarChart data={chartData} margin={{ top: 8, right: 2, bottom: 0, left: 2 }}>
             <Bar dataKey="value" fill={color} radius={[4, 4, 0, 0]} opacity={0.72} />
           </BarChart>
         )}
@@ -472,28 +474,32 @@ function MetricCard({
         <p>{comparison}</p>
       </div>
       <img className="metric-image" src={image} alt="" />
-      {chart && <MiniChart type={chart} color={tone === "green" ? "#16c77a" : tone === "blue" ? "#3978ff" : "#6646f5"} />}
+      {chart && <MiniChart type={chart} empty={value === 0} color={tone === "green" ? "#16c77a" : tone === "blue" ? "#3978ff" : "#6646f5"} />}
       <span className="metric-index">0{index + 1}</span>
     </Card>
   );
 }
 
 function IncomeTrendCard({ payments }: { payments: Payment[] }) {
-  const monthlyTotal = payments
-    .filter((payment) => payment.status === "confirmed" && isSameLocalMonth(payment.paidAt))
-    .reduce((sum, payment) => sum + payment.amount, 0);
+  const confirmedPayments = payments.filter((payment) => payment.status === "confirmed");
+  const monthlyTotal = confirmedPayments.filter((payment) => isSameLocalMonth(payment.paidAt)).reduce((sum, payment) => sum + payment.amount, 0);
 
   const data = useMemo(() => {
     const last30Days = Array.from({ length: 8 }, (_, index) => {
       const date = new Date();
       date.setDate(date.getDate() - (7 - index) * 4);
+      const bucketStart = new Date(date);
+      bucketStart.setDate(bucketStart.getDate() - 3);
+      bucketStart.setHours(0, 0, 0, 0);
+      const bucketEnd = new Date(date);
+      bucketEnd.setHours(23, 59, 59, 999);
       return {
         date: `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`,
-        value: [280, 820, 2180, 920, 1910, 1580, 1880, 3400 + Math.max(0, monthlyTotal - 5680) * 0.3][index],
+        value: confirmedPayments.filter((payment) => { const paidAt = new Date(payment.paidAt); return paidAt >= bucketStart && paidAt <= bucketEnd; }).reduce((sum, payment) => sum + payment.amount, 0),
       };
     });
     return last30Days;
-  }, [monthlyTotal]);
+  }, [confirmedPayments]);
 
   return (
     <Card className="trend-card">
@@ -545,7 +551,7 @@ function ActiveProjectsCard({ projects }: { projects: Project[] }) {
     <Card className="projects-card" id="active-projects">
       <CardHeader title="进行中的项目" action={<button className="text-button">查看全部 <CaretRight size={14} /></button>} />
       <div className="project-list">
-        {active.map((project) => {
+        {active.length ? active.map((project) => {
           const Icon = projectIcons[project.accent];
           const duration = Math.max(1, diffInDays(project.startDate, new Date(`${project.dueDate}T00:00:00`)));
           return (
@@ -562,7 +568,7 @@ function ActiveProjectsCard({ projects }: { projects: Project[] }) {
               <span className="days-pill">剩余 {remainingDays(project.dueDate)} 天</span>
             </article>
           );
-        })}
+        }) : <div className="dashboard-empty"><Briefcase size={34} weight="duotone" /><strong>暂无进行中的项目</strong><span>导入自己的项目后会显示在这里</span></div>}
       </div>
     </Card>
   );
@@ -604,7 +610,7 @@ function PaymentTable({
         <div className="payment-table-head" role="row">
           <span>项目名称</span><span>客户</span><span>金额（元）</span><span>收款时间</span><span>备注</span>
         </div>
-        {payments.slice(0, 4).map((payment) => {
+        {payments.length ? payments.slice(0, 4).map((payment) => {
           const project = getProject(payment.projectId);
           const customer = getCustomer(payment.customerId);
           const accent = project?.accent || "blue";
@@ -618,9 +624,9 @@ function PaymentTable({
               <span data-label="备注">{payment.notes || paymentLabels[payment.type]}</span>
             </div>
           );
-        })}
+        }) : <div className="payment-table-empty"><Wallet size={30} weight="duotone" /><span>暂无收款记录，请录入自己的第一笔收入</span></div>}
       </div>
-      <div className="table-footer">已全部加载，共 {payments.length + 21} 条记录</div>
+      <div className="table-footer">已全部加载，共 {payments.length} 条记录</div>
     </Card>
   );
 }
@@ -678,42 +684,45 @@ function ReminderCard({ projects, payments }: { projects: Project[]; payments: P
   const nearest = projects
     .filter((project) => project.status === "in_progress")
     .sort((a, b) => remainingDays(a.dueDate) - remainingDays(b.dueDate));
-  const pendingFinal = payments.find((payment) => payment.type === "final");
+  const pendingFinal = payments.find((payment) => payment.type === "final" && payment.status === "pending");
+  const reminderCount = Math.min(2, nearest.length) + (pendingFinal ? 1 : 0);
   return (
     <Card className="reminder-card">
-      <CardHeader title="智能提醒" action={<span className="reminder-badge">3 条待处理事项</span>} />
+      <CardHeader title="智能提醒" action={<span className="reminder-badge">{reminderCount} 条待处理事项</span>} />
       <ul>
         {nearest.slice(0, 2).map((project) => (
           <li key={project.id}><i /><span>项目「{project.name}」{remainingDays(project.dueDate) === 1 ? "明日" : `${remainingDays(project.dueDate)}天后`}交付</span><time>{new Date(`${project.dueDate}T00:00:00`).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}</time></li>
         ))}
-        <li><i /><span>客户「李老板」尾款待收</span><strong>{pendingFinal ? compactCurrency.format(pendingFinal.amount) : "¥1,680"}</strong><button>去处理</button></li>
+        {pendingFinal && <li><i /><span>项目尾款待收</span><strong>{compactCurrency.format(pendingFinal.amount)}</strong><button>去处理</button></li>}
+        {reminderCount === 0 && <li className="reminder-empty"><CheckCircle size={17} weight="fill" /><span>暂无待处理事项</span></li>}
       </ul>
     </Card>
   );
 }
 
 function MonthlyGoalCard({ current, goal }: { current: number; goal: number }) {
-  const progress = Math.min(100, (current / goal) * 100);
+  const progress = goal > 0 ? Math.min(100, (current / goal) * 100) : 0;
   return (
     <Card className="goal-card">
       <CardHeader title="本月目标" action={<button className="text-button">编辑目标 <CaretRight size={14} /></button>} />
       <div className="goal-copy">
         <span>月收入目标</span>
-        <strong>{compactCurrency.format(current)} <small>/ {goal.toLocaleString("zh-CN")}</small></strong>
+        <strong>{compactCurrency.format(current)} <small>/ {goal > 0 ? goal.toLocaleString("zh-CN") : "未设置"}</small></strong>
         <div className="goal-progress"><i style={{ width: `${progress}%` }} /></div>
-        <p>还差 <b>{compactCurrency.format(Math.max(0, goal - current))}</b> 元可达成目标！</p>
+        <p>{goal > 0 ? <>还差 <b>{compactCurrency.format(Math.max(0, goal - current))}</b> 元可达成目标！</> : "设置你的首个月度目标后开始追踪"}</p>
       </div>
       <img src="/assets/goal-trophy.png" alt="金色冠军奖杯" />
     </Card>
   );
 }
 
-function CustomerSourceCard() {
+function CustomerSourceCard({ customers }: { customers: Customer[] }) {
   const data = [
-    { name: "咸鱼平台", value: 9, color: "#4ea0ff" },
-    { name: "老客户介绍", value: 5, color: "#5a4ef4" },
-    { name: "其他渠道", value: 4, color: "#ffb51b" },
+    { name: "咸鱼平台", value: customers.filter((item) => item.source === "xianyu").length, color: "#4ea0ff" },
+    { name: "老客户介绍", value: customers.filter((item) => item.source === "referral").length, color: "#5a4ef4" },
+    { name: "其他渠道", value: customers.filter((item) => !["xianyu", "referral"].includes(item.source)).length, color: "#ffb51b" },
   ];
+  const total = customers.length;
   return (
     <Card className="source-card">
       <CardHeader title="客户来源分析（本月）" action={<button className="text-button">查看详情 <CaretRight size={14} /></button>} />
@@ -726,11 +735,11 @@ function CustomerSourceCard() {
               </Pie>
             </PieChart>
           </ResponsiveContainer>
-          <div><span>总客户</span><strong>18</strong></div>
+          <div><span>总客户</span><strong>{total}</strong></div>
         </div>
         <div className="source-legend">
           {data.map((item) => (
-            <p key={item.name}><i style={{ background: item.color }} /><span>{item.name}</span><strong>{item.value}</strong><small>({((item.value / 18) * 100).toFixed(1)}%)</small></p>
+            <p key={item.name}><i style={{ background: item.color }} /><span>{item.name}</span><strong>{item.value}</strong><small>({(total ? item.value / total * 100 : 0).toFixed(1)}%)</small></p>
           ))}
         </div>
       </div>
@@ -942,6 +951,8 @@ function DashboardLayout({
     .reduce((sum, expense) => sum + expense.amount, 0);
   const operationDays = diffInDays(snapshot.settings.xianyuStartedAt);
   const businessSummary = getBusinessSummary(snapshot);
+  const notificationCount = snapshot.projects.filter((project) => project.status === "in_progress" && remainingDays(project.dueDate) <= 3).length
+    + snapshot.payments.filter((payment) => payment.status === "pending").length;
 
   const normalizedSearch = search.trim().toLowerCase();
   const filteredProjects = normalizedSearch
@@ -972,7 +983,7 @@ function DashboardLayout({
       value: totalIncome,
       prefix: "¥",
       precision: 2,
-      comparison: <>较上月 <b>↑32.6%</b></>,
+      comparison: totalIncome > 0 ? <>累计确认 <b>{confirmedPayments.length} 笔</b></> : <>等待导入 <b>收入数据</b></>,
       tone: "purple" as const,
       image: "/assets/metric-wallet-purple.png",
       chart: "line" as const,
@@ -982,7 +993,7 @@ function DashboardLayout({
       value: businessSummary.actualProfit,
       prefix: "¥",
       precision: 2,
-      comparison: <>收入 - 支出 <b>利润率 {totalIncome ? Math.round(businessSummary.actualProfit / totalIncome * 100) : 0}%</b></>,
+      comparison: totalIncome || businessSummary.totalExpenses ? <>收入 - 支出 <b>利润率 {totalIncome ? Math.round(businessSummary.actualProfit / totalIncome * 100) : 0}%</b></> : <>等待导入 <b>收支数据</b></>,
       tone: "green" as const,
       image: "/assets/metric-wallet-green.png",
       chart: "bar" as const,
@@ -992,7 +1003,7 @@ function DashboardLayout({
       value: businessSummary.outstanding,
       prefix: "¥",
       precision: 2,
-      comparison: <>{businessSummary.pendingCount} 个付款节点 <b>待跟进</b></>,
+      comparison: businessSummary.pendingCount > 0 ? <>{businessSummary.pendingCount} 个付款节点 <b>待跟进</b></> : <>暂无 <b>待回款节点</b></>,
       tone: "blue" as const,
       image: "/assets/pages/income-pending.png",
       chart: "bar" as const,
@@ -1002,7 +1013,7 @@ function DashboardLayout({
       value: businessSummary.averageHourlyIncome,
       prefix: "¥",
       precision: 2,
-      comparison: <>累计投入 <b>{businessSummary.actualHours} 小时</b></>,
+      comparison: businessSummary.actualHours > 0 ? <>累计投入 <b>{businessSummary.actualHours} 小时</b></> : <>等待导入 <b>工时数据</b></>,
       tone: "indigo" as const,
       image: "/assets/metric-clipboard.png",
       chart: "bar" as const,
@@ -1028,7 +1039,7 @@ function DashboardLayout({
         projects={snapshot.projects}
       />
       <main className="dashboard-main">
-        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} />
+        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} notificationCount={notificationCount} />
         {activeNav === "首页概览" && normalizedSearch && (
           <div className="search-status">
             <MagnifyingGlass size={16} />“{search}” 找到 {filteredProjects.length} 个项目、{filteredPayments.length} 笔收款
@@ -1054,7 +1065,7 @@ function DashboardLayout({
             <div className="bottom-stack right-stack">
               <MonthlyGoalCard current={monthlyIncome} goal={snapshot.settings.monthlyIncomeGoal} />
               <div className="source-countdown-row">
-                <CustomerSourceCard />
+                <CustomerSourceCard customers={snapshot.customers} />
                 <DeliveryCountdownCard projects={snapshot.projects} />
               </div>
             </div>
