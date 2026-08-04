@@ -1,6 +1,7 @@
 import {
   ArrowRight,
   Bell,
+  Brain,
   Briefcase,
   CalendarBlank,
   CalendarCheck,
@@ -61,6 +62,7 @@ import {
   useState,
 } from "react";
 import { mockLedgerService } from "./data/mockService";
+import { getBusinessSummary } from "./data/businessMetrics";
 import { OtherPages, type OtherPageName } from "./pages/OtherPages";
 import type {
   Customer,
@@ -106,6 +108,7 @@ const navItems: Array<{ label: string; icon: PhosphorIcon }> = [
   { label: "客户管理", icon: UsersThree },
   { label: "数据统计", icon: ChartBar },
   { label: "目标计划", icon: Target },
+  { label: "AI经营助手", icon: Brain },
   { label: "设置中心", icon: GearSix },
 ];
 
@@ -117,6 +120,7 @@ const pageMeta: Record<string, { title: string; subtitle: string; placeholder: s
   客户管理: { title: "客户管理", subtitle: "管理客户资料、来源、成交记录与跟进状态", placeholder: "搜索客户名称、联系人、标签..." },
   数据统计: { title: "数据统计", subtitle: "多维度分析收入、项目、客户来源与运营效率", placeholder: "搜索项目、客户或订单..." },
   目标计划: { title: "目标计划", subtitle: "设定收入目标、交付计划与个人成长安排，让每一步都朝着目标前进", placeholder: "搜索项目、客户或订单..." },
+  AI经营助手: { title: "AI 经营助手", subtitle: "分析需求、生成报价并复盘项目，让每次接单都更有把握", placeholder: "搜索项目，或粘贴客户需求..." },
   设置中心: { title: "设置中心", subtitle: "管理账号信息、界面风格、运营日期、提醒与数据同步", placeholder: "搜索项目、客户或订单..." },
 };
 
@@ -620,10 +624,12 @@ function PaymentTable({
   );
 }
 
-function DailyBalanceCard({ todayIncome }: { todayIncome: number }) {
+function DailyBalanceCard({ todayIncome, todayExpense }: { todayIncome: number; todayExpense: number }) {
+  const todayProfit = todayIncome - todayExpense;
+  const total = Math.max(1, todayIncome + todayExpense);
   const pie = [
-    { name: "收入", value: 56, color: "#3b82f6" },
-    { name: "净收入", value: 44, color: "#35d58c" },
+    { name: "收入", value: todayIncome / total * 100, color: "#3b82f6" },
+    { name: "支出", value: todayExpense / total * 100, color: "#ff7359" },
   ];
   return (
     <Card className="balance-card">
@@ -637,15 +643,34 @@ function DailyBalanceCard({ todayIncome }: { todayIncome: number }) {
               </Pie>
             </PieChart>
           </ResponsiveContainer>
-          <div><span>净收入</span><strong>{compactCurrency.format(todayIncome)}</strong></div>
+          <div><span>净利润</span><strong>{compactCurrency.format(todayProfit)}</strong></div>
         </div>
         <div className="balance-legend">
           <p><i className="blue" />收入 <strong>{compactCurrency.format(todayIncome)}</strong></p>
-          <p><i className="red" />支出 <strong>{currency.format(0)}</strong></p>
+          <p><i className="red" />支出 <strong>{compactCurrency.format(todayExpense)}</strong></p>
         </div>
       </div>
     </Card>
   );
+}
+
+function OperatingInsightStrip({
+  snapshot,
+  onNavigate,
+}: {
+  snapshot: LedgerSnapshot;
+  onNavigate: (page: string) => void;
+}) {
+  const summary = getBusinessSummary(snapshot);
+  const bestProject = summary.projectFinancials.slice().sort((a, b) => b.profit - a.profit)[0];
+  const dueSoon = snapshot.payments.filter((payment) => payment.status === "pending" && remainingDays(payment.dueAt) <= 3).length;
+  return <Card className="operating-insight-strip">
+    <div className="insight-heading"><span><Sparkle size={16} weight="fill" />经营洞察</span><strong>把流水变成下一步行动</strong></div>
+    <div className="insight-item profit"><i><TrendUp size={22} weight="duotone" /></i><span><small>实际利润</small><b>{compactCurrency.format(summary.actualProfit)}</b><em>利润率 {summary.totalIncome ? Math.round(summary.actualProfit / summary.totalIncome * 100) : 0}%</em></span></div>
+    <div className="insight-item collection"><i><Bell size={22} weight="duotone" /></i><span><small>回款风险</small><b>{compactCurrency.format(summary.outstanding)} 待收</b><em>{dueSoon} 个节点三天内到期</em></span></div>
+    <div className="insight-item value"><i><Lightbulb size={22} weight="duotone" /></i><span><small>定价建议</small><b>{bestProject?.project.name || "暂无项目"}</b><em>小时收益 {compactCurrency.format(bestProject?.hourlyIncome || 0)}</em></span></div>
+    <div className="insight-actions"><button onClick={() => onNavigate("数据统计")}>查看利润分析</button><button className="primary" onClick={() => onNavigate("AI经营助手")}><Brain size={15} />询问 AI 助手</button></div>
+  </Card>;
 }
 
 function ReminderCard({ projects, payments }: { projects: Project[]; payments: Payment[] }) {
@@ -904,7 +929,11 @@ function DashboardLayout({
   const todayIncome = confirmedPayments
     .filter((payment) => isSameLocalDay(payment.paidAt))
     .reduce((sum, payment) => sum + payment.amount, 0);
+  const todayExpense = snapshot.expenses
+    .filter((expense) => isSameLocalDay(expense.paidAt))
+    .reduce((sum, expense) => sum + expense.amount, 0);
   const operationDays = diffInDays(snapshot.settings.xianyuStartedAt);
+  const businessSummary = getBusinessSummary(snapshot);
 
   const normalizedSearch = search.trim().toLowerCase();
   const filteredProjects = normalizedSearch
@@ -941,38 +970,40 @@ function DashboardLayout({
       chart: "line" as const,
     },
     {
-      title: "本月收入（元）",
-      value: monthlyIncome,
+      title: "实际利润（元）",
+      value: businessSummary.actualProfit,
       prefix: "¥",
       precision: 2,
-      comparison: <>较上月 <b>↑18.7%</b></>,
+      comparison: <>收入 - 支出 <b>利润率 {totalIncome ? Math.round(businessSummary.actualProfit / totalIncome * 100) : 0}%</b></>,
       tone: "green" as const,
       image: "/assets/metric-wallet-green.png",
       chart: "bar" as const,
     },
     {
-      title: "今日到账（元）",
-      value: todayIncome,
+      title: "待回款（元）",
+      value: businessSummary.outstanding,
       prefix: "¥",
       precision: 2,
-      comparison: <>较昨日 <b>↑86.0%</b></>,
+      comparison: <>{businessSummary.pendingCount} 个付款节点 <b>待跟进</b></>,
       tone: "blue" as const,
-      image: "/assets/metric-card-blue.png",
+      image: "/assets/pages/income-pending.png",
       chart: "bar" as const,
     },
     {
-      title: "完成订单（单）",
-      value: snapshot.completedOrderCount,
-      comparison: <>较上月 <b>+8单</b></>,
+      title: "平均小时收益",
+      value: businessSummary.averageHourlyIncome,
+      prefix: "¥",
+      precision: 2,
+      comparison: <>累计投入 <b>{businessSummary.actualHours} 小时</b></>,
       tone: "indigo" as const,
       image: "/assets/metric-clipboard.png",
       chart: "bar" as const,
     },
     {
-      title: "运营天数（天）",
-      value: operationDays,
-      suffix: "天",
-      comparison: <><span>起始日：</span><br />{formatDateOnly(snapshot.settings.xianyuStartedAt)}</>,
+      title: "进行中项目",
+      value: snapshot.projects.filter((project) => project.status === "in_progress").length,
+      suffix: "个",
+      comparison: <><span>运营第 {operationDays} 天</span><br />{formatDateOnly(snapshot.settings.xianyuStartedAt)} 起</>,
       tone: "orange" as const,
       image: "/assets/metric-calendar-orange.png",
     },
@@ -1000,6 +1031,7 @@ function DashboardLayout({
           <section className="metrics-grid" aria-label="经营核心指标">
             {metrics.map((metric, index) => <MetricCard key={metric.title} {...metric} index={index} />)}
           </section>
+          <OperatingInsightStrip snapshot={snapshot} onNavigate={changePage} />
           <section className="main-grid">
             <IncomeTrendCard payments={confirmedPayments} />
             <ActiveProjectsCard projects={filteredProjects} />
@@ -1008,7 +1040,7 @@ function DashboardLayout({
           <section className="bottom-grid">
             <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} />
             <div className="bottom-stack center-stack">
-              <DailyBalanceCard todayIncome={todayIncome} />
+              <DailyBalanceCard todayIncome={todayIncome} todayExpense={todayExpense} />
               <ReminderCard projects={snapshot.projects} payments={snapshot.payments} />
             </div>
             <div className="bottom-stack right-stack">

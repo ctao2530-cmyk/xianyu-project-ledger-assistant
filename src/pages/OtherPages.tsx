@@ -52,6 +52,13 @@ import {
 } from "recharts";
 import { type FormEvent, type ReactNode, useMemo, useState } from "react";
 import type { LedgerSnapshot } from "../types";
+import {
+  AIWorkspacePage,
+  EnhancedCustomerManagementPage,
+  EnhancedIncomeRecordsPage,
+  EnhancedProjectManagementPage,
+  ProfitAnalysisPage,
+} from "./BusinessAssistantPages";
 import "./other-pages.css";
 
 export type OtherPageName =
@@ -61,6 +68,7 @@ export type OtherPageName =
   | "客户管理"
   | "数据统计"
   | "目标计划"
+  | "AI经营助手"
   | "设置中心";
 
 type ActionKind = "project" | "expense" | "customer";
@@ -355,6 +363,11 @@ function DataStatisticsPage({ snapshot }: { snapshot: LedgerSnapshot }) {
   return <div className="other-page analytics-page"><MetricsRow metrics={metrics} /><section className="analytics-grid top"><SectionCard><PanelHeader title="收入趋势（元）" action={<SelectButton>近6个月</SelectButton>} /><div className="large-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={revenueTrend}><defs><linearGradient id="incomeArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6447f3" stopOpacity={0.24} /><stop offset="100%" stopColor="#6447f3" stopOpacity={0.02} /></linearGradient></defs><CartesianGrid vertical={false} stroke="#e9edf5" strokeDasharray="3 3" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip content={<ChartTooltip />} /><Area name="收入" type="monotone" dataKey="income" stroke="#6447f3" strokeWidth={3} fill="url(#incomeArea)" dot={{ fill: "#6447f3", r: 4 }} /></AreaChart></ResponsiveContainer></div></SectionCard><SectionCard><PanelHeader title="收入 vs 支出对比（元）" action={<SelectButton>近6个月</SelectButton>} /><div className="large-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={revenueTrend} barGap={8}><CartesianGrid vertical={false} stroke="#e9edf5" strokeDasharray="3 3" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip content={<ChartTooltip />} /><Bar name="收入" dataKey="income" fill="#4d88f5" radius={[5, 5, 0, 0]} /><Bar name="支出" dataKey="expense" fill="#ff744d" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div></SectionCard><SectionCard><PanelHeader title="项目状态分布" /><div className="donut-panel tall"><Donut data={status} center="28" sub="总项目" /><DonutLegend data={status} /></div><button className="panel-bottom-link">查看项目管理 <CaretRight size={14} /></button></SectionCard></section><section className="analytics-grid bottom"><SectionCard><PanelHeader title="客户来源分析" /><div className="donut-panel tall"><Donut data={sources} center="¥128,860" sub="总收入" /><DonutLegend data={sources} /></div></SectionCard><SectionCard><PanelHeader title="项目收入排行榜（TOP 5）" /><ol className="project-ranking">{["校园二手交易平台", "餐饮点餐小程序开发", "数据可视化后台系统", "个人博客系统开发", "电商后台管理系统"].map((name, index) => <li key={name}><i>{index + 1}</i><span>{name}</span><b>¥{[24800, 16800, 12000, 9600, 8800][index].toLocaleString()}</b><small>{[19.2, 13, 9.3, 7.4, 6.8][index]}%</small></li>)}</ol></SectionCard><SectionCard><PanelHeader title="环比数据对比" action={<SelectButton>近3个月</SelectButton>} /><div className="comparison-list"><p><span>收入（元）</span><b>28,600.00</b><small>上月 22,300.00</small><em>↑ 28.3%</em></p><p><span>支出（元）</span><b className="danger-text">12,320.00</b><small>上月 9,860.00</small><em>↑ 25.0%</em></p><p><span>净利润（元）</span><b className="money-green">16,280.00</b><small>上月 12,440.00</small><em>↑ 30.9%</em></p></div></SectionCard></section><SectionCard className="efficiency-card"><div className="efficiency-title"><span>运营效率指数</span><small>综合项目交付效率、客户满意度与财务健康度评估</small><strong>86<em>优秀</em></strong></div>{[["准时交付率", "92%"], ["客户满意度", "4.7 / 5"], ["收入增长率", "28.3%"], ["成本控制率", "78%"], ["应收回款率", "85%"]].map(([label, value], index) => <div className="efficiency-item" key={label}><i className={`eff-icon eff-${index}`}><TrendUp size={23} /></i><span>{label}<b>{value}</b><small>较上月 ↑{index + 3}%</small></span></div>)}<img src="/assets/pages/analytics-report.png" alt="运营数据报告插画" /></SectionCard></div>;
 }
 
+function DataStatisticsHub({ snapshot }: { snapshot: LedgerSnapshot }) {
+  const [view, setView] = useState<"profit" | "overview">("profit");
+  return <div className="statistics-hub"><div className="statistics-mode-switch" role="tablist" aria-label="统计视图"><button role="tab" aria-selected={view === "profit"} className={view === "profit" ? "active" : ""} onClick={() => setView("profit")}><TrendUp size={16} />利润分析</button><button role="tab" aria-selected={view === "overview"} className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}><ChartBar size={16} />综合统计</button></div>{view === "profit" ? <ProfitAnalysisPage snapshot={snapshot} /> : <DataStatisticsPage snapshot={snapshot} />}</div>;
+}
+
 function GoalPlanPage() {
   const goalData = [{ day: "05/01", value: 500 }, { day: "05/06", value: 3800 }, { day: "05/11", value: 7200 }, { day: "05/16", value: 8800 }, { day: "05/21", value: 10400 }, { day: "05/26", value: 9200 }, { day: "05/31", value: 12000 }];
   const metrics: MetricData[] = [
@@ -401,12 +414,13 @@ export function OtherPages({ page, snapshot, onQuickAdd }: OtherPagesProps) {
     window.setTimeout(() => setToast(""), 2200);
   };
   const content = useMemo(() => {
-    if (page === "项目管理") return <ProjectManagementPage onAction={setModal} extraRows={extraProjects} />;
-    if (page === "收入记录") return <IncomeRecordsPage onQuickAdd={onQuickAdd} />;
+    if (page === "项目管理") return <EnhancedProjectManagementPage snapshot={snapshot} />;
+    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} />;
     if (page === "支出记录") return <ExpenseRecordsPage onAction={setModal} extraRows={extraExpenses} />;
-    if (page === "客户管理") return <CustomerManagementPage onAction={setModal} extraRows={extraCustomers} />;
-    if (page === "数据统计") return <DataStatisticsPage snapshot={snapshot} />;
+    if (page === "客户管理") return <EnhancedCustomerManagementPage snapshot={snapshot} />;
+    if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
     if (page === "目标计划") return <GoalPlanPage />;
+    if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} />;
     return <SettingsCenterPage onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
   }, [extraCustomers, extraExpenses, extraProjects, onQuickAdd, page, snapshot]);
   return <>{content}{modal && <CrudModal kind={modal} onClose={() => setModal(null)} onCreated={created} />}{toast && <div className="page-toast"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
