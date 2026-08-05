@@ -258,3 +258,7 @@
   .payment-node-list article { grid-template-columns: 28px 1fr auto; }.payment-node-list time { grid-column: 2 / -1; text-align: left; }
   .ai-estimate { grid-template-columns: 1fr; }
 }
+
+.project-list-toolbar > select { height: 38px; padding: 0 30px 0 12px; border: 1px solid #e5e8f1; border-radius: 11px; outline: 0; background: #fafbfe; color: #65708d; font-size: 10px; }
+.attachment-grid article > a { color: #6547e8; font-size: 8px; text-decoration: none; }
+.attachment-grid article button:disabled { color: #a4acbc; cursor: not-allowed; }

@@ -16,6 +16,17 @@ const initialSnapshot: LedgerSnapshot = {
   settings: {
     xianyuStartedAt: "2026-05-28",
     monthlyIncomeGoal: 0,
+    defaultDurationDays: 30,
+    defaultPaymentType: "full",
+    reminderDays: 3,
+    decimalPlaces: 2,
+    notificationsEnabled: true,
+    paymentRemindersEnabled: true,
+    goalRemindersEnabled: true,
+    autoBackupEnabled: true,
+    backupTime: "23:30",
+    themeColor: "#6544f4",
+    colorMode: "light",
   },
   completedOrderCount: 0,
 };
@@ -42,7 +53,10 @@ const readStoredSnapshot = () => {
     const stored = window.localStorage.getItem(STORAGE_KEY);
     if (!stored) return cloneSnapshot();
     const parsed = JSON.parse(stored) as unknown;
-    return isLedgerSnapshot(parsed) ? cloneSnapshot(parsed) : cloneSnapshot();
+    if (!isLedgerSnapshot(parsed)) return cloneSnapshot();
+    const snapshot = cloneSnapshot(parsed);
+    snapshot.settings = { ...initialSnapshot.settings, ...snapshot.settings };
+    return snapshot;
   } catch {
     return cloneSnapshot();
   }
@@ -91,6 +105,15 @@ export const mockLedgerService = {
       (item) => item.name.trim() === value.projectName.trim(),
     );
 
+    if (project) {
+      const linkedCustomer = next.customers.find((item) => item.id === project?.customerId);
+      if (linkedCustomer) customer = linkedCustomer;
+      const plannedTotal = next.payments
+        .filter((item) => item.projectId === project?.id && item.status !== "refunded")
+        .reduce((sum, item) => sum + item.amount, 0) + value.amount;
+      project.totalAmount = Math.max(project.totalAmount, value.contractTotal || 0, plannedTotal);
+    }
+
     if (!project) {
       const start = new Date(value.paidAt);
       const due = new Date(start);
@@ -99,11 +122,11 @@ export const mockLedgerService = {
         id: `p-${Date.now()}`,
         name: value.projectName.trim(),
         customerId: customer.id,
-        totalAmount: value.amount,
+        totalAmount: Math.max(value.amount, value.contractTotal || value.amount),
         startDate: start.toISOString().slice(0, 10),
         dueDate: due.toISOString().slice(0, 10),
-        progress: value.type === "full" ? 100 : 12,
-        status: value.type === "full" ? "completed" : "in_progress",
+        progress: value.type === "full" && value.status !== "pending" ? 100 : 12,
+        status: value.type === "full" && value.status !== "pending" ? "completed" : "in_progress",
         accent: "blue",
         notes: value.notes,
         type: "定制开发",
@@ -118,18 +141,24 @@ export const mockLedgerService = {
       customerId: customer.id,
       amount: value.amount,
       type: value.type,
-      status: "confirmed",
+      status: value.status || "confirmed",
       paidAt: new Date(value.paidAt).toISOString(),
-      dueAt: new Date(value.paidAt).toISOString().slice(0, 10),
-      notes: value.notes || "已确认到账",
+      dueAt: value.dueAt || new Date(value.paidAt).toISOString().slice(0, 10),
+      notes: value.notes || (value.status === "pending" ? "待收款" : "已确认到账"),
     });
 
-    if (value.type === "full" && project.status !== "completed") {
+    if (value.type === "full" && value.status !== "pending" && project.status !== "completed") {
       project.status = "completed";
       project.progress = 100;
       next.completedOrderCount += 1;
     }
 
+    persistSnapshot(next);
+    return next;
+  },
+
+  async saveSnapshot(snapshot: LedgerSnapshot): Promise<LedgerSnapshot> {
+    const next = cloneSnapshot(snapshot);
     persistSnapshot(next);
     return next;
   },

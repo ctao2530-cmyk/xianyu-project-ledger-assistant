@@ -50,8 +50,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { type FormEvent, type ReactNode, useMemo, useState } from "react";
-import type { LedgerSnapshot } from "../types";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import type { CustomerLevel, LedgerSnapshot } from "../types";
 import {
   AIWorkspacePage,
   EnhancedCustomerManagementPage,
@@ -77,6 +77,9 @@ interface OtherPagesProps {
   page: OtherPageName;
   snapshot: LedgerSnapshot;
   onQuickAdd: () => void;
+  onSnapshotChange: (snapshot: LedgerSnapshot) => void;
+  onNavigate: (page: string) => void;
+  globalSearch: string;
 }
 
 interface Column {
@@ -216,7 +219,7 @@ function EmptyLedgerNotice({ icon: Icon, title, description, action }: { icon: P
 }
 
 function TableFooter({ total }: { total: number }) {
-  return <div className="generic-table-footer"><span>共 {total} 条记录</span><div><button disabled>‹</button><button className="active">1</button><button>2</button><button>3</button><button>›</button></div><SelectButton>10 条/页</SelectButton></div>;
+  return <div className="generic-table-footer"><span>共 {total} 条记录</span><small>当前页最多显示 10 条</small></div>;
 }
 
 function Donut({ data, center, sub }: { data: Array<{ name: string; value: number; color: string }>; center: string; sub: string }) {
@@ -228,28 +231,53 @@ function DonutLegend({ data }: { data: Array<{ name: string; value: number; colo
   return <div className="page-donut-legend">{data.map((item) => <p key={item.name}><i style={{ background: item.color }} /><span>{item.name}</span><strong>{item.value}</strong><small>{item.detail || `${((item.value / total) * 100).toFixed(1)}%`}</small></p>)}</div>;
 }
 
-function CrudModal({ kind, onClose, onCreated }: { kind: ActionKind; onClose: () => void; onCreated: (kind: ActionKind, value: { name: string; amount: string }) => void }) {
-  const labels = kind === "project" ? { title: "新建项目", name: "项目名称", amount: "项目预算" } : kind === "expense" ? { title: "记录支出", name: "支出项目", amount: "支出金额" } : { title: "新增客户", name: "客户名称", amount: "联系电话" };
-  const [name, setName] = useState("");
-  const [amount, setAmount] = useState("");
+interface CrudValue {
+  name: string;
+  amount: string;
+  notes: string;
+  customerName: string;
+  durationDays: string;
+  projectId: string;
+  category: string;
+  source: string;
+  level: CustomerLevel;
+}
+
+function CrudModal({ kind, snapshot, editingExpenseId, onClose, onCreated }: { kind: ActionKind; snapshot: LedgerSnapshot; editingExpenseId?: string | null; onClose: () => void; onCreated: (kind: ActionKind, value: CrudValue) => void }) {
+  const editingExpense = snapshot.expenses.find((item) => item.id === editingExpenseId);
+  const labels = kind === "project" ? { title: "新建项目", name: "项目名称", amount: "项目预算" } : kind === "expense" ? { title: editingExpenseId ? "编辑支出" : "记录支出", name: "支出项目", amount: "支出金额" } : { title: "新增客户", name: "客户名称", amount: "联系电话" };
+  const [name, setName] = useState(editingExpense?.name || "");
+  const [amount, setAmount] = useState(editingExpense ? String(editingExpense.amount) : "");
+  const [notes, setNotes] = useState(editingExpense?.notes || "");
+  const [customerName, setCustomerName] = useState(snapshot.customers[0]?.name || "");
+  const [durationDays, setDurationDays] = useState(String(snapshot.settings.defaultDurationDays || 30));
+  const [projectId, setProjectId] = useState(editingExpense?.projectId || snapshot.projects[0]?.id || "");
+  const [category, setCategory] = useState(editingExpense?.category || "other");
+  const [source, setSource] = useState("xianyu");
+  const [level, setLevel] = useState<CustomerLevel>("C");
   const [error, setError] = useState("");
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!name.trim() || !amount.trim()) { setError("请完整填写必要信息"); return; }
-    onCreated(kind, { name: name.trim(), amount: amount.trim() });
+    if (kind !== "customer" && Number(amount) <= 0) { setError("金额必须大于 0"); return; }
+    if (kind === "project" && !customerName.trim()) { setError("请填写关联客户"); return; }
+    onCreated(kind, { name: name.trim(), amount: amount.trim(), notes: notes.trim(), customerName: customerName.trim(), durationDays, projectId, category, source, level });
   };
   return <div className="page-modal-layer"><button className="page-modal-backdrop" aria-label="关闭弹窗" onClick={onClose} /><form className="page-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label={labels.title}>
     <div className="page-modal-head"><div><span>快速录入</span><h2>{labels.title}</h2></div><button type="button" aria-label="关闭" onClick={onClose}><X size={20} /></button></div>
     <label><span>{labels.name}</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder={`请输入${labels.name}`} autoFocus /></label>
     <label><span>{labels.amount}</span><input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={`请输入${labels.amount}`} /></label>
-    <label><span>备注</span><textarea rows={4} placeholder="补充说明（可选）" /></label>
+    {kind === "project" && <><label><span>关联客户</span><input list="modal-customer-options" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="选择或输入客户名称" /><datalist id="modal-customer-options">{snapshot.customers.map((customer) => <option value={customer.name} key={customer.id} />)}</datalist></label><label><span>预计工期（天）</span><input type="number" min="1" value={durationDays} onChange={(event) => setDurationDays(event.target.value)} /></label></>}
+    {kind === "expense" && <><label><span>支出类别</span><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)}><option value="software">软件订阅</option><option value="outsourcing">外包服务</option><option value="server">服务器</option><option value="office">办公支出</option><option value="refund">退款</option><option value="other">其他</option></select></label><label><span>关联项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">不关联项目</option>{snapshot.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label></>}
+    {kind === "customer" && <><label><span>客户来源</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="xianyu">闲鱼</option><option value="wechat">微信</option><option value="referral">转介绍</option><option value="other">其他</option></select></label><label><span>客户等级</span><select value={level} onChange={(event) => setLevel(event.target.value as CustomerLevel)}><option value="A">A 级</option><option value="B">B 级</option><option value="C">C 级</option></select></label></>}
+    <label><span>备注</span><textarea rows={4} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="补充说明（可选）" /></label>
     {error && <p className="page-modal-error"><Warning size={15} />{error}</p>}
     <button className="page-modal-submit" type="submit"><CheckCircle size={19} weight="fill" />保存记录</button>
   </form></div>;
 }
 
-function TableActions() {
-  return <span className="table-actions"><button aria-label="查看"><Eye size={15} /></button><button aria-label="编辑"><PencilSimple size={15} /></button><button aria-label="更多"><DotsThreeVertical size={16} /></button></span>;
+function TableActions({ onView, onEdit, onDelete }: { onView?: () => void; onEdit?: () => void; onDelete?: () => void } = {}) {
+  return <span className="table-actions"><button aria-label="查看" onClick={onView} disabled={!onView}><Eye size={15} /></button><button aria-label="编辑" onClick={onEdit} disabled={!onEdit}><PencilSimple size={15} /></button><button aria-label="删除" onClick={onDelete} disabled={!onDelete}>{onDelete ? <Trash size={15} /> : <DotsThreeVertical size={16} />}</button></span>;
 }
 
 function ProjectManagementPage({ onAction, extraRows }: { onAction: (kind: ActionKind) => void; extraRows: string[][] }) {
@@ -312,7 +340,7 @@ function ExpenseRecordsPage({ snapshot, onAction, extraRows }: { snapshot: Ledge
   return <div className="other-page"><MetricsRow metrics={metrics} /><div className="page-content-grid with-right-rail"><div><FilterBar><SearchField value={search} onChange={setSearch} placeholder="搜索支出项目或关联项目" /><SelectButton>全部类别</SelectButton><span className="range-field"><CalendarBlank size={16} />2025-05-01 ~ 2025-05-31</span><SelectButton>全部方式</SelectButton><SelectButton>全部状态</SelectButton><PrimaryButton onClick={() => onAction("expense")}>记录支出</PrimaryButton></FilterBar><SectionCard className="page-table-card"><PanelHeader title="支出记录明细" /><DataTable columns={columns} rows={tableRows} /><TableFooter total={56 + extraRows.length} /></SectionCard></div><aside className="page-right-rail"><SectionCard><PanelHeader title="支出分类占比" action={<button className="panel-link">查看全部 <CaretRight size={13} /></button>} /><div className="donut-panel"><Donut data={expenseDonut} center="¥8,760" sub="本月支出" /><DonutLegend data={expenseDonut} /></div></SectionCard><SectionCard><PanelHeader title="本月利润对比" /><div className="profit-grid"><p><span>本月收入</span><b className="money-green">¥12,040.00</b></p><p><span>本月支出</span><b className="danger-text">¥8,760.00</b></p><p><span>本月利润</span><b>¥3,280.00</b></p><p><span>利润率</span><b>27.2%</b></p></div></SectionCard><SectionCard><PanelHeader title="高成本项目 TOP5" /><ol className="ranking-list">{["电商后台管理系统", "数据可视化后台", "校园二手交易平台", "个人博客系统开发", "餐饮点餐小程序"].map((item, index) => <li key={item}><span>{item}</span><b>¥{[4860, 1980, 1199, 859, 602][index]}.00</b></li>)}</ol></SectionCard><SectionCard><PanelHeader title="预算预警" /><div className="budget-alert"><Warning size={23} weight="fill" /><span>电商后台管理系统<br /><b>预算已使用 92%</b></span><i /></div><div className="budget-alert"><Warning size={23} weight="fill" /><span>数据可视化后台<br /><b>预算已使用 85%</b></span><i /></div></SectionCard></aside></div></div>;
 }
 
-function CleanExpenseRecordsPage({ snapshot, onAction, extraRows }: { snapshot: LedgerSnapshot; onAction: (kind: ActionKind) => void; extraRows: string[][] }) {
+function CleanExpenseRecordsPage({ snapshot, onAction, extraRows, globalSearch, onViewExpense, onEditExpense, onDeleteExpense }: { snapshot: LedgerSnapshot; onAction: (kind: ActionKind) => void; extraRows: string[][]; globalSearch: string; onViewExpense: (id: string) => void; onEditExpense: (id: string) => void; onDeleteExpense: (id: string) => void }) {
   const [search, setSearch] = useState("");
   const formatMoney = (value: number) => value.toLocaleString("zh-CN", { style: "currency", currency: "CNY", minimumFractionDigits: 2 });
   const categoryLabels: Record<string, string> = { software: "软件订阅", outsourcing: "外包服务", server: "服务器", office: "办公支出", refund: "退款", other: "其他" };
@@ -326,8 +354,10 @@ function CleanExpenseRecordsPage({ snapshot, onAction, extraRows }: { snapshot: 
     expense.projectId ? projectNames.get(expense.projectId) || "未关联项目" : "未关联项目",
     expense.category === "refund" ? "已退款" : "已支付",
     expense.notes || "—",
+    expense.id,
   ]);
-  const rows = [...extraRows, ...storedRows].filter((row) => `${row[0]} ${row[1]} ${row[5]}`.includes(search));
+  const query = globalSearch || search;
+  const rows = [...extraRows, ...storedRows].filter((row) => `${row[0]} ${row[1]} ${row[5]}`.toLowerCase().includes(query.toLowerCase()));
   const now = new Date();
   const isCurrentMonth = (value: string) => {
     const date = new Date(value);
@@ -347,8 +377,8 @@ function CleanExpenseRecordsPage({ snapshot, onAction, extraRows }: { snapshot: 
     { title: "成本占收入比", value: `${costRatio}%`, detail: <>按本月真实数据计算</>, tone: "orange", icon: ChartBar },
   ];
   const columns: Column[] = [{ key: "name", label: "支出项目", width: "1.5fr" }, { key: "category", label: "类别", width: ".75fr" }, { key: "amount", label: "金额（元）", width: ".82fr" }, { key: "date", label: "支出时间", width: "1.08fr" }, { key: "method", label: "记录方式", width: ".85fr" }, { key: "project", label: "关联项目", width: "1.24fr" }, { key: "status", label: "状态", width: ".72fr" }, { key: "note", label: "备注", width: ".9fr" }, { key: "actions", label: "", width: ".25fr" }];
-  const tableRows = rows.map((row, index) => ({ id: `${row[0]}-${index}`, name: <span className="table-name"><i className={`row-icon color-${index % 4}`}><Database size={15} /></i><b>{row[0]}</b></span>, category: <StatusPill tone={row[1] === "退款" ? "red" : "blue"}>{row[1]}</StatusPill>, amount: <b className={String(row[2]).startsWith("-") ? "danger-text" : "money-green"}>{row[2]}</b>, date: row[3], method: row[4], project: row[5], status: <StatusPill tone={row[6] === "已退款" ? "blue" : "green"}>{row[6]}</StatusPill>, note: row[7], actions: <TableActions /> }));
-  return <div className="other-page"><MetricsRow metrics={metrics} />{rows.length ? <><FilterBar><SearchField value={search} onChange={setSearch} placeholder="搜索支出项目或关联项目" /><SelectButton>全部类别</SelectButton><SelectButton>全部状态</SelectButton><PrimaryButton onClick={() => onAction("expense")}>记录支出</PrimaryButton></FilterBar><SectionCard className="page-table-card"><PanelHeader title="支出记录明细" /><DataTable columns={columns} rows={tableRows} /><TableFooter total={rows.length} /></SectionCard></> : <EmptyLedgerNotice icon={Database} title="还没有支出记录" description="工具、外包、服务器和日常支出示例已经清空，可以录入自己的真实成本。" action={<button className="page-primary" onClick={() => onAction("expense")}><Plus size={18} />记录第一笔支出</button>} />}</div>;
+  const tableRows = rows.map((row, index) => ({ id: String(row[8] || `${row[0]}-${index}`), name: <span className="table-name"><i className={`row-icon color-${index % 4}`}><Database size={15} /></i><b>{row[0]}</b></span>, category: <StatusPill tone={row[1] === "退款" ? "red" : "blue"}>{row[1]}</StatusPill>, amount: <b className={String(row[2]).startsWith("-") ? "danger-text" : "money-green"}>{row[2]}</b>, date: row[3], method: row[4], project: row[5], status: <StatusPill tone={row[6] === "已退款" ? "blue" : "green"}>{row[6]}</StatusPill>, note: row[7], actions: row[8] ? <TableActions onView={() => onViewExpense(String(row[8]))} onEdit={() => onEditExpense(String(row[8]))} onDelete={() => onDeleteExpense(String(row[8]))} /> : <TableActions /> }));
+  return <div className="other-page"><MetricsRow metrics={metrics} />{snapshot.expenses.length ? <><FilterBar>{globalSearch ? <span className="range-field">顶部搜索：{globalSearch}</span> : <SearchField value={search} onChange={setSearch} placeholder="搜索支出项目或关联项目" />}<PrimaryButton onClick={() => onAction("expense")}>记录支出</PrimaryButton></FilterBar><SectionCard className="page-table-card"><PanelHeader title={query ? `支出搜索结果 · ${rows.length}` : "支出记录明细"} /><DataTable columns={columns} rows={tableRows} /><TableFooter total={rows.length} /></SectionCard></> : <EmptyLedgerNotice icon={Database} title="还没有支出记录" description="工具、外包、服务器和日常支出示例已经清空，可以录入自己的真实成本。" action={<button className="page-primary" onClick={() => onAction("expense")}><Plus size={18} />记录第一笔支出</button>} />}</div>;
 }
 
 const customerRows = [
@@ -411,7 +441,7 @@ function DataStatisticsHub({ snapshot }: { snapshot: LedgerSnapshot }) {
   return <div className="statistics-hub"><ProfitAnalysisPage snapshot={snapshot} /></div>;
 }
 
-function CleanGoalPlanPage({ snapshot }: { snapshot: LedgerSnapshot }) {
+function CleanGoalPlanPage({ snapshot, onEditGoal }: { snapshot: LedgerSnapshot; onEditGoal: () => void }) {
   const now = new Date();
   const monthIncome = snapshot.payments.filter((payment) => {
     const date = new Date(payment.paidAt);
@@ -428,7 +458,7 @@ function CleanGoalPlanPage({ snapshot }: { snapshot: LedgerSnapshot }) {
     { title: "任务完成情况", value: `${completedTasks}/${snapshot.tasks.length} 项`, detail: <>项目任务进度</>, tone: "purple", image: "/assets/pages/goal-book.png" },
     { title: "重点项目数", value: `${activeProjects.length} 个`, detail: <>当前进行中项目</>, tone: "orange", image: "/assets/pages/goal-folder.png" },
   ];
-  return <div className="other-page goal-page"><MetricsRow metrics={metrics} /><EmptyLedgerNotice icon={Target} title={goal || snapshot.projects.length || snapshot.tasks.length ? "目标看板已连接真实数据" : "从自己的目标开始"} description={goal || snapshot.projects.length || snapshot.tasks.length ? "当前只展示你录入的项目、收入和任务，不再补入任何示例目标。" : "示例目标、任务和学习计划已经清空。导入项目与收入后即可建立真实经营目标。"} /></div>;
+  return <div className="other-page goal-page"><MetricsRow metrics={metrics} /><EmptyLedgerNotice icon={Target} title={goal || snapshot.projects.length || snapshot.tasks.length ? "目标看板已连接真实数据" : "从自己的目标开始"} description={goal || snapshot.projects.length || snapshot.tasks.length ? "当前只展示你录入的项目、收入和任务，不再补入任何示例目标。" : "示例目标、任务和学习计划已经清空。先设置月度收入目标，再导入自己的经营数据。"} action={<button className="page-primary" onClick={onEditGoal}><PencilSimple size={16} />{goal ? "编辑月度目标" : "设置月度目标"}</button>} /></div>;
 }
 
 function GoalPlanPage({ snapshot }: { snapshot: LedgerSnapshot }) {
@@ -454,39 +484,111 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: () =
   return <button type="button" aria-label={label} aria-pressed={checked} className={`toggle ${checked ? "on" : ""}`} onClick={onChange}><i /></button>;
 }
 
-function SettingsCenterPage({ snapshot, onToast }: { snapshot: LedgerSnapshot; onToast: (message: string) => void }) {
+function SettingsCenterPage({ snapshot, onSnapshotChange, onToast }: { snapshot: LedgerSnapshot; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onToast: (message: string) => void }) {
   const [section, setSection] = useState("记账设置");
-  const [toggles, setToggles] = useState({ days: true, message: true, payment: true, goal: true, backup: true });
-  const [theme, setTheme] = useState("#6544f4");
-  const flip = (key: keyof typeof toggles) => setToggles((current) => ({ ...current, [key]: !current[key] }));
+  const [theme, setTheme] = useState(snapshot.settings.themeColor || "#6544f4");
+  const toggles = { days: true, message: snapshot.settings.notificationsEnabled ?? true, payment: snapshot.settings.paymentRemindersEnabled ?? true, goal: snapshot.settings.goalRemindersEnabled ?? true, backup: snapshot.settings.autoBackupEnabled ?? true };
+  const updateSettings = (changes: Partial<LedgerSnapshot["settings"]>) => onSnapshotChange({ ...snapshot, settings: { ...snapshot.settings, ...changes } });
+  const flip = (key: keyof typeof toggles) => {
+    if (key === "message") updateSettings({ notificationsEnabled: !toggles.message });
+    if (key === "payment") updateSettings({ paymentRemindersEnabled: !toggles.payment });
+    if (key === "goal") updateSettings({ goalRemindersEnabled: !toggles.goal });
+    if (key === "backup") updateSettings({ autoBackupEnabled: !toggles.backup });
+  };
+  useEffect(() => {
+    document.documentElement.style.setProperty("--purple", snapshot.settings.themeColor || "#6544f4");
+    document.documentElement.dataset.theme = snapshot.settings.colorMode || "light";
+  }, [snapshot.settings.colorMode, snapshot.settings.themeColor]);
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `咸鱼经营数据-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    onToast("经营数据备份已导出");
+  };
   const recordCount = snapshot.projects.length + snapshot.payments.length + snapshot.expenses.length + snapshot.customers.length;
   const menu = [["个人资料", User], ["记账设置", GearSix], ["项目默认值", SquaresFour], ["提醒通知", Bell], ["数据与同步", CloudArrowUp], ["界面主题", Palette]] as Array<[string, PhosphorIcon]>;
   return <div className="other-page settings-page"><div className="settings-layout"><SectionCard className="settings-nav">{menu.map(([label, Icon]) => <button className={section === label ? "active" : ""} onClick={() => { setSection(label); document.getElementById(`settings-${label}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); }} key={label}><Icon size={18} />{label}</button>)}</SectionCard><main className="settings-main"><SectionCard id="settings-记账设置" className="settings-group"><PanelHeader title="记账与偏好设置" /><SettingRow icon={CalendarBlank} title="闲鱼开始运营日期" description="用于计算运营天数与阶段数据" control={<span className="setting-control">{snapshot.settings.xianyuStartedAt} <CalendarBlank size={15} /></span>} /><SettingRow icon={ArrowClockwise} title="默认工期" description="新建项目时的默认工期" control={<SelectButton>30 天</SelectButton>} tone="blue" /><SettingRow icon={Database} title="默认收款类型" description="新建项目收款方式的默认选项" control={<SelectButton>全款收取</SelectButton>} tone="green" /><SettingRow icon={Target} title="月度目标金额" description="设置每月收入目标，助力达成计划" control={<span className="setting-control">{snapshot.settings.monthlyIncomeGoal ? `¥ ${snapshot.settings.monthlyIncomeGoal.toLocaleString()}` : "未设置"}</span>} tone="orange" /><SettingRow icon={ChartBar} title="自动计算运营天数" description="根据运营开始日期，自动计算运营天数" control={<Toggle checked={toggles.days} onChange={() => flip("days")} label="自动计算运营天数" />} /><SettingRow icon={ChartBar} title="显示数据小数位" description="金额与比例的小数位数" control={<SelectButton>2 位小数</SelectButton>} tone="blue" /></SectionCard><SectionCard id="settings-提醒通知" className="settings-group"><PanelHeader title="提醒与通知设置" /><SettingRow icon={Bell} title="消息提醒" description="开启后将接收站内消息提醒" control={<Toggle checked={toggles.message} onChange={() => flip("message")} label="消息提醒" />} tone="blue" /><SettingRow icon={Bell} title="项目到期提醒" description="项目即将到期或逾期时提醒" control={<SelectButton>提前 3 天</SelectButton>} tone="orange" /><SettingRow icon={Bell} title="收款提醒" description="有收款记录或到账时提醒" control={<Toggle checked={toggles.payment} onChange={() => flip("payment")} label="收款提醒" />} tone="green" /><SettingRow icon={Bell} title="月度目标进度提醒" description="每月进度达成 50%、80%、100% 时提醒" control={<Toggle checked={toggles.goal} onChange={() => flip("goal")} label="目标进度提醒" />} /></SectionCard><SectionCard id="settings-数据与同步" className="settings-group"><PanelHeader title="数据与备份设置" /><SettingRow icon={CloudArrowUp} title="自动备份" description="每日自动备份数据，保障数据安全" control={<Toggle checked={toggles.backup} onChange={() => flip("backup")} label="自动备份" />} tone="blue" /><SettingRow icon={ArrowClockwise} title="备份时间" description="选择每日自动备份的时间点" control={<SelectButton>23:30</SelectButton>} tone="orange" /><SettingRow icon={DownloadSimple} title="导出数据" description="将所有数据导出为 Excel 文件" control={<button className="outline-action" onClick={() => onToast("数据导出任务已创建")}>导出 Excel</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="清理本地缓存，释放空间" control={<button className="outline-action" onClick={() => onToast("缓存已清理")}>清理缓存</button>} tone="red" /></SectionCard><SectionCard id="settings-界面主题" className="theme-settings"><PanelHeader title="界面主题与外观" /><div className="mode-choice"><span><i />深浅主题<small>选择你喜欢的界面模式</small></span><button className="active">浅色模式</button><button>深色模式</button></div><div className="theme-colors"><span><b>主题色彩</b><small>自定义主题主色</small></span>{["#6544f4", "#4c8cf5", "#25c879", "#ffac18", "#f35b68", "#12b9cd"].map((color) => <button aria-label={`选择主题色 ${color}`} className={theme === color ? "active" : ""} style={{ background: color }} onClick={() => { setTheme(color); onToast("主题色已更新"); }} key={color} />)}<button className="rainbow" aria-label="自定义主题色" /></div></SectionCard></main><aside className="settings-right"><SectionCard className="security-card"><PanelHeader title="账户安全" /><img src="/assets/pages/settings-shield.png" alt="账户安全盾牌" /><h3><i />安全等级：高</h3><p>您的账户安全状态良好</p><Progress value={78} tone="green" /><SettingRow icon={Lock} title="登录密码" description="未设置" control={<button className="text-action">设置</button>} tone="green" /><SettingRow icon={DesktopTower} title="手机绑定" description="未绑定" control={<button className="text-action">绑定</button>} tone="green" /><SettingRow icon={Envelope} title="邮箱绑定" description="未绑定" control={<button className="text-action">绑定</button>} tone="green" /><SettingRow icon={DesktopTower} title="登录设备管理" description="当前设备" control={<button className="text-action">管理</button>} tone="green" /></SectionCard><SectionCard className="sync-card"><PanelHeader title="数据同步状态" /><img src="/assets/pages/settings-cloud.png" alt="云端同步插画" /><h3><CheckCircle size={16} weight="fill" />本地数据正常</h3><p>你的业务数据保存在当前设备</p><ul><li><ArrowClockwise size={16} />数据状态 <time>已就绪</time></li><li><CloudArrowUp size={16} />同步来源 <time>本地设备</time></li><li><Database size={16} />业务数据量 <time>{recordCount} 条记录</time></li><li><DesktopTower size={16} />本地缓存 <time>已启用</time></li></ul><button className="sync-now" onClick={() => onToast("本地数据已保存")}><ArrowClockwise size={17} />立即保存</button></SectionCard></aside></div></div>;
 }
 
-export function OtherPages({ page, snapshot, onQuickAdd }: OtherPagesProps) {
+function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast }: { snapshot: LedgerSnapshot; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onToast: (message: string) => void }) {
+  const [section, setSection] = useState("个人资料");
+  const settings = snapshot.settings;
+  const update = (changes: Partial<LedgerSnapshot["settings"]>) => onSnapshotChange({ ...snapshot, settings: { ...settings, ...changes } });
+  const sections = [["个人资料", User], ["记账设置", GearSix], ["项目默认值", SquaresFour], ["提醒通知", Bell], ["数据与同步", CloudArrowUp], ["界面主题", Palette]] as Array<[string, PhosphorIcon]>;
+  const recordCount = snapshot.projects.length + snapshot.payments.length + snapshot.expenses.length + snapshot.customers.length + snapshot.tasks.length;
+  useEffect(() => {
+    document.documentElement.style.setProperty("--purple", settings.themeColor || "#6544f4");
+    document.documentElement.dataset.theme = settings.colorMode || "light";
+  }, [settings.colorMode, settings.themeColor]);
+  const exportBackup = () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `咸鱼经营数据-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    onToast("经营数据备份已导出");
+  };
+  const go = (label: string) => {
+    setSection(label);
+    document.getElementById(`settings-live-${label}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  return <div className="other-page settings-page"><div className="settings-layout">
+    <SectionCard className="settings-nav">{sections.map(([label, Icon]) => <button className={section === label ? "active" : ""} onClick={() => go(label)} key={label}><Icon size={18} />{label}</button>)}</SectionCard>
+    <main className="settings-main">
+      <SectionCard id="settings-live-个人资料" className="settings-group"><PanelHeader title="个人资料" /><SettingRow icon={User} title="当前使用者" description="本地经营数据的显示名称" control={<span className="setting-control">张同学</span>} /><SettingRow icon={DesktopTower} title="数据位置" description="数据保存在当前浏览器与设备" control={<span className="setting-control">本地设备</span>} tone="blue" /></SectionCard>
+      <SectionCard id="settings-live-记账设置" className="settings-group"><PanelHeader title="记账与偏好设置" /><SettingRow icon={CalendarBlank} title="闲鱼开始运营日期" description="用于计算运营天数与阶段数据" control={<input className="setting-control" type="date" value={settings.xianyuStartedAt} onChange={(event) => update({ xianyuStartedAt: event.target.value })} />} /><SettingRow icon={Target} title="月度目标金额" description="首页与目标计划会实时读取" control={<input className="setting-control" type="number" min="0" value={settings.monthlyIncomeGoal} onChange={(event) => update({ monthlyIncomeGoal: Math.max(0, Number(event.target.value) || 0) })} />} tone="orange" /><SettingRow icon={ChartBar} title="显示数据小数位" description="金额与比例的小数位数" control={<select className="setting-control" value={settings.decimalPlaces ?? 2} onChange={(event) => update({ decimalPlaces: Number(event.target.value) })}><option value="0">0 位</option><option value="2">2 位</option></select>} tone="blue" /></SectionCard>
+      <SectionCard id="settings-live-项目默认值" className="settings-group"><PanelHeader title="项目默认值" /><SettingRow icon={ArrowClockwise} title="默认工期" description="新建项目时自动填入" control={<input className="setting-control" type="number" min="1" value={settings.defaultDurationDays || 30} onChange={(event) => update({ defaultDurationDays: Math.max(1, Number(event.target.value) || 30) })} />} tone="blue" /><SettingRow icon={Database} title="默认收款类型" description="快速记账的默认选项" control={<select className="setting-control" value={settings.defaultPaymentType || "full"} onChange={(event) => update({ defaultPaymentType: event.target.value as LedgerSnapshot["settings"]["defaultPaymentType"] })}><option value="deposit">定金</option><option value="milestone">阶段款</option><option value="final">尾款</option><option value="full">全款</option></select>} tone="green" /></SectionCard>
+      <SectionCard id="settings-live-提醒通知" className="settings-group"><PanelHeader title="提醒与通知设置" /><SettingRow icon={Bell} title="消息提醒" description="控制顶部经营提醒数量" control={<Toggle checked={settings.notificationsEnabled ?? true} onChange={() => update({ notificationsEnabled: !(settings.notificationsEnabled ?? true) })} label="消息提醒" />} tone="blue" /><SettingRow icon={Bell} title="项目到期提醒" description="决定临近交付项目的提醒范围" control={<select className="setting-control" value={settings.reminderDays || 3} onChange={(event) => update({ reminderDays: Number(event.target.value) })}><option value="1">提前 1 天</option><option value="3">提前 3 天</option><option value="7">提前 7 天</option></select>} tone="orange" /><SettingRow icon={Bell} title="收款提醒" description="控制待收节点和回款提醒列表" control={<Toggle checked={settings.paymentRemindersEnabled ?? true} onChange={() => update({ paymentRemindersEnabled: !(settings.paymentRemindersEnabled ?? true) })} label="收款提醒" />} tone="green" /></SectionCard>
+      <SectionCard id="settings-live-数据与同步" className="settings-group"><PanelHeader title="数据与备份设置" /><SettingRow icon={CloudArrowUp} title="自动保存" description="每次业务操作后都会写入当前设备" control={<span className="setting-control">始终开启</span>} tone="blue" /><SettingRow icon={DownloadSimple} title="导出数据" description="下载完整 JSON 备份，可用于迁移" control={<button className="outline-action" onClick={exportBackup}>导出备份</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="业务数据不是缓存，不会被删除" control={<button className="outline-action" onClick={() => onToast("无需清理：经营数据已安全保留")}>检查缓存</button>} tone="red" /></SectionCard>
+      <SectionCard id="settings-live-界面主题" className="theme-settings"><PanelHeader title="界面主题与外观" /><div className="mode-choice"><span><i />界面模式<small>当前产品保持浅色 SaaS 设计</small></span><button className="active" onClick={() => update({ colorMode: "light" })}>浅色模式</button><button disabled title="当前浅色设计暂未提供深色配色">深色模式</button></div><div className="theme-colors"><span><b>主题色彩</b><small>主要按钮与选中状态使用该颜色</small></span>{["#6544f4", "#4c8cf5", "#25c879", "#ffac18", "#f35b68", "#12b9cd"].map((color) => <button aria-label={`选择主题色 ${color}`} className={(settings.themeColor || "#6544f4") === color ? "active" : ""} style={{ background: color }} onClick={() => update({ themeColor: color })} key={color} />)}</div></SectionCard>
+    </main>
+    <aside className="settings-right"><SectionCard className="security-card"><PanelHeader title="账户与数据说明" /><img src="/assets/pages/settings-shield.png" alt="本地数据安全盾牌" /><h3><i />当前为本地模式</h3><p>不依赖第三方账号，数据仅在当前浏览器保存</p><Progress value={100} tone="green" /><SettingRow icon={Lock} title="登录密码" description="本地模式无需登录" control={<button className="text-action" onClick={() => onToast("当前是本地模式，无需设置登录密码")}>说明</button>} tone="green" /><SettingRow icon={Envelope} title="账号绑定" description="未接入在线账号系统" control={<button className="text-action" onClick={() => onToast("账号绑定尚未接入，经营数据不受影响")}>说明</button>} tone="green" /></SectionCard><SectionCard className="sync-card"><PanelHeader title="数据保存状态" /><img src="/assets/pages/settings-cloud.png" alt="本地数据插画" /><h3><CheckCircle size={16} weight="fill" />本地数据正常</h3><p>每次新增与修改都会立即保存</p><ul><li><ArrowClockwise size={16} />数据状态 <time>已就绪</time></li><li><CloudArrowUp size={16} />保存位置 <time>当前设备</time></li><li><Database size={16} />业务数据量 <time>{recordCount} 条记录</time></li></ul><button className="sync-now" onClick={() => { onSnapshotChange({ ...snapshot }); onToast("当前经营数据已保存"); }}><ArrowClockwise size={17} />立即保存</button></SectionCard></aside>
+  </div></div>;
+}
+
+export function OtherPages({ page, snapshot, onQuickAdd, onSnapshotChange, onNavigate, globalSearch }: OtherPagesProps) {
   const [modal, setModal] = useState<ActionKind | null>(null);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
-  const [extraProjects, setExtraProjects] = useState<string[][]>([]);
-  const [extraExpenses, setExtraExpenses] = useState<string[][]>([]);
-  const [extraCustomers, setExtraCustomers] = useState<string[][]>([]);
-  const created = (kind: ActionKind, value: { name: string; amount: string }) => {
-    if (kind === "project") setExtraProjects((items) => [[value.name, "新客户", `¥${Number(value.amount || 0).toLocaleString()}.00`, "待开始", "2025-05-28", "2025-06-28", "0", "30天", "待开始"], ...items]);
-    if (kind === "expense") setExtraExpenses((items) => [[value.name, "其他", `¥${Number(value.amount || 0).toLocaleString()}.00`, "2025-05-28 14:30", "支付宝", "未关联项目", "已支付", "新记录"], ...items]);
-    if (kind === "customer") setExtraCustomers((items) => [[value.name, "手动新增", value.amount, "暂无项目", "¥0.00", "初步沟通", "2025-05-28", "新客户"], ...items]);
+  const created = (kind: ActionKind, value: CrudValue) => {
+    const next = JSON.parse(JSON.stringify(snapshot)) as LedgerSnapshot;
+    const stamp = Date.now();
+    const today = new Date();
+    if (kind === "project") {
+      let customer = next.customers.find((item) => item.name.trim() === value.customerName.trim());
+      if (!customer) {
+        customer = { id: `c-${stamp}`, name: value.customerName, source: "xianyu", phone: "待补充", followUpStatus: "contacted", lastContactAt: today.toISOString(), level: "C", tags: ["项目客户"] };
+        next.customers.unshift(customer);
+      }
+      const due = new Date(today);
+      due.setDate(due.getDate() + Math.max(1, Number(value.durationDays) || 30));
+      next.projects.unshift({ id: `p-${stamp}`, name: value.name, customerId: customer.id, totalAmount: Number(value.amount), startDate: today.toISOString().slice(0, 10), dueDate: due.toISOString().slice(0, 10), progress: 0, status: "pending", notes: value.notes || undefined, type: "定制开发", estimatedHours: Math.max(1, Number(value.durationDays) || 30) * 5, accent: "blue" });
+    }
+    if (kind === "expense") {
+      const expense = { id: editingExpenseId || `e-${stamp}`, projectId: value.projectId || undefined, name: value.name, category: value.category as "software" | "outsourcing" | "server" | "office" | "refund" | "other", amount: Number(value.amount), paidAt: next.expenses.find((item) => item.id === editingExpenseId)?.paidAt || today.toISOString(), notes: value.notes || undefined };
+      next.expenses = editingExpenseId ? next.expenses.map((item) => item.id === editingExpenseId ? expense : item) : [expense, ...next.expenses];
+    }
+    if (kind === "customer") next.customers.unshift({ id: `c-${stamp}`, name: value.name, source: value.source as "xianyu" | "wechat" | "referral" | "other", phone: value.amount, followUpStatus: "new", lastContactAt: today.toISOString(), level: value.level, tags: value.notes ? value.notes.split(/[,，]/).map((item) => item.trim()).filter(Boolean) : ["新客户"] });
+    onSnapshotChange(next);
+    setEditingExpenseId(null);
     setModal(null);
     setToast(`${value.name} 已保存`);
     window.setTimeout(() => setToast(""), 2200);
   };
   const content = useMemo(() => {
-    if (page === "项目管理") return <EnhancedProjectManagementPage snapshot={snapshot} onQuickAdd={onQuickAdd} />;
-    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} />;
-    if (page === "支出记录") return <CleanExpenseRecordsPage snapshot={snapshot} onAction={setModal} extraRows={extraExpenses} />;
-    if (page === "客户管理") return <EnhancedCustomerManagementPage snapshot={snapshot} />;
+    if (page === "项目管理") return <EnhancedProjectManagementPage snapshot={snapshot} onCreateProject={() => setModal("project")} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
+    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
+    if (page === "支出记录") return <CleanExpenseRecordsPage snapshot={snapshot} onAction={setModal} extraRows={[]} globalSearch={globalSearch} onViewExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense) { setToast(`${expense.name} · ¥${expense.amount.toLocaleString()} · ${expense.notes || "无备注"}`); window.setTimeout(() => setToast(""), 3200); } }} onEditExpense={(id) => { setEditingExpenseId(id); setModal("expense"); }} onDeleteExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense && window.confirm(`确认删除支出“${expense.name}”？此操作无法撤销。`)) { onSnapshotChange({ ...snapshot, expenses: snapshot.expenses.filter((item) => item.id !== id) }); setToast(`${expense.name} 已删除`); window.setTimeout(() => setToast(""), 2200); } }} />;
+    if (page === "客户管理") return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setModal("customer")} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
     if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
-    if (page === "目标计划") return <CleanGoalPlanPage snapshot={snapshot} />;
+    if (page === "目标计划") return <CleanGoalPlanPage snapshot={snapshot} onEditGoal={() => { onNavigate("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />;
     if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} />;
-    return <SettingsCenterPage snapshot={snapshot} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
-  }, [extraCustomers, extraExpenses, extraProjects, onQuickAdd, page, snapshot]);
-  return <>{content}{modal && <CrudModal kind={modal} onClose={() => setModal(null)} onCreated={created} />}{toast && <div className="page-toast"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
+    return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
+  }, [globalSearch, onNavigate, onQuickAdd, onSnapshotChange, page, snapshot]);
+  return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
 }

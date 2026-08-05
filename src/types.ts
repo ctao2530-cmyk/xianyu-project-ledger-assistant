@@ -85,6 +85,7 @@ export interface ProjectAttachment {
   size: string;
   type: "document" | "design" | "archive";
   uploadedAt: string;
+  dataUrl?: string;
 }
 
 export interface Expense {
@@ -100,6 +101,17 @@ export interface Expense {
 export interface OperationSettings {
   xianyuStartedAt: string;
   monthlyIncomeGoal: number;
+  defaultDurationDays?: number;
+  defaultPaymentType?: PaymentType;
+  reminderDays?: number;
+  decimalPlaces?: number;
+  notificationsEnabled?: boolean;
+  paymentRemindersEnabled?: boolean;
+  goalRemindersEnabled?: boolean;
+  autoBackupEnabled?: boolean;
+  backupTime?: string;
+  themeColor?: string;
+  colorMode?: "light" | "dark";
 }
 
 export interface LedgerSnapshot {
@@ -121,5 +133,8 @@ export interface QuickAccountingFormValue {
   type: PaymentType;
   paidAt: string;
   durationDays: number;
+  contractTotal?: number;
+  status?: "pending" | "confirmed";
+  dueAt?: string;
   notes?: string;
 }

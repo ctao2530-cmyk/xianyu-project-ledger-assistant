@@ -339,16 +339,19 @@ function TopHeader({
   onMenu,
   activePage,
   notificationCount,
+  onNavigate,
 }: {
   search: string;
   onSearch: (value: string) => void;
   onMenu: () => void;
   activePage: string;
   notificationCount: number;
+  onNavigate: (page: string) => void;
 }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const meta = pageMeta[activePage] || pageMeta["首页概览"];
+  const searchable = ["首页概览", "项目管理", "收入记录", "支出记录", "客户管理"].includes(activePage);
 
   return (
     <header className="top-header">
@@ -365,8 +368,9 @@ function TopHeader({
         <input
           value={search}
           onChange={(event) => onSearch(event.target.value)}
-          placeholder={meta.placeholder}
+          placeholder={searchable ? meta.placeholder : "当前页面无需搜索"}
           aria-label="搜索项目、客户或订单"
+          disabled={!searchable}
         />
       </label>
       <div className="header-actions">
@@ -384,12 +388,14 @@ function TopHeader({
             <div className="header-popover notification-popover">
               <strong>智能提醒</strong>
               {notificationCount > 0 ? <p>{notificationCount} 条经营事项待处理</p> : <p>暂无待处理提醒</p>}
+              {notificationCount > 0 && <button onClick={() => { onNavigate("收入记录"); setNotificationsOpen(false); }}>查看待处理事项</button>}
             </div>
           )}
         </div>
         <div className="popover-anchor">
           <button
             className="profile-button"
+            aria-label="打开个人与账户设置"
             aria-expanded={profileOpen}
             onClick={() => setProfileOpen((value) => !value)}
           >
@@ -399,8 +405,8 @@ function TopHeader({
           </button>
           {profileOpen && (
             <div className="header-popover profile-popover">
-              <button>个人资料</button>
-              <button>账户设置</button>
+              <button onClick={() => { onNavigate("设置中心"); setProfileOpen(false); }}>个人资料</button>
+              <button onClick={() => { onNavigate("设置中心"); setProfileOpen(false); }}>账户设置</button>
             </div>
           )}
         </div>
@@ -505,7 +511,7 @@ function IncomeTrendCard({ payments }: { payments: Payment[] }) {
     <Card className="trend-card">
       <CardHeader
         title="收入趋势"
-        action={<button className="subtle-select">近30天 <CaretDown size={15} /></button>}
+        action={<span className="subtle-select" aria-label="统计周期：近30天">近30天</span>}
       />
       <span className="chart-unit">单位：元</span>
       <div className="trend-chart" aria-label="近 30 天收入趋势图">
@@ -544,12 +550,12 @@ const projectIcons: Record<Project["accent"], PhosphorIcon> = {
   orange: ClipboardText,
 };
 
-function ActiveProjectsCard({ projects }: { projects: Project[] }) {
+function ActiveProjectsCard({ projects, onNavigate }: { projects: Project[]; onNavigate: () => void }) {
   const active = projects.filter((project) => project.status === "in_progress").slice(0, 3);
 
   return (
     <Card className="projects-card" id="active-projects">
-      <CardHeader title="进行中的项目" action={<button className="text-button">查看全部 <CaretRight size={14} /></button>} />
+      <CardHeader title="进行中的项目" action={<button className="text-button" onClick={onNavigate}>查看全部 <CaretRight size={14} /></button>} />
       <div className="project-list">
         {active.length ? active.map((project) => {
           const Icon = projectIcons[project.accent];
@@ -595,17 +601,19 @@ function PaymentTable({
   payments,
   projects,
   customers,
+  onNavigate,
 }: {
   payments: Payment[];
   projects: Project[];
   customers: Customer[];
+  onNavigate: () => void;
 }) {
   const getProject = (id: string) => projects.find((project) => project.id === id);
   const getCustomer = (id: string) => customers.find((customer) => customer.id === id);
 
   return (
     <Card className="payments-card" id="payment-records">
-      <CardHeader title="最新收款记录" action={<button className="text-button">查看全部 <CaretRight size={14} /></button>} />
+      <CardHeader title="最新收款记录" action={<button className="text-button" onClick={onNavigate}>查看全部 <CaretRight size={14} /></button>} />
       <div className="payment-table" role="table" aria-label="最新收款记录">
         <div className="payment-table-head" role="row">
           <span>项目名称</span><span>客户</span><span>金额（元）</span><span>收款时间</span><span>备注</span>
@@ -680,7 +688,7 @@ function OperatingInsightStrip({
   </Card>;
 }
 
-function ReminderCard({ projects, payments }: { projects: Project[]; payments: Payment[] }) {
+function ReminderCard({ projects, payments, onNavigate }: { projects: Project[]; payments: Payment[]; onNavigate: () => void }) {
   const nearest = projects
     .filter((project) => project.status === "in_progress")
     .sort((a, b) => remainingDays(a.dueDate) - remainingDays(b.dueDate));
@@ -693,18 +701,18 @@ function ReminderCard({ projects, payments }: { projects: Project[]; payments: P
         {nearest.slice(0, 2).map((project) => (
           <li key={project.id}><i /><span>项目「{project.name}」{remainingDays(project.dueDate) === 1 ? "明日" : `${remainingDays(project.dueDate)}天后`}交付</span><time>{new Date(`${project.dueDate}T00:00:00`).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}</time></li>
         ))}
-        {pendingFinal && <li><i /><span>项目尾款待收</span><strong>{compactCurrency.format(pendingFinal.amount)}</strong><button>去处理</button></li>}
+        {pendingFinal && <li><i /><span>项目尾款待收</span><strong>{compactCurrency.format(pendingFinal.amount)}</strong><button onClick={onNavigate}>去处理</button></li>}
         {reminderCount === 0 && <li className="reminder-empty"><CheckCircle size={17} weight="fill" /><span>暂无待处理事项</span></li>}
       </ul>
     </Card>
   );
 }
 
-function MonthlyGoalCard({ current, goal }: { current: number; goal: number }) {
+function MonthlyGoalCard({ current, goal, onEdit }: { current: number; goal: number; onEdit: () => void }) {
   const progress = goal > 0 ? Math.min(100, (current / goal) * 100) : 0;
   return (
     <Card className="goal-card">
-      <CardHeader title="本月目标" action={<button className="text-button">编辑目标 <CaretRight size={14} /></button>} />
+      <CardHeader title="本月目标" action={<button className="text-button" onClick={onEdit}>编辑目标 <CaretRight size={14} /></button>} />
       <div className="goal-copy">
         <span>月收入目标</span>
         <strong>{compactCurrency.format(current)} <small>/ {goal > 0 ? goal.toLocaleString("zh-CN") : "未设置"}</small></strong>
@@ -716,7 +724,7 @@ function MonthlyGoalCard({ current, goal }: { current: number; goal: number }) {
   );
 }
 
-function CustomerSourceCard({ customers }: { customers: Customer[] }) {
+function CustomerSourceCard({ customers, onNavigate }: { customers: Customer[]; onNavigate: () => void }) {
   const data = [
     { name: "咸鱼平台", value: customers.filter((item) => item.source === "xianyu").length, color: "#4ea0ff" },
     { name: "老客户介绍", value: customers.filter((item) => item.source === "referral").length, color: "#5a4ef4" },
@@ -725,7 +733,7 @@ function CustomerSourceCard({ customers }: { customers: Customer[] }) {
   const total = customers.length;
   return (
     <Card className="source-card">
-      <CardHeader title="客户来源分析（本月）" action={<button className="text-button">查看详情 <CaretRight size={14} /></button>} />
+      <CardHeader title="客户来源分析（本月）" action={<button className="text-button" onClick={onNavigate}>查看详情 <CaretRight size={14} /></button>} />
       <div className="source-content">
         <div className="source-donut">
           <ResponsiveContainer width="100%" height="100%">
@@ -747,7 +755,7 @@ function CustomerSourceCard({ customers }: { customers: Customer[] }) {
   );
 }
 
-function DeliveryCountdownCard({ projects }: { projects: Project[] }) {
+function DeliveryCountdownCard({ projects, onNavigate }: { projects: Project[]; onNavigate: () => void }) {
   const active = projects.filter((project) => project.status === "in_progress");
   const days = Math.max(0, ...active.map((project) => remainingDays(project.dueDate)));
   return (
@@ -755,7 +763,7 @@ function DeliveryCountdownCard({ projects }: { projects: Project[] }) {
       <CardHeader title="发货倒计时" />
       <strong>{days}<small>天</small></strong>
       <span>{active.length} 个项目待交付</span>
-      <button onClick={() => document.querySelector("#active-projects")?.scrollIntoView({ behavior: "smooth" })}>
+      <button onClick={onNavigate}>
         去看项目 <ArrowRight size={15} weight="bold" />
       </button>
     </Card>
@@ -766,12 +774,14 @@ function QuickAccountingDrawer({
   open,
   projects,
   customers,
+  settings,
   onClose,
   onSubmit,
 }: {
   open: boolean;
   projects: Project[];
   customers: Customer[];
+  settings: LedgerSnapshot["settings"];
   onClose: () => void;
   onSubmit: (value: QuickAccountingFormValue) => Promise<void>;
 }) {
@@ -783,13 +793,22 @@ function QuickAccountingDrawer({
   const [projectName, setProjectName] = useState(projects[0]?.name || "");
   const [customerName, setCustomerName] = useState(customers[0]?.name || "");
   const [amount, setAmount] = useState("");
-  const [type, setType] = useState<PaymentType>("deposit");
+  const [type, setType] = useState<PaymentType>(settings.defaultPaymentType || "deposit");
   const [paidAt, setPaidAt] = useState(initialDate);
-  const [durationDays, setDurationDays] = useState("7");
+  const [durationDays, setDurationDays] = useState(String(settings.defaultDurationDays || 30));
+  const [contractTotal, setContractTotal] = useState("");
+  const [recordStatus, setRecordStatus] = useState<"confirmed" | "pending">("confirmed");
+  const [dueAt, setDueAt] = useState(() => new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const projectInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setType(settings.defaultPaymentType || "deposit");
+    setDurationDays(String(settings.defaultDurationDays || 30));
+  }, [open, settings.defaultDurationDays, settings.defaultPaymentType]);
 
   useEffect(() => {
     if (!open) return;
@@ -823,11 +842,15 @@ function QuickAccountingDrawer({
       type,
       paidAt,
       durationDays: Number(durationDays),
+      contractTotal: contractTotal ? Number(contractTotal) : undefined,
+      status: recordStatus,
+      dueAt,
       notes: notes.trim() || undefined,
     });
     setSubmitting(false);
     setAmount("");
     setNotes("");
+    setContractTotal("");
     setPaidAt(initialDate());
     setErrors({});
   };
@@ -837,7 +860,7 @@ function QuickAccountingDrawer({
       <button className="drawer-backdrop" aria-label="关闭快速记账" onClick={onClose} tabIndex={open ? 0 : -1} />
       <aside className="quick-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
         <div className="drawer-header">
-          <div><span>快速记账</span><h2 id="drawer-title">记录一笔确认到账</h2></div>
+          <div><span>快速记账</span><h2 id="drawer-title">{recordStatus === "confirmed" ? "记录一笔确认到账" : "新增一个待收节点"}</h2></div>
           <button aria-label="关闭" onClick={onClose}><X size={22} /></button>
         </div>
         <form onSubmit={submit} noValidate>
@@ -866,6 +889,23 @@ function QuickAccountingDrawer({
               </select>
             </label>
           </div>
+          <div className="form-row">
+            <label>
+              <span>记录状态</span>
+              <select value={recordStatus} onChange={(event) => setRecordStatus(event.target.value as "confirmed" | "pending")}>
+                <option value="confirmed">已确认到账</option>
+                <option value="pending">计划待收款</option>
+              </select>
+            </label>
+            <label>
+              <span>应收日期</span>
+              <input type="date" value={dueAt} onChange={(event) => setDueAt(event.target.value)} />
+            </label>
+          </div>
+          <label>
+            <span>合同总额（新项目）</span>
+            <input type="number" min="0" step="0.01" value={contractTotal} onChange={(event) => setContractTotal(event.target.value)} placeholder="不填则使用本次金额" />
+          </label>
           <label>
             <span>收款时间</span>
             <input type="datetime-local" value={paidAt} onChange={(event) => setPaidAt(event.target.value)} />
@@ -880,9 +920,9 @@ function QuickAccountingDrawer({
             <span>备注</span>
             <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="补充本次收款说明（可选）" rows={4} />
           </label>
-          <div className="drawer-tip"><Lightbulb size={19} weight="duotone" />收入数据只统计已确认到账的记录。</div>
+          <div className="drawer-tip"><Lightbulb size={19} weight="duotone" />待收节点会进入回款提醒；只有确认到账才计入收入。</div>
           <button className="submit-payment" type="submit" disabled={submitting}>
-            {submitting ? <><span className="spinner" />正在记账...</> : <><CheckCircle size={20} weight="fill" />确认到账并保存</>}
+            {submitting ? <><span className="spinner" />正在保存...</> : <><CheckCircle size={20} weight="fill" />{recordStatus === "confirmed" ? "确认到账并保存" : "保存待收节点"}</>}
           </button>
         </form>
       </aside>
@@ -914,7 +954,7 @@ function DashboardLayout({
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [success, setSuccess] = useState<number | null>(null);
+  const [success, setSuccess] = useState<{ amount: number; status: "pending" | "confirmed" } | null>(null);
 
   useLayoutEffect(() => {
     const scrollingElement = document.scrollingElement;
@@ -951,8 +991,8 @@ function DashboardLayout({
     .reduce((sum, expense) => sum + expense.amount, 0);
   const operationDays = diffInDays(snapshot.settings.xianyuStartedAt);
   const businessSummary = getBusinessSummary(snapshot);
-  const notificationCount = snapshot.projects.filter((project) => project.status === "in_progress" && remainingDays(project.dueDate) <= 3).length
-    + snapshot.payments.filter((payment) => payment.status === "pending").length;
+  const notificationCount = snapshot.settings.notificationsEnabled === false ? 0 : snapshot.projects.filter((project) => project.status === "in_progress" && remainingDays(project.dueDate) <= (snapshot.settings.reminderDays || 3)).length
+    + (snapshot.settings.paymentRemindersEnabled === false ? 0 : snapshot.payments.filter((payment) => payment.status === "pending").length);
 
   const normalizedSearch = search.trim().toLowerCase();
   const filteredProjects = normalizedSearch
@@ -973,7 +1013,7 @@ function DashboardLayout({
     const next = await mockLedgerService.addConfirmedPayment(snapshot, value);
     onSnapshotChange(next);
     setDrawerOpen(false);
-    setSuccess(value.amount);
+    setSuccess({ amount: value.amount, status: value.status || "confirmed" });
     window.setTimeout(() => setSuccess(null), 2700);
   };
 
@@ -1039,7 +1079,7 @@ function DashboardLayout({
         projects={snapshot.projects}
       />
       <main className="dashboard-main">
-        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} notificationCount={notificationCount} />
+        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} notificationCount={notificationCount} onNavigate={changePage} />
         {activeNav === "首页概览" && normalizedSearch && (
           <div className="search-status">
             <MagnifyingGlass size={16} />“{search}” 找到 {filteredProjects.length} 个项目、{filteredPayments.length} 笔收款
@@ -1053,24 +1093,24 @@ function DashboardLayout({
           <OperatingInsightStrip snapshot={snapshot} onNavigate={changePage} />
           <section className="main-grid">
             <IncomeTrendCard payments={confirmedPayments} />
-            <ActiveProjectsCard projects={filteredProjects} />
+            <ActiveProjectsCard projects={filteredProjects} onNavigate={() => changePage("项目管理")} />
             <OperationDurationCard startedAt={snapshot.settings.xianyuStartedAt} />
           </section>
           <section className="bottom-grid">
-            <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} />
+            <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("收入记录")} />
             <div className="bottom-stack center-stack">
               <DailyBalanceCard todayIncome={todayIncome} todayExpense={todayExpense} />
-              <ReminderCard projects={snapshot.projects} payments={snapshot.payments} />
+              <ReminderCard projects={snapshot.projects} payments={snapshot.payments} onNavigate={() => changePage("收入记录")} />
             </div>
             <div className="bottom-stack right-stack">
-              <MonthlyGoalCard current={monthlyIncome} goal={snapshot.settings.monthlyIncomeGoal} />
+              <MonthlyGoalCard current={monthlyIncome} goal={snapshot.settings.monthlyIncomeGoal} onEdit={() => { changePage("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />
               <div className="source-countdown-row">
-                <CustomerSourceCard customers={snapshot.customers} />
-                <DeliveryCountdownCard projects={snapshot.projects} />
+                <CustomerSourceCard customers={snapshot.customers} onNavigate={() => changePage("客户管理")} />
+                <DeliveryCountdownCard projects={snapshot.projects} onNavigate={() => changePage("项目管理")} />
               </div>
             </div>
           </section>
-        </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => setDrawerOpen(true)} />}
+        </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => setDrawerOpen(true)} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} />}
       </main>
 
       <button className="floating-add" onClick={() => setDrawerOpen(true)} aria-label="立即记账">
@@ -1081,6 +1121,7 @@ function DashboardLayout({
         open={drawerOpen}
         projects={snapshot.projects}
         customers={snapshot.customers}
+        settings={snapshot.settings}
         onClose={() => setDrawerOpen(false)}
         onSubmit={addPayment}
       />
@@ -1088,7 +1129,7 @@ function DashboardLayout({
       {success !== null && (
         <div className="success-toast" role="status">
           <CheckCircle size={28} weight="fill" />
-          <span><strong>{compactCurrency.format(success)} 已确认到账</strong><small>核心指标与收款记录已同步更新</small></span>
+          <span><strong>{compactCurrency.format(success.amount)} {success.status === "confirmed" ? "已确认到账" : "已加入待收计划"}</strong><small>{success.status === "confirmed" ? "核心指标与收款记录已同步更新" : "回款提醒与项目进度已同步更新"}</small></span>
           {[0, 1, 2, 3, 4].map((item) => <Sparkle key={item} className={`success-spark s${item}`} size={14 + item} weight="fill" />)}
         </div>
       )}
@@ -1135,5 +1176,9 @@ export function App() {
 
   if (!snapshot) return <LoadingDashboard />;
 
-  return <DashboardLayout snapshot={snapshot} onSnapshotChange={setSnapshot} />;
+  const saveSnapshot = async (next: LedgerSnapshot) => {
+    setSnapshot(await mockLedgerService.saveSnapshot(next));
+  };
+
+  return <DashboardLayout snapshot={snapshot} onSnapshotChange={(next) => { void saveSnapshot(next); }} />;
 }
