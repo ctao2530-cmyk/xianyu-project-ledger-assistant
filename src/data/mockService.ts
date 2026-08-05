@@ -16,6 +16,12 @@ const initialSnapshot: LedgerSnapshot = {
   settings: {
     xianyuStartedAt: "2026-05-28",
     monthlyIncomeGoal: 0,
+    profileName: "张同学",
+    profileRole: "个人开发者",
+    profilePhone: "",
+    profileBio: "专注把每个接单项目做成可复用的长期能力。",
+    accountEmail: "",
+    accountPlan: "高级版",
     defaultDurationDays: 30,
     defaultPaymentType: "full",
     reminderDays: 3,

@@ -71,6 +71,15 @@ export type OtherPageName =
   | "AI经营助手"
   | "设置中心";
 
+export type SettingsSectionName =
+  | "个人资料"
+  | "账号设置"
+  | "记账设置"
+  | "项目默认值"
+  | "提醒通知"
+  | "数据与同步"
+  | "界面主题";
+
 type ActionKind = "project" | "expense" | "customer";
 
 interface OtherPagesProps {
@@ -80,6 +89,7 @@ interface OtherPagesProps {
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
   onNavigate: (page: string) => void;
   globalSearch: string;
+  initialSettingsSection?: SettingsSectionName;
 }
 
 interface Column {
@@ -514,16 +524,32 @@ function SettingsCenterPage({ snapshot, onSnapshotChange, onToast }: { snapshot:
   return <div className="other-page settings-page"><div className="settings-layout"><SectionCard className="settings-nav">{menu.map(([label, Icon]) => <button className={section === label ? "active" : ""} onClick={() => { setSection(label); document.getElementById(`settings-${label}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); }} key={label}><Icon size={18} />{label}</button>)}</SectionCard><main className="settings-main"><SectionCard id="settings-记账设置" className="settings-group"><PanelHeader title="记账与偏好设置" /><SettingRow icon={CalendarBlank} title="闲鱼开始运营日期" description="用于计算运营天数与阶段数据" control={<span className="setting-control">{snapshot.settings.xianyuStartedAt} <CalendarBlank size={15} /></span>} /><SettingRow icon={ArrowClockwise} title="默认工期" description="新建项目时的默认工期" control={<SelectButton>30 天</SelectButton>} tone="blue" /><SettingRow icon={Database} title="默认收款类型" description="新建项目收款方式的默认选项" control={<SelectButton>全款收取</SelectButton>} tone="green" /><SettingRow icon={Target} title="月度目标金额" description="设置每月收入目标，助力达成计划" control={<span className="setting-control">{snapshot.settings.monthlyIncomeGoal ? `¥ ${snapshot.settings.monthlyIncomeGoal.toLocaleString()}` : "未设置"}</span>} tone="orange" /><SettingRow icon={ChartBar} title="自动计算运营天数" description="根据运营开始日期，自动计算运营天数" control={<Toggle checked={toggles.days} onChange={() => flip("days")} label="自动计算运营天数" />} /><SettingRow icon={ChartBar} title="显示数据小数位" description="金额与比例的小数位数" control={<SelectButton>2 位小数</SelectButton>} tone="blue" /></SectionCard><SectionCard id="settings-提醒通知" className="settings-group"><PanelHeader title="提醒与通知设置" /><SettingRow icon={Bell} title="消息提醒" description="开启后将接收站内消息提醒" control={<Toggle checked={toggles.message} onChange={() => flip("message")} label="消息提醒" />} tone="blue" /><SettingRow icon={Bell} title="项目到期提醒" description="项目即将到期或逾期时提醒" control={<SelectButton>提前 3 天</SelectButton>} tone="orange" /><SettingRow icon={Bell} title="收款提醒" description="有收款记录或到账时提醒" control={<Toggle checked={toggles.payment} onChange={() => flip("payment")} label="收款提醒" />} tone="green" /><SettingRow icon={Bell} title="月度目标进度提醒" description="每月进度达成 50%、80%、100% 时提醒" control={<Toggle checked={toggles.goal} onChange={() => flip("goal")} label="目标进度提醒" />} /></SectionCard><SectionCard id="settings-数据与同步" className="settings-group"><PanelHeader title="数据与备份设置" /><SettingRow icon={CloudArrowUp} title="自动备份" description="每日自动备份数据，保障数据安全" control={<Toggle checked={toggles.backup} onChange={() => flip("backup")} label="自动备份" />} tone="blue" /><SettingRow icon={ArrowClockwise} title="备份时间" description="选择每日自动备份的时间点" control={<SelectButton>23:30</SelectButton>} tone="orange" /><SettingRow icon={DownloadSimple} title="导出数据" description="将所有数据导出为 Excel 文件" control={<button className="outline-action" onClick={() => onToast("数据导出任务已创建")}>导出 Excel</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="清理本地缓存，释放空间" control={<button className="outline-action" onClick={() => onToast("缓存已清理")}>清理缓存</button>} tone="red" /></SectionCard><SectionCard id="settings-界面主题" className="theme-settings"><PanelHeader title="界面主题与外观" /><div className="mode-choice"><span><i />深浅主题<small>选择你喜欢的界面模式</small></span><button className="active">浅色模式</button><button>深色模式</button></div><div className="theme-colors"><span><b>主题色彩</b><small>自定义主题主色</small></span>{["#6544f4", "#4c8cf5", "#25c879", "#ffac18", "#f35b68", "#12b9cd"].map((color) => <button aria-label={`选择主题色 ${color}`} className={theme === color ? "active" : ""} style={{ background: color }} onClick={() => { setTheme(color); onToast("主题色已更新"); }} key={color} />)}<button className="rainbow" aria-label="自定义主题色" /></div></SectionCard></main><aside className="settings-right"><SectionCard className="security-card"><PanelHeader title="账户安全" /><img src="/assets/pages/settings-shield.png" alt="账户安全盾牌" /><h3><i />安全等级：高</h3><p>您的账户安全状态良好</p><Progress value={78} tone="green" /><SettingRow icon={Lock} title="登录密码" description="未设置" control={<button className="text-action">设置</button>} tone="green" /><SettingRow icon={DesktopTower} title="手机绑定" description="未绑定" control={<button className="text-action">绑定</button>} tone="green" /><SettingRow icon={Envelope} title="邮箱绑定" description="未绑定" control={<button className="text-action">绑定</button>} tone="green" /><SettingRow icon={DesktopTower} title="登录设备管理" description="当前设备" control={<button className="text-action">管理</button>} tone="green" /></SectionCard><SectionCard className="sync-card"><PanelHeader title="数据同步状态" /><img src="/assets/pages/settings-cloud.png" alt="云端同步插画" /><h3><CheckCircle size={16} weight="fill" />本地数据正常</h3><p>你的业务数据保存在当前设备</p><ul><li><ArrowClockwise size={16} />数据状态 <time>已就绪</time></li><li><CloudArrowUp size={16} />同步来源 <time>本地设备</time></li><li><Database size={16} />业务数据量 <time>{recordCount} 条记录</time></li><li><DesktopTower size={16} />本地缓存 <time>已启用</time></li></ul><button className="sync-now" onClick={() => onToast("本地数据已保存")}><ArrowClockwise size={17} />立即保存</button></SectionCard></aside></div></div>;
 }
 
-function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast }: { snapshot: LedgerSnapshot; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onToast: (message: string) => void }) {
-  const [section, setSection] = useState("个人资料");
+function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, initialSection = "个人资料" }: { snapshot: LedgerSnapshot; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onToast: (message: string) => void; initialSection?: SettingsSectionName }) {
+  const [section, setSection] = useState<SettingsSectionName>(initialSection);
   const settings = snapshot.settings;
   const update = (changes: Partial<LedgerSnapshot["settings"]>) => onSnapshotChange({ ...snapshot, settings: { ...settings, ...changes } });
-  const sections = [["个人资料", User], ["记账设置", GearSix], ["项目默认值", SquaresFour], ["提醒通知", Bell], ["数据与同步", CloudArrowUp], ["界面主题", Palette]] as Array<[string, PhosphorIcon]>;
+  const sections = [["个人资料", User], ["账号设置", ShieldCheck], ["记账设置", GearSix], ["项目默认值", SquaresFour], ["提醒通知", Bell], ["数据与同步", CloudArrowUp], ["界面主题", Palette]] as Array<[SettingsSectionName, PhosphorIcon]>;
+  const [profileDraft, setProfileDraft] = useState({
+    name: settings.profileName || "张同学",
+    role: settings.profileRole || "个人开发者",
+    phone: settings.profilePhone || "",
+    bio: settings.profileBio || "",
+  });
+  const [accountEmail, setAccountEmail] = useState(settings.accountEmail || "");
   const recordCount = snapshot.projects.length + snapshot.payments.length + snapshot.expenses.length + snapshot.customers.length + snapshot.tasks.length;
   useEffect(() => {
     document.documentElement.style.setProperty("--purple", settings.themeColor || "#6544f4");
     document.documentElement.dataset.theme = settings.colorMode || "light";
   }, [settings.colorMode, settings.themeColor]);
+  useEffect(() => {
+    setProfileDraft({ name: settings.profileName || "张同学", role: settings.profileRole || "个人开发者", phone: settings.profilePhone || "", bio: settings.profileBio || "" });
+    setAccountEmail(settings.accountEmail || "");
+  }, [settings.accountEmail, settings.profileBio, settings.profileName, settings.profilePhone, settings.profileRole]);
+  useEffect(() => {
+    setSection(initialSection);
+    const timer = window.setTimeout(() => document.getElementById(`settings-live-${initialSection}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 40);
+    return () => window.clearTimeout(timer);
+  }, [initialSection]);
   const exportBackup = () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
     const anchor = document.createElement("a");
@@ -533,14 +559,36 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast }: {
     URL.revokeObjectURL(url);
     onToast("经营数据备份已导出");
   };
-  const go = (label: string) => {
+  const go = (label: SettingsSectionName) => {
     setSection(label);
+    window.history.replaceState(null, "", `#${encodeURIComponent(`设置中心/${label}`)}`);
     document.getElementById(`settings-live-${label}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const saveProfile = (event: FormEvent) => {
+    event.preventDefault();
+    const name = profileDraft.name.trim();
+    if (!name) {
+      onToast("请输入显示名称");
+      return;
+    }
+    update({ profileName: name, profileRole: profileDraft.role.trim() || "个人开发者", profilePhone: profileDraft.phone.trim(), profileBio: profileDraft.bio.trim() });
+    onToast("个人资料已保存，顶部头像信息已同步");
+  };
+  const saveAccount = (event: FormEvent) => {
+    event.preventDefault();
+    const email = accountEmail.trim();
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+      onToast("请输入有效的邮箱地址");
+      return;
+    }
+    update({ accountEmail: email });
+    onToast("账号设置已保存");
   };
   return <div className="other-page settings-page"><div className="settings-layout">
     <SectionCard className="settings-nav">{sections.map(([label, Icon]) => <button className={section === label ? "active" : ""} onClick={() => go(label)} key={label}><Icon size={18} />{label}</button>)}</SectionCard>
     <main className="settings-main">
-      <SectionCard id="settings-live-个人资料" className="settings-group"><PanelHeader title="个人资料" /><SettingRow icon={User} title="当前使用者" description="本地经营数据的显示名称" control={<span className="setting-control">张同学</span>} /><SettingRow icon={DesktopTower} title="数据位置" description="数据保存在当前浏览器与设备" control={<span className="setting-control">本地设备</span>} tone="blue" /></SectionCard>
+      <SectionCard id="settings-live-个人资料" className="settings-group profile-settings-card"><PanelHeader title="个人资料" /><form className="profile-settings-form" onSubmit={saveProfile}><label><span>显示名称</span><small>保存后会同步显示在右上角头像区域</small><input aria-label="显示名称" value={profileDraft.name} onChange={(event) => setProfileDraft((value) => ({ ...value, name: event.target.value }))} placeholder="例如：张同学" /></label><label><span>职业身份</span><small>用于描述你的个人开发者定位</small><input aria-label="职业身份" value={profileDraft.role} onChange={(event) => setProfileDraft((value) => ({ ...value, role: event.target.value }))} placeholder="例如：全栈开发者" /></label><label><span>联系电话</span><small>仅保存在当前设备，不会公开展示</small><input aria-label="联系电话" value={profileDraft.phone} onChange={(event) => setProfileDraft((value) => ({ ...value, phone: event.target.value }))} placeholder="选填" /></label><label className="profile-bio-field"><span>个人简介</span><small>记录你的服务方向或经营定位</small><textarea aria-label="个人简介" rows={3} value={profileDraft.bio} onChange={(event) => setProfileDraft((value) => ({ ...value, bio: event.target.value }))} placeholder="介绍你的服务方向" /></label><button className="business-primary profile-save" type="submit"><CheckCircle size={16} weight="fill" />保存个人资料</button></form></SectionCard>
+      <SectionCard id="settings-live-账号设置" className="settings-group account-settings-card"><PanelHeader title="账号设置" /><form className="account-settings-form" onSubmit={saveAccount}><SettingRow icon={Envelope} title="账号邮箱" description="用于标记本地经营账号与备份文件" control={<input aria-label="账号邮箱" className="setting-control" type="email" value={accountEmail} onChange={(event) => setAccountEmail(event.target.value)} placeholder="name@example.com" />} tone="blue" /><SettingRow icon={Star} title="当前版本" description="当前经营助手的功能版本" control={<span className="setting-control">{settings.accountPlan || "高级版"}</span>} tone="orange" /><SettingRow icon={DesktopTower} title="数据归属" description="业务数据保存在当前浏览器与设备" control={<span className="setting-control">本地账号</span>} tone="green" /><div className="account-setting-actions"><button className="outline-action" type="button" onClick={exportBackup}><DownloadSimple size={16} />导出账号数据</button><button className="business-primary" type="submit"><CheckCircle size={16} weight="fill" />保存账号设置</button></div></form></SectionCard>
       <SectionCard id="settings-live-记账设置" className="settings-group"><PanelHeader title="记账与偏好设置" /><SettingRow icon={CalendarBlank} title="闲鱼开始运营日期" description="用于计算运营天数与阶段数据" control={<input className="setting-control" type="date" value={settings.xianyuStartedAt} onChange={(event) => update({ xianyuStartedAt: event.target.value })} />} /><SettingRow icon={Target} title="月度目标金额" description="首页与目标计划会实时读取" control={<input className="setting-control" type="number" min="0" value={settings.monthlyIncomeGoal} onChange={(event) => update({ monthlyIncomeGoal: Math.max(0, Number(event.target.value) || 0) })} />} tone="orange" /><SettingRow icon={ChartBar} title="显示数据小数位" description="金额与比例的小数位数" control={<select className="setting-control" value={settings.decimalPlaces ?? 2} onChange={(event) => update({ decimalPlaces: Number(event.target.value) })}><option value="0">0 位</option><option value="2">2 位</option></select>} tone="blue" /></SectionCard>
       <SectionCard id="settings-live-项目默认值" className="settings-group"><PanelHeader title="项目默认值" /><SettingRow icon={ArrowClockwise} title="默认工期" description="新建项目时自动填入" control={<input className="setting-control" type="number" min="1" value={settings.defaultDurationDays || 30} onChange={(event) => update({ defaultDurationDays: Math.max(1, Number(event.target.value) || 30) })} />} tone="blue" /><SettingRow icon={Database} title="默认收款类型" description="快速记账的默认选项" control={<select className="setting-control" value={settings.defaultPaymentType || "full"} onChange={(event) => update({ defaultPaymentType: event.target.value as LedgerSnapshot["settings"]["defaultPaymentType"] })}><option value="deposit">定金</option><option value="milestone">阶段款</option><option value="final">尾款</option><option value="full">全款</option></select>} tone="green" /></SectionCard>
       <SectionCard id="settings-live-提醒通知" className="settings-group"><PanelHeader title="提醒与通知设置" /><SettingRow icon={Bell} title="消息提醒" description="控制顶部经营提醒数量" control={<Toggle checked={settings.notificationsEnabled ?? true} onChange={() => update({ notificationsEnabled: !(settings.notificationsEnabled ?? true) })} label="消息提醒" />} tone="blue" /><SettingRow icon={Bell} title="项目到期提醒" description="决定临近交付项目的提醒范围" control={<select className="setting-control" value={settings.reminderDays || 3} onChange={(event) => update({ reminderDays: Number(event.target.value) })}><option value="1">提前 1 天</option><option value="3">提前 3 天</option><option value="7">提前 7 天</option></select>} tone="orange" /><SettingRow icon={Bell} title="收款提醒" description="控制待收节点和回款提醒列表" control={<Toggle checked={settings.paymentRemindersEnabled ?? true} onChange={() => update({ paymentRemindersEnabled: !(settings.paymentRemindersEnabled ?? true) })} label="收款提醒" />} tone="green" /></SectionCard>
@@ -551,7 +599,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast }: {
   </div></div>;
 }
 
-export function OtherPages({ page, snapshot, onQuickAdd, onSnapshotChange, onNavigate, globalSearch }: OtherPagesProps) {
+export function OtherPages({ page, snapshot, onQuickAdd, onSnapshotChange, onNavigate, globalSearch, initialSettingsSection }: OtherPagesProps) {
   const [modal, setModal] = useState<ActionKind | null>(null);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
@@ -588,7 +636,7 @@ export function OtherPages({ page, snapshot, onQuickAdd, onSnapshotChange, onNav
     if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
     if (page === "目标计划") return <CleanGoalPlanPage snapshot={snapshot} onEditGoal={() => { onNavigate("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />;
     if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} />;
-    return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
-  }, [globalSearch, onNavigate, onQuickAdd, onSnapshotChange, page, snapshot]);
+    return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} initialSection={initialSettingsSection} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
+  }, [globalSearch, initialSettingsSection, onNavigate, onQuickAdd, onSnapshotChange, page, snapshot]);
   return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
 }

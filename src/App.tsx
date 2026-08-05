@@ -64,7 +64,7 @@ import {
 } from "react";
 import { mockLedgerService } from "./data/mockService";
 import { getBusinessSummary } from "./data/businessMetrics";
-import { OtherPages, type OtherPageName } from "./pages/OtherPages";
+import { OtherPages, type OtherPageName, type SettingsSectionName } from "./pages/OtherPages";
 import type {
   Customer,
   LedgerSnapshot,
@@ -124,6 +124,22 @@ const pageMeta: Record<string, { title: string; subtitle: string; placeholder: s
   AI经营助手: { title: "AI 经营助手", subtitle: "分析需求、生成报价并复盘项目，让每次接单都更有把握", placeholder: "搜索项目，或粘贴客户需求..." },
   设置中心: { title: "设置中心", subtitle: "管理账号信息、界面风格、运营日期、提醒与数据同步", placeholder: "搜索项目、客户或订单..." },
 };
+
+const settingsSections: SettingsSectionName[] = ["个人资料", "账号设置", "记账设置", "项目默认值", "提醒通知", "数据与同步", "界面主题"];
+
+function readAppRoute() {
+  let requested = "";
+  try {
+    requested = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+  } catch {
+    requested = "";
+  }
+  const [page, rawSection] = requested.split("/");
+  return {
+    page: navItems.some((item) => item.label === page) ? page : "首页概览",
+    settingsSection: settingsSections.includes(rawSection as SettingsSectionName) ? rawSection as SettingsSectionName : "个人资料" as SettingsSectionName,
+  };
+}
 
 const miniLineData = [
   { value: 18 },
@@ -340,6 +356,9 @@ function TopHeader({
   activePage,
   notificationCount,
   onNavigate,
+  onOpenSettings,
+  profileName,
+  profilePlan,
 }: {
   search: string;
   onSearch: (value: string) => void;
@@ -347,6 +366,9 @@ function TopHeader({
   activePage: string;
   notificationCount: number;
   onNavigate: (page: string) => void;
+  onOpenSettings: (section: SettingsSectionName) => void;
+  profileName: string;
+  profilePlan: string;
 }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -400,13 +422,13 @@ function TopHeader({
             onClick={() => setProfileOpen((value) => !value)}
           >
             <span className="avatar"><UserCircle size={33} weight="duotone" /></span>
-            <span><strong>张同学</strong><small>高级版</small></span>
+            <span><strong>{profileName}</strong><small>{profilePlan}</small></span>
             <CaretDown size={16} />
           </button>
           {profileOpen && (
             <div className="header-popover profile-popover">
-              <button onClick={() => { onNavigate("设置中心"); setProfileOpen(false); }}>个人资料</button>
-              <button onClick={() => { onNavigate("设置中心"); setProfileOpen(false); }}>账户设置</button>
+              <button onClick={() => { onOpenSettings("个人资料"); setProfileOpen(false); }}>个人资料</button>
+              <button onClick={() => { onOpenSettings("账号设置"); setProfileOpen(false); }}>账号设置</button>
             </div>
           )}
         </div>
@@ -947,10 +969,8 @@ function DashboardLayout({
   snapshot: LedgerSnapshot;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
 }) {
-  const [activeNav, setActiveNav] = useState(() => {
-    const requested = decodeURIComponent(window.location.hash.replace(/^#/, ""));
-    return navItems.some((item) => item.label === requested) ? requested : "首页概览";
-  });
+  const [activeNav, setActiveNav] = useState(() => readAppRoute().page);
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionName>(() => readAppRoute().settingsSection);
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -965,14 +985,23 @@ function DashboardLayout({
 
   const changePage = (value: string) => {
     setActiveNav(value);
+    if (value === "设置中心") setSettingsSection("个人资料");
     setSearch("");
     window.history.replaceState(null, "", value === "首页概览" ? window.location.pathname : `#${encodeURIComponent(value)}`);
   };
 
+  const openSettings = (section: SettingsSectionName) => {
+    setActiveNav("设置中心");
+    setSettingsSection(section);
+    setSearch("");
+    window.history.replaceState(null, "", `#${encodeURIComponent(`设置中心/${section}`)}`);
+  };
+
   useEffect(() => {
     const syncHash = () => {
-      const requested = decodeURIComponent(window.location.hash.replace(/^#/, ""));
-      if (navItems.some((item) => item.label === requested)) setActiveNav(requested);
+      const route = readAppRoute();
+      setActiveNav(route.page);
+      setSettingsSection(route.settingsSection);
     };
     window.addEventListener("hashchange", syncHash);
     return () => window.removeEventListener("hashchange", syncHash);
@@ -1079,7 +1108,7 @@ function DashboardLayout({
         projects={snapshot.projects}
       />
       <main className="dashboard-main">
-        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} notificationCount={notificationCount} onNavigate={changePage} />
+        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} notificationCount={notificationCount} onNavigate={changePage} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "张同学"} profilePlan={snapshot.settings.accountPlan || "高级版"} />
         {activeNav === "首页概览" && normalizedSearch && (
           <div className="search-status">
             <MagnifyingGlass size={16} />“{search}” 找到 {filteredProjects.length} 个项目、{filteredPayments.length} 笔收款
@@ -1110,7 +1139,7 @@ function DashboardLayout({
               </div>
             </div>
           </section>
-        </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => setDrawerOpen(true)} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} />}
+        </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => setDrawerOpen(true)} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} />}
       </main>
 
       <button className="floating-add" onClick={() => setDrawerOpen(true)} aria-label="立即记账">

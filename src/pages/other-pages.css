@@ -438,6 +438,25 @@
 .settings-main > .settings-group:first-child .setting-row { min-height: 50px; }
 .settings-main > .settings-group:nth-child(2) .setting-row { min-height: 38px; }
 .settings-main > .settings-group:nth-child(3) .setting-row { min-height: 33px; }
+.profile-settings-card,
+.account-settings-card { scroll-margin-top: 14px; }
+.profile-settings-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 6px 0 2px; }
+.profile-settings-form label { display: grid; gap: 5px; }
+.profile-settings-form label > span { color: #39445f; font-size: 10px; font-weight: 700; }
+.profile-settings-form label > small { color: #9199ad; font-size: 8px; }
+.profile-settings-form input,
+.profile-settings-form textarea { width: 100%; box-sizing: border-box; border: 1px solid #e1e5f0; border-radius: 10px; background: #fbfcff; color: #303a54; outline: 0; font: inherit; font-size: 10px; transition: border-color .16s ease, box-shadow .16s ease; }
+.profile-settings-form input { height: 36px; padding: 0 11px; }
+.profile-settings-form textarea { resize: vertical; min-height: 76px; padding: 10px 11px; }
+.profile-settings-form input:focus,
+.profile-settings-form textarea:focus,
+.account-settings-form .setting-control:focus { border-color: var(--purple); box-shadow: 0 0 0 3px color-mix(in srgb, var(--purple) 12%, transparent); }
+.profile-bio-field { grid-column: 1 / -1; }
+.profile-save { grid-column: 1 / -1; justify-self: end; }
+.account-settings-form { display: grid; }
+.account-settings-form .setting-control { border: 1px solid #e1e5f0; border-radius: 9px; background: #fbfcff; color: #303a54; outline: 0; font-size: 10px; }
+.account-setting-actions { display: flex; justify-content: flex-end; gap: 9px; padding-top: 13px; }
+.account-setting-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .settings-main .mode-choice,
 .settings-main .theme-colors { min-height: 48px; }
 
@@ -473,6 +492,7 @@
   .page-right-rail { grid-template-columns: 1fr; }.page-card { border-radius: 15px; }.filter-bar { padding: 9px; }.filter-bar > * { flex: 1 1 130px; }.filter-bar .page-primary { flex: 1 1 100%; }
   .generic-table-head { display: none; }.generic-table-row { display: block; min-width: 0; padding: 10px 0; }.generic-table-row > span { display: flex; justify-content: space-between; gap: 10px; white-space: normal; }.generic-table-row > span::before { min-width: 86px; color: #8a94ae; content: attr(data-label); }.generic-table-footer { grid-template-columns: 1fr auto; }.generic-table-footer > div { justify-self: end; }.generic-table-footer > .page-select { display: none; }
   .customer-card-grid { grid-template-columns: 1fr; }.analytics-grid,.goal-top-grid,.goal-mid-grid { gap: 10px; }.goal-chart { margin-right: 0; }.milestone-track { position: static; width: auto; margin-top: 10px; }.task-board { grid-template-columns: 1fr; }.goal-side-stack,.settings-right { grid-template-columns: 1fr; }.growth-card { grid-template-columns: 1fr; }.settings-nav { grid-template-columns: 1fr 1fr; }.setting-row { grid-template-columns: 31px 1fr; padding: 7px 0; }.setting-row > :last-child { grid-column: 2; justify-self: start; }.mode-choice,.theme-colors { flex-wrap: wrap; padding: 10px 0; }.mode-choice > span,.theme-colors > span { flex: 1 1 100%; }.efficiency-card { grid-template-columns: 1fr 1fr; }.efficiency-title { grid-column: 1 / -1; }.donut-panel { grid-template-columns: 120px 1fr; }
+  .profile-settings-form { grid-template-columns: 1fr; }.profile-bio-field,.profile-save { grid-column: auto; }.profile-save { justify-self: stretch; }.account-setting-actions { align-items: stretch; flex-direction: column; }.account-setting-actions button { width: 100%; }
 }
 
 .page-modal select { border: 1px solid #e2e6ef; border-radius: 10px; padding: 10px 12px; outline: 0; background: #fff; color: #27314f; font: inherit; }

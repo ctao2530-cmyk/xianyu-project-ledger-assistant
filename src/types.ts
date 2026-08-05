@@ -101,6 +101,12 @@ export interface Expense {
 export interface OperationSettings {
   xianyuStartedAt: string;
   monthlyIncomeGoal: number;
+  profileName?: string;
+  profileRole?: string;
+  profilePhone?: string;
+  profileBio?: string;
+  accountEmail?: string;
+  accountPlan?: string;
   defaultDurationDays?: number;
   defaultPaymentType?: PaymentType;
   reminderDays?: number;
