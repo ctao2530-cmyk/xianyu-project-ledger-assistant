@@ -65,6 +65,7 @@ import {
 import { mockLedgerService } from "./data/mockService";
 import { getBusinessSummary } from "./data/businessMetrics";
 import { OtherPages, type OtherPageName, type SettingsSectionName } from "./pages/OtherPages";
+import { runPageTransition } from "./utils/pageTransition";
 import type {
   Customer,
   LedgerSnapshot,
@@ -975,6 +976,7 @@ function DashboardLayout({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [success, setSuccess] = useState<{ amount: number; status: "pending" | "confirmed" } | null>(null);
+  const routeRef = useRef({ page: activeNav, settingsSection });
 
   useLayoutEffect(() => {
     const scrollingElement = document.scrollingElement;
@@ -984,27 +986,45 @@ function DashboardLayout({
   }, [activeNav]);
 
   const changePage = (value: string) => {
-    setActiveNav(value);
-    if (value === "设置中心") setSettingsSection("个人资料");
-    setSearch("");
-    window.history.replaceState(null, "", value === "首页概览" ? window.location.pathname : `#${encodeURIComponent(value)}`);
+    const nextSettingsSection = value === "设置中心" ? "个人资料" : settingsSection;
+    if (value === activeNav && nextSettingsSection === settingsSection) return;
+    routeRef.current = { page: value, settingsSection: nextSettingsSection };
+    runPageTransition(() => {
+      setActiveNav(value);
+      setSettingsSection(nextSettingsSection);
+      setSearch("");
+      window.history.replaceState(null, "", value === "首页概览" ? window.location.pathname : `#${encodeURIComponent(value)}`);
+    });
   };
 
   const openSettings = (section: SettingsSectionName) => {
-    setActiveNav("设置中心");
-    setSettingsSection(section);
-    setSearch("");
-    window.history.replaceState(null, "", `#${encodeURIComponent(`设置中心/${section}`)}`);
+    if (activeNav === "设置中心" && settingsSection === section) return;
+    routeRef.current = { page: "设置中心", settingsSection: section };
+    runPageTransition(() => {
+      setActiveNav("设置中心");
+      setSettingsSection(section);
+      setSearch("");
+      window.history.replaceState(null, "", `#${encodeURIComponent(`设置中心/${section}`)}`);
+    });
   };
 
   useEffect(() => {
     const syncHash = () => {
       const route = readAppRoute();
-      setActiveNav(route.page);
-      setSettingsSection(route.settingsSection);
+      if (route.page === routeRef.current.page && route.settingsSection === routeRef.current.settingsSection) return;
+      routeRef.current = route;
+      runPageTransition(() => {
+        setActiveNav(route.page);
+        setSettingsSection(route.settingsSection);
+        setSearch("");
+      });
     };
     window.addEventListener("hashchange", syncHash);
-    return () => window.removeEventListener("hashchange", syncHash);
+    window.addEventListener("popstate", syncHash);
+    return () => {
+      window.removeEventListener("hashchange", syncHash);
+      window.removeEventListener("popstate", syncHash);
+    };
   }, []);
 
   const confirmedPayments = snapshot.payments.filter((payment) => payment.status === "confirmed");
@@ -1109,37 +1129,39 @@ function DashboardLayout({
       />
       <main className="dashboard-main">
         <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} notificationCount={notificationCount} onNavigate={changePage} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "张同学"} profilePlan={snapshot.settings.accountPlan || "高级版"} />
-        {activeNav === "首页概览" && normalizedSearch && (
-          <div className="search-status">
-            <MagnifyingGlass size={16} />“{search}” 找到 {filteredProjects.length} 个项目、{filteredPayments.length} 笔收款
-            <button onClick={() => setSearch("")}>清除</button>
-          </div>
-        )}
-        {activeNav === "首页概览" ? <>
-          <section className="metrics-grid" aria-label="经营核心指标">
-            {metrics.map((metric, index) => <MetricCard key={metric.title} {...metric} index={index} />)}
-          </section>
-          <OperatingInsightStrip snapshot={snapshot} onNavigate={changePage} />
-          <section className="main-grid">
-            <IncomeTrendCard payments={confirmedPayments} />
-            <ActiveProjectsCard projects={filteredProjects} onNavigate={() => changePage("项目管理")} />
-            <OperationDurationCard startedAt={snapshot.settings.xianyuStartedAt} />
-          </section>
-          <section className="bottom-grid">
-            <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("收入记录")} />
-            <div className="bottom-stack center-stack">
-              <DailyBalanceCard todayIncome={todayIncome} todayExpense={todayExpense} />
-              <ReminderCard projects={snapshot.projects} payments={snapshot.payments} onNavigate={() => changePage("收入记录")} />
+        <div className="page-route-view" key={`${activeNav}-${settingsSection}`}>
+          {activeNav === "首页概览" && normalizedSearch && (
+            <div className="search-status">
+              <MagnifyingGlass size={16} />“{search}” 找到 {filteredProjects.length} 个项目、{filteredPayments.length} 笔收款
+              <button onClick={() => setSearch("")}>清除</button>
             </div>
-            <div className="bottom-stack right-stack">
-              <MonthlyGoalCard current={monthlyIncome} goal={snapshot.settings.monthlyIncomeGoal} onEdit={() => { changePage("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />
-              <div className="source-countdown-row">
-                <CustomerSourceCard customers={snapshot.customers} onNavigate={() => changePage("客户管理")} />
-                <DeliveryCountdownCard projects={snapshot.projects} onNavigate={() => changePage("项目管理")} />
+          )}
+          {activeNav === "首页概览" ? <>
+            <section className="metrics-grid" aria-label="经营核心指标">
+              {metrics.map((metric, index) => <MetricCard key={metric.title} {...metric} index={index} />)}
+            </section>
+            <OperatingInsightStrip snapshot={snapshot} onNavigate={changePage} />
+            <section className="main-grid">
+              <IncomeTrendCard payments={confirmedPayments} />
+              <ActiveProjectsCard projects={filteredProjects} onNavigate={() => changePage("项目管理")} />
+              <OperationDurationCard startedAt={snapshot.settings.xianyuStartedAt} />
+            </section>
+            <section className="bottom-grid">
+              <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("收入记录")} />
+              <div className="bottom-stack center-stack">
+                <DailyBalanceCard todayIncome={todayIncome} todayExpense={todayExpense} />
+                <ReminderCard projects={snapshot.projects} payments={snapshot.payments} onNavigate={() => changePage("收入记录")} />
               </div>
-            </div>
-          </section>
-        </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => setDrawerOpen(true)} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} />}
+              <div className="bottom-stack right-stack">
+                <MonthlyGoalCard current={monthlyIncome} goal={snapshot.settings.monthlyIncomeGoal} onEdit={() => openSettings("记账设置")} />
+                <div className="source-countdown-row">
+                  <CustomerSourceCard customers={snapshot.customers} onNavigate={() => changePage("客户管理")} />
+                  <DeliveryCountdownCard projects={snapshot.projects} onNavigate={() => changePage("项目管理")} />
+                </div>
+              </div>
+            </section>
+          </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => setDrawerOpen(true)} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} />}
+        </div>
       </main>
 
       <button className="floating-add" onClick={() => setDrawerOpen(true)} aria-label="立即记账">

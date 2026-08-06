@@ -65,6 +65,55 @@ a {
     linear-gradient(135deg, #fbfcff 0%, #f5f7ff 46%, #f7f4ff 100%);
 }
 
+.greeting {
+  view-transition-name: app-page-heading;
+}
+
+.page-route-view {
+  view-transition-name: app-page;
+  animation: app-page-fallback-in 220ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+::view-transition-old(app-page) {
+  animation: app-page-fade-out 150ms cubic-bezier(.4, 0, 1, 1) both;
+}
+
+::view-transition-new(app-page) {
+  animation: app-page-fade-in 240ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+::view-transition-old(app-page-heading) {
+  animation: app-heading-fade-out 120ms ease-in both;
+}
+
+::view-transition-new(app-page-heading) {
+  animation: app-heading-fade-in 210ms ease-out both;
+}
+
+@keyframes app-page-fade-out {
+  to { opacity: 0; transform: translateY(-4px); }
+}
+
+@keyframes app-page-fade-in {
+  from { opacity: 0; transform: translateY(7px); }
+}
+
+@keyframes app-heading-fade-out {
+  to { opacity: 0; transform: translateX(-4px); }
+}
+
+@keyframes app-heading-fade-in {
+  from { opacity: 0; transform: translateX(6px); }
+}
+
+@keyframes app-page-fallback-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+.view-transitions-enabled .page-route-view {
+  animation: none;
+}
+
 .sidebar {
   position: fixed;
   z-index: 40;
@@ -1840,6 +1889,10 @@ a {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(app-page),
+  ::view-transition-new(app-page),
+  ::view-transition-old(app-page-heading),
+  ::view-transition-new(app-page-heading),
   *,
   *::before,
   *::after {

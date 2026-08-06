@@ -50,8 +50,9 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import type { CustomerLevel, LedgerSnapshot } from "../types";
+import { runPageTransition } from "../utils/pageTransition";
 import {
   AIWorkspacePage,
   EnhancedCustomerManagementPage,
@@ -545,7 +546,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
     setProfileDraft({ name: settings.profileName || "张同学", role: settings.profileRole || "个人开发者", phone: settings.profilePhone || "", bio: settings.profileBio || "" });
     setAccountEmail(settings.accountEmail || "");
   }, [settings.accountEmail, settings.profileBio, settings.profileName, settings.profilePhone, settings.profileRole]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSection(initialSection);
   }, [initialSection]);
   const exportBackup = () => {
@@ -558,8 +559,11 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
     onToast("经营数据备份已导出");
   };
   const go = (label: SettingsSectionName) => {
-    setSection(label);
-    window.history.replaceState(null, "", `#${encodeURIComponent(`设置中心/${label}`)}`);
+    if (label === section) return;
+    runPageTransition(() => {
+      setSection(label);
+      window.history.replaceState(null, "", `#${encodeURIComponent(`设置中心/${label}`)}`);
+    });
   };
   const saveProfile = (event: FormEvent) => {
     event.preventDefault();
