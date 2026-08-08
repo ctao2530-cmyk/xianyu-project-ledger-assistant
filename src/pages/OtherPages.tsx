@@ -1,6 +1,7 @@
 import {
   ArrowClockwise,
   Bell,
+  Briefcase,
   CalendarBlank,
   CaretDown,
   CaretRight,
@@ -8,12 +9,16 @@ import {
   CheckCircle,
   CheckSquare,
   CloudArrowUp,
+  ChatCircleDots,
+  Copy,
   Database,
   DesktopTower,
   DownloadSimple,
   DotsThreeVertical,
   Envelope,
   Eye,
+  FileText,
+  Funnel,
   GearSix,
   Lock,
   MagnifyingGlass,
@@ -23,7 +28,9 @@ import {
   RocketLaunch,
   ShieldCheck,
   SquaresFour,
+  Sparkle,
   Star,
+  Storefront,
   Student,
   Table,
   Target,
@@ -32,6 +39,7 @@ import {
   Trophy,
   User,
   UserPlus,
+  WechatLogo,
   Warning,
   X,
   type Icon as PhosphorIcon,
@@ -51,18 +59,29 @@ import {
   YAxis,
 } from "recharts";
 import { type FormEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import type { CustomerLevel, LedgerSnapshot } from "../types";
+import type { CustomerLevel, LedgerSnapshot, ProjectKind } from "../types";
+import type { CustomerRequirementRoute } from "../App";
+import { getBusinessSummary } from "../data/businessMetrics";
+import { acceptMigratedLedger, getLegacyLedgerSnapshot, isLedgerBackendConnected } from "../data/mockService";
+import { localPlatformService, type AIProviderStatus, type MigrationPreview, type PlatformStatus, type ProductIntelligenceView } from "../data/localPlatformService";
 import { runPageTransition } from "../utils/pageTransition";
 import {
   AIWorkspacePage,
   EnhancedCustomerManagementPage,
-  EnhancedIncomeRecordsPage,
-  EnhancedProjectManagementPage,
   ProfitAnalysisPage,
+  type ProjectPageRoute,
+  type ProjectRouteMode,
 } from "./BusinessAssistantPages";
+import { EnhancedIncomeRecordsPage } from "./IncomeRecordsPage";
+import { ProjectWorkspacePage } from "./ProjectWorkspacePage";
 import "./other-pages.css";
+import { CustomerMessagesPage } from "./CustomerMessagesPage";
+import { ProductIntelligencePage } from "./ProductIntelligencePage";
+import { CustomerRequirementBlueprintPage } from "./CustomerRequirementBlueprintPage";
 
 export type OtherPageName =
+  | "客户消息"
+  | "商品经营"
   | "项目管理"
   | "收入记录"
   | "支出记录"
@@ -78,6 +97,11 @@ export type SettingsSectionName =
   | "记账设置"
   | "项目默认值"
   | "提醒通知"
+  | "渠道连接"
+  | "商品采集"
+  | "AI与回复"
+  | "报价参数"
+  | "数据迁移"
   | "数据与同步"
   | "界面主题";
 
@@ -87,10 +111,17 @@ interface OtherPagesProps {
   page: OtherPageName;
   snapshot: LedgerSnapshot;
   onQuickAdd: () => void;
+  onCreatePaymentPlan: (projectId: string) => void;
+  onConfirmPayment: (projectId: string, paymentId?: string) => void;
+  onRecordSettlementIssue: (projectId: string) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
   onNavigate: (page: string) => void;
   globalSearch: string;
   initialSettingsSection?: SettingsSectionName;
+  projectRoute: ProjectPageRoute | null;
+  onProjectRouteChange: (route: ProjectPageRoute | null, mode?: ProjectRouteMode) => void;
+  customerRoute: CustomerRequirementRoute | null;
+  onCustomerRouteChange: (route: CustomerRequirementRoute | null, mode?: ProjectRouteMode) => void;
 }
 
 interface Column {
@@ -180,7 +211,7 @@ function PageMetric({ metric }: { metric: MetricData }) {
     <h3>{metric.title}</h3>
     <strong style={{ color: tone }}>{metric.value}</strong>
     <div className="page-metric-detail">{metric.detail}</div>
-    {metric.image && <img src={metric.image} alt="" />}
+    {metric.image && <div className="page-metric-artwork" aria-hidden="true"><img src={metric.image} alt="" draggable={false} /></div>}
     {Icon && <span className="page-metric-icon" style={{ color: tone }}><Icon size={38} weight="duotone" /></span>}
     {metric.chart && <TinyMetricChart kind={metric.chart} tone={tone} />}
   </SectionCard>;
@@ -252,9 +283,10 @@ interface CrudValue {
   category: string;
   source: string;
   level: CustomerLevel;
+  projectKind: ProjectKind;
 }
 
-function CrudModal({ kind, snapshot, editingExpenseId, onClose, onCreated }: { kind: ActionKind; snapshot: LedgerSnapshot; editingExpenseId?: string | null; onClose: () => void; onCreated: (kind: ActionKind, value: CrudValue) => void }) {
+function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "client", onClose, onCreated }: { kind: ActionKind; snapshot: LedgerSnapshot; editingExpenseId?: string | null; initialProjectKind?: ProjectKind; onClose: () => void; onCreated: (kind: ActionKind, value: CrudValue) => void }) {
   const editingExpense = snapshot.expenses.find((item) => item.id === editingExpenseId);
   const labels = kind === "project" ? { title: "新建项目", name: "项目名称", amount: "项目预算" } : kind === "expense" ? { title: editingExpenseId ? "编辑支出" : "记录支出", name: "支出项目", amount: "支出金额" } : { title: "新增客户", name: "客户名称", amount: "联系电话" };
   const [name, setName] = useState(editingExpense?.name || "");
@@ -266,19 +298,23 @@ function CrudModal({ kind, snapshot, editingExpenseId, onClose, onCreated }: { k
   const [category, setCategory] = useState(editingExpense?.category || "other");
   const [source, setSource] = useState("xianyu");
   const [level, setLevel] = useState<CustomerLevel>("C");
+  const [projectKind, setProjectKind] = useState<ProjectKind>(initialProjectKind);
   const [error, setError] = useState("");
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!name.trim() || !amount.trim()) { setError("请完整填写必要信息"); return; }
-    if (kind !== "customer" && Number(amount) <= 0) { setError("金额必须大于 0"); return; }
-    if (kind === "project" && !customerName.trim()) { setError("请填写关联客户"); return; }
-    onCreated(kind, { name: name.trim(), amount: amount.trim(), notes: notes.trim(), customerName: customerName.trim(), durationDays, projectId, category, source, level });
+    if (!name.trim()) { setError("请填写名称"); return; }
+    if (kind === "customer" && !amount.trim()) { setError("请填写联系电话"); return; }
+    if (kind === "expense" && (!amount.trim() || Number(amount) <= 0)) { setError("金额必须大于 0"); return; }
+    if (kind === "project" && projectKind === "client" && (!amount.trim() || Number(amount) <= 0)) { setError("请填写大于 0 的项目预算"); return; }
+    if (kind === "project" && projectKind === "client" && !customerName.trim()) { setError("请填写关联客户"); return; }
+    onCreated(kind, { name: name.trim(), amount: kind === "project" && projectKind === "personal" ? "0" : amount.trim(), notes: notes.trim(), customerName: projectKind === "personal" ? "" : customerName.trim(), durationDays, projectId, category, source, level, projectKind });
   };
   return <div className="page-modal-layer"><button className="page-modal-backdrop" aria-label="关闭弹窗" onClick={onClose} /><form className="page-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label={labels.title}>
     <div className="page-modal-head"><div><span>快速录入</span><h2>{labels.title}</h2></div><button type="button" aria-label="关闭" onClick={onClose}><X size={20} /></button></div>
+    {kind === "project" && <div className="modal-project-kind" role="group" aria-label="项目分类"><span>项目分类</span><div><button type="button" className={projectKind === "personal" ? "active" : ""} aria-pressed={projectKind === "personal"} onClick={() => setProjectKind("personal")}><Student size={17} />个人项目</button><button type="button" className={projectKind === "client" ? "active" : ""} aria-pressed={projectKind === "client"} onClick={() => setProjectKind("client")}><Briefcase size={17} />接单项目</button></div><small>{projectKind === "personal" ? "管理产品、开源项目或个人成长计划" : "关联客户、报价、回款与交付"}</small></div>}
     <label><span>{labels.name}</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder={`请输入${labels.name}`} autoFocus /></label>
-    <label><span>{labels.amount}</span><input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={`请输入${labels.amount}`} /></label>
-    {kind === "project" && <><label><span>关联客户</span><input list="modal-customer-options" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="选择或输入客户名称" /><datalist id="modal-customer-options">{snapshot.customers.map((customer) => <option value={customer.name} key={customer.id} />)}</datalist></label><label><span>预计工期（天）</span><input type="number" min="1" value={durationDays} onChange={(event) => setDurationDays(event.target.value)} /></label></>}
+    {(kind !== "project" || projectKind === "client") && <label><span>{labels.amount}</span><input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={`请输入${labels.amount}`} /></label>}
+    {kind === "project" && <>{projectKind === "client" && <label><span>关联客户</span><input list="modal-customer-options" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="选择或输入客户名称" /><datalist id="modal-customer-options">{snapshot.customers.map((customer) => <option value={customer.name} key={customer.id} />)}</datalist></label>}<label><span>预计工期（天）</span><input type="number" min="1" value={durationDays} onChange={(event) => setDurationDays(event.target.value)} /></label></>}
     {kind === "expense" && <><label><span>支出类别</span><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)}><option value="software">软件订阅</option><option value="outsourcing">外包服务</option><option value="server">服务器</option><option value="office">办公支出</option><option value="refund">退款</option><option value="other">其他</option></select></label><label><span>关联项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">不关联项目</option>{snapshot.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label></>}
     {kind === "customer" && <><label><span>客户来源</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="xianyu">闲鱼</option><option value="wechat">微信</option><option value="referral">转介绍</option><option value="other">其他</option></select></label><label><span>客户等级</span><select value={level} onChange={(event) => setLevel(event.target.value as CustomerLevel)}><option value="A">A 级</option><option value="B">B 级</option><option value="C">C 级</option></select></label></>}
     <label><span>备注</span><textarea rows={4} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="补充说明（可选）" /></label>
@@ -377,14 +413,14 @@ function CleanExpenseRecordsPage({ snapshot, onAction, extraRows, globalSearch, 
   const totalExpense = snapshot.expenses.reduce((sum, expense) => sum + expense.amount, 0) + extraRows.reduce((sum, row) => sum + Number(String(row[2]).replace(/[^0-9.-]/g, "")), 0);
   const monthExpense = snapshot.expenses.filter((expense) => isCurrentMonth(expense.paidAt)).reduce((sum, expense) => sum + expense.amount, 0);
   const todayExpense = snapshot.expenses.filter((expense) => new Date(expense.paidAt).toDateString() === now.toDateString()).reduce((sum, expense) => sum + expense.amount, 0);
-  const monthIncome = snapshot.payments.filter((payment) => payment.status === "confirmed" && isCurrentMonth(payment.paidAt)).reduce((sum, payment) => sum + payment.amount, 0);
+  const monthIncome = getBusinessSummary(snapshot).monthlyIncome;
   const monthProfit = monthIncome - monthExpense;
   const costRatio = monthIncome ? Math.round((monthExpense / monthIncome) * 100) : 0;
   const metrics: MetricData[] = [
-    { title: "累计支出（元）", value: formatMoney(totalExpense), detail: <>你的真实成本合计</>, tone: "purple", image: "/assets/metric-wallet-purple.png", chart: rows.length ? "line" : undefined },
-    { title: "本月支出（元）", value: formatMoney(monthExpense), detail: <>本月已记录成本</>, tone: "green", image: "/assets/metric-wallet-green.png", chart: rows.length ? "bar" : undefined },
-    { title: "今日支出（元）", value: formatMoney(todayExpense), detail: <>今日真实记录</>, tone: "blue", image: "/assets/metric-card-blue.png" },
-    { title: "本月利润（元）", value: formatMoney(monthProfit), detail: <>收入 - 支出</>, tone: monthProfit < 0 ? "red" : "purple", image: "/assets/goal-trophy.png" },
+    { title: "累计支出（元）", value: formatMoney(totalExpense), detail: <>你的真实成本合计</>, tone: "purple", image: "/assets/page-metrics-v2/expense-wallet-purple.png", chart: rows.length ? "line" : undefined },
+    { title: "本月支出（元）", value: formatMoney(monthExpense), detail: <>本月已记录成本</>, tone: "green", image: "/assets/page-metrics-v2/expense-wallet-green.png", chart: rows.length ? "bar" : undefined },
+    { title: "今日支出（元）", value: formatMoney(todayExpense), detail: <>今日真实记录</>, tone: "blue", image: "/assets/page-metrics-v2/expense-card-blue.png" },
+    { title: "本月利润（元）", value: formatMoney(monthProfit), detail: <>收入 - 支出</>, tone: monthProfit < 0 ? "red" : "purple", image: "/assets/metrics-v2/profit-wallet-3d.png" },
     { title: "成本占收入比", value: `${costRatio}%`, detail: <>按本月真实数据计算</>, tone: "orange", icon: ChartBar },
   ];
   const columns: Column[] = [{ key: "name", label: "支出项目", width: "1.5fr" }, { key: "category", label: "类别", width: ".75fr" }, { key: "amount", label: "金额（元）", width: ".82fr" }, { key: "date", label: "支出时间", width: "1.08fr" }, { key: "method", label: "记录方式", width: ".85fr" }, { key: "project", label: "关联项目", width: "1.24fr" }, { key: "status", label: "状态", width: ".72fr" }, { key: "note", label: "备注", width: ".9fr" }, { key: "actions", label: "", width: ".25fr" }];
@@ -453,21 +489,17 @@ function DataStatisticsHub({ snapshot }: { snapshot: LedgerSnapshot }) {
 }
 
 function CleanGoalPlanPage({ snapshot, onEditGoal }: { snapshot: LedgerSnapshot; onEditGoal: () => void }) {
-  const now = new Date();
-  const monthIncome = snapshot.payments.filter((payment) => {
-    const date = new Date(payment.paidAt);
-    return payment.status === "confirmed" && date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
-  }).reduce((sum, payment) => sum + payment.amount, 0);
+  const monthIncome = getBusinessSummary(snapshot).monthlyIncome;
   const goal = snapshot.settings.monthlyIncomeGoal;
   const progress = goal ? Math.min(100, Math.round((monthIncome / goal) * 100)) : 0;
   const activeProjects = snapshot.projects.filter((project) => project.status === "in_progress");
   const completedTasks = snapshot.tasks.filter((task) => task.status === "done").length;
   const metrics: MetricData[] = [
-    { title: "本月收入目标", value: goal ? `¥${goal.toLocaleString("zh-CN", { minimumFractionDigits: 2 })}` : "未设置", detail: <>本月已收 <b>¥{monthIncome.toLocaleString("zh-CN")}</b>{goal > 0 && <Progress value={progress} />}</>, tone: "purple", image: "/assets/metric-wallet-purple.png" },
-    { title: "已完成比例", value: `${progress}%`, detail: <>按真实收款计算</>, tone: "green", image: "/assets/pages/goal-ring.png" },
-    { title: "本周交付目标", value: `${activeProjects.length} 个项目`, detail: <>进行中项目</>, tone: "blue", image: "/assets/pages/project-calendar.png" },
-    { title: "任务完成情况", value: `${completedTasks}/${snapshot.tasks.length} 项`, detail: <>项目任务进度</>, tone: "purple", image: "/assets/pages/goal-book.png" },
-    { title: "重点项目数", value: `${activeProjects.length} 个`, detail: <>当前进行中项目</>, tone: "orange", image: "/assets/pages/goal-folder.png" },
+    { title: "本月收入目标", value: goal ? `¥${goal.toLocaleString("zh-CN", { minimumFractionDigits: 2 })}` : "未设置", detail: <>本月已收 <b>¥{monthIncome.toLocaleString("zh-CN")}</b>{goal > 0 && <Progress value={progress} />}</>, tone: "purple", image: "/assets/metrics-v2/income-wallet-3d.png" },
+    { title: "已完成比例", value: `${progress}%`, detail: <>按真实收款计算</>, tone: "green", image: "/assets/page-metrics-v2/goal-progress-ring.png" },
+    { title: "本周交付目标", value: `${activeProjects.length} 个项目`, detail: <>进行中项目</>, tone: "blue", image: "/assets/page-metrics-v2/goal-delivery-calendar.png" },
+    { title: "任务完成情况", value: `${completedTasks}/${snapshot.tasks.length} 项`, detail: <>项目任务进度</>, tone: "purple", image: "/assets/page-metrics-v2/goal-task-book.png" },
+    { title: "重点项目数", value: `${activeProjects.length} 个`, detail: <>当前进行中项目</>, tone: "orange", image: "/assets/page-metrics-v2/goal-focus-folder.png" },
   ];
   return <div className="other-page goal-page"><MetricsRow metrics={metrics} /><EmptyLedgerNotice icon={Target} title={goal || snapshot.projects.length || snapshot.tasks.length ? "目标看板已连接真实数据" : "从自己的目标开始"} description={goal || snapshot.projects.length || snapshot.tasks.length ? "当前只展示你录入的项目、收入和任务，不再补入任何示例目标。" : "示例目标、任务和学习计划已经清空。先设置月度收入目标，再导入自己的经营数据。"} action={<button className="page-primary" onClick={onEditGoal}><PencilSimple size={16} />{goal ? "编辑月度目标" : "设置月度目标"}</button>} /></div>;
 }
@@ -529,7 +561,14 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
   const [section, setSection] = useState<SettingsSectionName>(initialSection);
   const settings = snapshot.settings;
   const update = (changes: Partial<LedgerSnapshot["settings"]>) => onSnapshotChange({ ...snapshot, settings: { ...settings, ...changes } });
-  const sections = [["个人资料", User], ["账号设置", ShieldCheck], ["记账设置", GearSix], ["项目默认值", SquaresFour], ["提醒通知", Bell], ["数据与同步", CloudArrowUp], ["界面主题", Palette]] as Array<[SettingsSectionName, PhosphorIcon]>;
+  const sections = [["个人资料", User], ["账号设置", ShieldCheck], ["记账设置", GearSix], ["项目默认值", SquaresFour], ["提醒通知", Bell], ["渠道连接", ChatCircleDots], ["商品采集", Storefront], ["AI与回复", Sparkle], ["报价参数", Target], ["数据迁移", Database], ["数据与同步", CloudArrowUp], ["界面主题", Palette]] as Array<[SettingsSectionName, PhosphorIcon]>;
+  const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(null);
+  const [providerStatuses, setProviderStatuses] = useState<AIProviderStatus[]>([]);
+  const [providerRefreshBusy, setProviderRefreshBusy] = useState(false);
+  const [productInsight, setProductInsight] = useState<ProductIntelligenceView | null>(null);
+  const [migrationPreview, setMigrationPreview] = useState<MigrationPreview | null>(null);
+  const [migrationResolutions, setMigrationResolutions] = useState<Record<string, "sqlite" | "browser">>({});
+  const [migrationBusy, setMigrationBusy] = useState(false);
   const [profileDraft, setProfileDraft] = useState({
     name: settings.profileName || "张同学",
     role: settings.profileRole || "个人开发者",
@@ -549,6 +588,15 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
   useLayoutEffect(() => {
     setSection(initialSection);
   }, [initialSection]);
+  useEffect(() => {
+    if (!["渠道连接", "AI与回复"].includes(section)) return;
+    void localPlatformService.status().then(setPlatformStatus).catch(() => setPlatformStatus(null));
+    if (section === "AI与回复") void localPlatformService.providers().then(setProviderStatuses).catch(() => setProviderStatuses([]));
+  }, [section]);
+  useEffect(() => {
+    if (section !== "商品采集") return;
+    void localPlatformService.productIntelligence().then(setProductInsight).catch(() => setProductInsight(null));
+  }, [section]);
   const exportBackup = () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
     const anchor = document.createElement("a");
@@ -591,8 +639,141 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
     记账设置: "设置运营起点、月度目标和数字显示方式。",
     项目默认值: "配置新建项目和快速记账时自动采用的默认值。",
     提醒通知: "决定哪些经营事项会进入顶部提醒和待办列表。",
-    数据与同步: "查看本地保存状态，并导出完整经营数据备份。",
+    渠道连接: "查看闲鱼监听与微信客服的本机连接状态。",
+    商品采集: "查看每日一次的只读采集计划、数据新鲜度和安全边界。",
+    AI与回复: "查看 DeepSeek 快速回复、Codex 深度生成、线索分析与 GPT 人工导入状态。",
+    报价参数: "设置目标时薪与风险缓冲，报价金额始终由规则计算。",
+    数据迁移: "把当前浏览器中的旧记账数据预览、去重后导入统一 SQLite。",
+    数据与同步: "查看统一 SQLite 保存状态，并导出完整经营数据备份。",
     界面主题: "选择界面模式和整个经营助手的主题色。",
+  };
+
+  const deepseekProvider = providerStatuses.find((item) => item.provider === "deepseek");
+  const deepseekBaseUrl = deepseekProvider?.base_url || "https://api.deepseek.com";
+  const deepseekReplyModel = deepseekProvider?.model || "deepseek-v4-flash";
+  const deepseekLeadModel = deepseekProvider?.lead_model || deepseekReplyModel;
+  const deepseekStatusLabel = !deepseekProvider?.configured
+    ? "待配置"
+    : deepseekProvider.status === "connected"
+      ? "已连接"
+      : deepseekProvider.status === "error"
+        ? "连接异常"
+        : "等待检测";
+  const deepseekStatusClass = !deepseekProvider?.configured
+    ? "muted"
+    : deepseekProvider.status === "connected"
+      ? "connected"
+      : "attention";
+
+  const copyDeepSeekTemplate = async () => {
+    const template = [
+      "# DeepSeek 快速草稿与线索分析",
+      "DEEPSEEK_API_KEY=",
+      `DEEPSEEK_BASE_URL=${deepseekBaseUrl}`,
+      `DEEPSEEK_REPLY_MODEL=${deepseekReplyModel}`,
+      `DEEPSEEK_LEAD_MODEL=${deepseekLeadModel}`,
+      "DEEPSEEK_TIMEOUT_SECONDS=12",
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(template);
+      onToast("DeepSeek 配置模板已复制；请在 .env 中补上 API Key");
+    } catch {
+      onToast("配置模板复制失败，请检查浏览器剪贴板权限");
+    }
+  };
+
+  const refreshAIProviders = async () => {
+    setProviderRefreshBusy(true);
+    try {
+      const rows = await localPlatformService.providers(true);
+      setProviderStatuses(rows);
+      const deepseek = rows.find((item) => item.provider === "deepseek");
+      onToast(!deepseek?.configured
+        ? "尚未读取到 DEEPSEEK_API_KEY，请配置并重启本机服务"
+        : deepseek.status === "connected"
+          ? "DeepSeek 已连接，可以生成快速草稿"
+          : deepseek.detail || "DeepSeek 连接异常，请检查配置");
+    } catch {
+      onToast("本机服务未连接，暂时无法检测 DeepSeek");
+    } finally {
+      setProviderRefreshBusy(false);
+    }
+  };
+
+  const aiReplySettingsPanel = <SectionCard id="settings-live-AI与回复" className="settings-group settings-panel-card platform-settings-card">
+    <PanelHeader title="AI 与回复" />
+    <div className="ai-capability-grid">{[
+      <span key="deepseek"><Sparkle size={19} weight="duotone" /><b>DeepSeek 快速</b><small>{deepseekProvider?.configured ? `${deepseekReplyModel} · ${deepseekProvider.last_latency_seconds ? `最近 ${deepseekProvider.last_latency_seconds}s` : "等待首次调用"}` : "未配置 API Key"}</small><em className={deepseekProvider?.configured ? "ok" : "muted"}>{deepseekProvider?.configured ? "可用" : "待配置"}</em></span>,
+      <span key="codex"><CheckCircle size={19} weight="fill" /><b>Codex 深度</b><small>{platformStatus?.codex_logged_in ? `${providerStatuses.find((item) => item.provider === "codex_cli")?.model || "当前账号模型"}` : "需要本机登录"}</small><em className={platformStatus?.codex_logged_in ? "ok" : "muted"}>{platformStatus?.codex_logged_in ? "已就绪" : "需检查"}</em></span>,
+      <span key="lead"><Funnel size={19} weight="duotone" /><b>线索分析</b><small>DeepSeek 只给建议，确认后才写入</small><em className={deepseekProvider?.configured ? "ok" : "muted"}>人工确认</em></span>,
+      <span key="gpt"><FileText size={19} weight="duotone" /><b>GPT 需求导入</b><small>脱敏导出 + 严格 JSON + 蓝图预览</small><em className="ok">可使用</em></span>,
+    ]}</div>
+    <section className="deepseek-connection-card" aria-label="DeepSeek 连接路径">
+      <header>
+        <span className="deepseek-connection-icon"><Sparkle size={20} weight="duotone" /></span>
+        <div><strong>DeepSeek 连接路径</strong><small>后端读取本机配置后，使用 Bearer 鉴权直接请求官方兼容接口。</small></div>
+        <b className={deepseekStatusClass}>{deepseekStatusLabel}</b>
+      </header>
+      <div className="deepseek-connection-grid">
+        <ol className="deepseek-setup-steps">
+          <li><i>1</i><span><b>复制配置模板</b><small>模板不含密钥，不会把 API Key 写进网页。</small></span></li>
+          <li><i>2</i><span><b>写入本机 .env</b><small>只需补充 DEEPSEEK_API_KEY，并保存文件。</small></span></li>
+          <li><i>3</i><span><b>重启 8877 服务</b><small>重启后点击“检测连接”，状态会通过 /models 校验。</small></span></li>
+        </ol>
+        <dl className="deepseek-path-list">
+          <div><dt>配置文件</dt><dd><code>{deepseekProvider?.config_file || "项目根目录/.env"}</code></dd></div>
+          <div><dt>API Base</dt><dd><code>{deepseekBaseUrl}</code></dd></div>
+          <div><dt>对话请求</dt><dd><span className="request-method">POST</span><code>{deepseekProvider?.chat_endpoint || `${deepseekBaseUrl}/chat/completions`}</code></dd></div>
+          <div><dt>健康检测</dt><dd><span className="request-method get">GET</span><code>{deepseekProvider?.models_endpoint || `${deepseekBaseUrl}/models`}</code></dd></div>
+          <div><dt>模型</dt><dd><code>回复 {deepseekReplyModel} · 线索 {deepseekLeadModel}</code></dd></div>
+        </dl>
+      </div>
+      <footer>
+        <p><ShieldCheck size={16} weight="fill" />API Key 只由 FastAPI 从未跟踪的 `.env` 读取，不进入前端、SQLite、日志或备份。</p>
+        <div className="deepseek-setup-actions">
+          <button type="button" className="outline-action" onClick={() => void copyDeepSeekTemplate()}><Copy size={15} />复制配置模板</button>
+          <button type="button" className="outline-action" disabled={providerRefreshBusy} onClick={() => void refreshAIProviders()}><ArrowClockwise className={providerRefreshBusy ? "spin" : ""} size={15} />{providerRefreshBusy ? "检测中…" : "检测连接"}</button>
+        </div>
+      </footer>
+    </section>
+    <SettingRow icon={Sparkle} title="Codex 回复速度档位" description="仅在手动选择 Codex 深度草稿时使用" control={<select aria-label="回复速度档位" className="setting-control" value={settings.replySpeedMode || "balanced"} onChange={(event) => update({ replySpeedMode: event.target.value as LedgerSnapshot["settings"]["replySpeedMode"] })}><option value="fast">极速</option><option value="balanced">平衡</option><option value="quality">高质量</option><option value="custom">自定义</option></select>} tone="blue" />
+    <SettingRow icon={ShieldCheck} title="真实发送" description="无论 DeepSeek 或 Codex，价格与交付等风险始终由本地规则复查" control={<span className="setting-control">默认人工确认</span>} tone="green" />
+  </SectionCard>;
+
+  const previewLegacyMigration = async () => {
+    const legacy = getLegacyLedgerSnapshot();
+    if (!legacy) {
+      onToast("当前浏览器没有检测到旧记账数据");
+      return;
+    }
+    setMigrationBusy(true);
+    try {
+      const preview = await localPlatformService.migrationPreview(legacy);
+      setMigrationPreview(preview);
+      setMigrationResolutions(Object.fromEntries(preview.conflicts.map((item) => [item.key, "sqlite"])));
+      onToast(preview.conflicts.length ? `检测到 ${preview.conflicts.length} 项需要确认` : "迁移预览完成，可以安全导入");
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : "迁移预览失败");
+    } finally {
+      setMigrationBusy(false);
+    }
+  };
+
+  const commitLegacyMigration = async () => {
+    const legacy = getLegacyLedgerSnapshot();
+    if (!legacy || !migrationPreview) return;
+    setMigrationBusy(true);
+    try {
+      const result = await localPlatformService.migrationCommit(legacy, migrationPreview.token, migrationResolutions);
+      acceptMigratedLedger(result.revision);
+      onToast(`迁移完成，已生成备份 ${result.backup_name}`);
+      window.setTimeout(() => window.location.reload(), 700);
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : "迁移提交失败");
+      setMigrationPreview(null);
+    } finally {
+      setMigrationBusy(false);
+    }
   };
 
   const activePanel = <section className="settings-active-panel" aria-label={`${section}内容`}>
@@ -602,7 +783,12 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
     {section === "记账设置" && <SectionCard id="settings-live-记账设置" className="settings-group settings-panel-card"><PanelHeader title="记账与偏好设置" /><SettingRow icon={CalendarBlank} title="闲鱼开始运营日期" description="用于计算运营天数与阶段数据" control={<input aria-label="闲鱼开始运营日期" className="setting-control" type="date" value={settings.xianyuStartedAt} onChange={(event) => update({ xianyuStartedAt: event.target.value })} />} /><SettingRow icon={Target} title="月度目标金额" description="首页与目标计划会实时读取" control={<input aria-label="月度目标金额" className="setting-control" type="number" min="0" value={settings.monthlyIncomeGoal} onChange={(event) => update({ monthlyIncomeGoal: Math.max(0, Number(event.target.value) || 0) })} />} tone="orange" /><SettingRow icon={ChartBar} title="显示数据小数位" description="金额与比例的小数位数" control={<select aria-label="显示数据小数位" className="setting-control" value={settings.decimalPlaces ?? 2} onChange={(event) => update({ decimalPlaces: Number(event.target.value) })}><option value="0">0 位</option><option value="2">2 位</option></select>} tone="blue" /></SectionCard>}
     {section === "项目默认值" && <SectionCard id="settings-live-项目默认值" className="settings-group settings-panel-card"><PanelHeader title="项目默认值" /><SettingRow icon={ArrowClockwise} title="默认工期" description="新建项目时自动填入" control={<input aria-label="默认工期" className="setting-control" type="number" min="1" value={settings.defaultDurationDays || 30} onChange={(event) => update({ defaultDurationDays: Math.max(1, Number(event.target.value) || 30) })} />} tone="blue" /><SettingRow icon={Database} title="默认收款类型" description="快速记账的默认选项" control={<select aria-label="默认收款类型" className="setting-control" value={settings.defaultPaymentType || "full"} onChange={(event) => update({ defaultPaymentType: event.target.value as LedgerSnapshot["settings"]["defaultPaymentType"] })}><option value="deposit">定金</option><option value="milestone">阶段款</option><option value="final">尾款</option><option value="full">全款</option></select>} tone="green" /></SectionCard>}
     {section === "提醒通知" && <SectionCard id="settings-live-提醒通知" className="settings-group settings-panel-card"><PanelHeader title="提醒与通知设置" /><SettingRow icon={Bell} title="消息提醒" description="控制顶部经营提醒数量" control={<Toggle checked={settings.notificationsEnabled ?? true} onChange={() => update({ notificationsEnabled: !(settings.notificationsEnabled ?? true) })} label="消息提醒" />} tone="blue" /><SettingRow icon={Bell} title="项目到期提醒" description="决定临近交付项目的提醒范围" control={<select aria-label="项目到期提醒" className="setting-control" value={settings.reminderDays || 3} onChange={(event) => update({ reminderDays: Number(event.target.value) })}><option value="1">提前 1 天</option><option value="3">提前 3 天</option><option value="7">提前 7 天</option></select>} tone="orange" /><SettingRow icon={Bell} title="收款提醒" description="控制待收节点和回款提醒列表" control={<Toggle checked={settings.paymentRemindersEnabled ?? true} onChange={() => update({ paymentRemindersEnabled: !(settings.paymentRemindersEnabled ?? true) })} label="收款提醒" />} tone="green" /></SectionCard>}
-    {section === "数据与同步" && <SectionCard id="settings-live-数据与同步" className="settings-group settings-panel-card"><PanelHeader title="数据与备份设置" /><div className="settings-status-grid"><span><CheckCircle size={19} weight="fill" /><b>数据状态</b><small>已就绪</small></span><span><DesktopTower size={19} weight="duotone" /><b>保存位置</b><small>当前设备</small></span><span><Database size={19} weight="duotone" /><b>业务数据</b><small>{recordCount} 条记录</small></span></div><SettingRow icon={CloudArrowUp} title="自动保存" description="每次业务操作后都会写入当前设备" control={<span className="setting-control">始终开启</span>} tone="blue" /><SettingRow icon={DownloadSimple} title="导出数据" description="下载完整 JSON 备份，可用于迁移" control={<button className="outline-action" onClick={exportBackup}>导出备份</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="业务数据不是缓存，不会被删除" control={<button className="outline-action" onClick={() => onToast("无需清理：经营数据已安全保留")}>检查缓存</button>} tone="red" /></SectionCard>}
+    {section === "渠道连接" && <SectionCard id="settings-live-渠道连接" className="settings-group settings-panel-card platform-settings-card"><PanelHeader title="渠道连接" /><div className="platform-status-list"><article><span className="platform-mark xianyu"><ChatCircleDots size={20} weight="fill" /></span><div><strong>闲鱼消息监听</strong><small>{platformStatus?.listener_detail || "通过 Cookie、MTop 与 WebSocket 在本机运行"}</small></div><b className={platformStatus?.listener === "connected" ? "connected" : "attention"}>{platformStatus?.listener === "connected" ? "监听中" : "未连接"}</b></article><article><span className="platform-mark wechat"><WechatLogo size={20} weight="fill" /></span><div><strong>微信客服</strong><small>{platformStatus?.wechat_provider === "wecom" ? "企业微信官方微信客服" : "当前使用安全的本机 Mock 渠道"}</small></div><b className={platformStatus?.wechat_status === "connected" ? "connected" : "muted"}>{platformStatus?.wechat_status || "mock"}</b></article></div><p className="local-secret-note"><ShieldCheck size={17} weight="fill" />Cookie 与企业微信密钥只从未跟踪的本机 `.env` 读取，不会进入网页、SQLite 或备份。</p><button className="outline-action" onClick={() => void localPlatformService.status().then((value) => { setPlatformStatus(value); onToast("渠道状态已刷新"); }).catch(() => onToast("本机服务未连接"))}><ArrowClockwise size={16} />刷新连接状态</button></SectionCard>}
+    {section === "商品采集" && <SectionCard id="settings-live-商品采集" className="settings-group settings-panel-card platform-settings-card"><PanelHeader title="商品每日采集" /><div className="settings-status-grid"><span><CalendarBlank size={19} weight="duotone" /><b>固定频率</b><small>{productInsight?.collection.schedule || "每天一次"}</small></span><span><Database size={19} weight="duotone" /><b>监测范围</b><small>{productInsight ? `${productInsight.summary.monitored_products} 个商品` : "等待本机服务"}</small></span><span><ShieldCheck size={19} weight="duotone" /><b>执行边界</b><small>只读采集与本地建议</small></span></div><SettingRow icon={ArrowClockwise} title="最近一次采集" description={productInsight?.collection.last_run?.detail || "还没有远程采集记录"} control={<span className="setting-control">{productInsight?.collection.last_run?.run_date || "等待采集"}</span>} tone="blue" /><SettingRow icon={Storefront} title="下次采集" description="同一自然日不会重复访问闲鱼商品详情" control={<span className="setting-control">{productInsight?.collection.next_collection_at ? new Date(productInsight.collection.next_collection_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "等待计划"}</span>} tone="green" /><p className="local-secret-note"><ShieldCheck size={17} weight="fill" />系统不会自动修改、发布、重新上架、下架商品，也不会购买流量；所有建议都由你在闲鱼中手动执行。</p><button className="outline-action" onClick={() => { window.location.hash = encodeURIComponent("商品经营"); }}><Storefront size={16} />进入商品经营</button></SectionCard>}
+    {section === "AI与回复" && aiReplySettingsPanel}
+    {section === "报价参数" && <SectionCard id="settings-live-报价参数" className="settings-group settings-panel-card"><PanelHeader title="报价参数" /><SettingRow icon={Target} title="目标时薪" description="无历史小时收益时必须填写；不会由 AI 虚构" control={<input aria-label="目标时薪" className="setting-control" type="number" min="1" placeholder="例如 300" value={settings.targetHourlyRate || ""} onChange={(event) => update({ targetHourlyRate: event.target.value ? Math.max(1, Number(event.target.value)) : null })} />} tone="orange" /><SettingRow icon={Warning} title="风险缓冲" description="服务端报价公式中的固定经营缓冲" control={<select aria-label="报价风险缓冲" className="setting-control" value={settings.quoteRiskBuffer ?? 0.15} onChange={(event) => update({ quoteRiskBuffer: Number(event.target.value) })}><option value="0.1">10%</option><option value="0.15">15%</option><option value="0.2">20%</option><option value="0.25">25%</option></select>} tone="orange" /><div className="quote-formula"><span>服务端确定性公式</span><strong>阶段工时 × 目标时薪 ×（1 + 风险缓冲）</strong><small>金额按百元取整；付款计划默认 30% 定金 / 40% 阶段款 / 30% 尾款，最终报价仍需人工确认。</small></div></SectionCard>}
+    {section === "数据迁移" && <SectionCard id="settings-live-数据迁移" className="settings-group settings-panel-card migration-settings-card"><PanelHeader title="旧数据迁移向导" /><div className="migration-source"><span><DesktopTower size={20} weight="duotone" /></span><div><strong>当前浏览器 LocalStorage</strong><small>{getLegacyLedgerSnapshot() ? "已检测到旧版记账快照" : "未检测到旧版快照"}</small></div><b>{isLedgerBackendConnected() ? "SQLite 已连接" : "仅浏览器模式"}</b></div><button className="business-primary migration-preview-button" disabled={migrationBusy || !getLegacyLedgerSnapshot() || !isLedgerBackendConnected()} onClick={() => void previewLegacyMigration()}><Database size={16} />{migrationBusy ? "正在检查…" : "预览重复与冲突"}</button>{migrationPreview && <div className="migration-preview"><div className="migration-counts"><span><b>{Object.values(migrationPreview.additions).reduce((sum, value) => sum + value, 0)}</b><small>可新增</small></span><span><b>{Object.values(migrationPreview.identical).reduce((sum, value) => sum + value, 0)}</b><small>完全相同</small></span><span className={migrationPreview.conflicts.length ? "warn" : "ok"}><b>{migrationPreview.conflicts.length}</b><small>需要确认</small></span></div>{migrationPreview.conflicts.map((conflict) => <article key={conflict.key}><div><strong>{conflict.collection} · {conflict.incoming_id || "无 ID"}</strong><small>{conflict.reason}</small></div><select aria-label={`冲突处理 ${conflict.key}`} value={migrationResolutions[conflict.key] || "sqlite"} onChange={(event) => setMigrationResolutions((value) => ({ ...value, [conflict.key]: event.target.value as "sqlite" | "browser" }))}><option value="sqlite">保留 SQLite</option><option value="browser">采用浏览器</option></select></article>)}<p><ShieldCheck size={16} weight="fill" />提交前会同时备份数据库、SQLite 快照 JSON 与浏览器快照 JSON，任何冲突都不会静默覆盖。</p><button className="business-primary" disabled={migrationBusy} onClick={() => void commitLegacyMigration()}>确认选择并导入</button></div>}</SectionCard>}
+    {section === "数据与同步" && <SectionCard id="settings-live-数据与同步" className="settings-group settings-panel-card"><PanelHeader title="数据与备份设置" /><div className="settings-status-grid"><span><CheckCircle size={19} weight="fill" /><b>数据状态</b><small>{isLedgerBackendConnected() ? "统一服务已连接" : "浏览器兼容模式"}</small></span><span><DesktopTower size={19} weight="duotone" /><b>保存位置</b><small>{isLedgerBackendConnected() ? "本机 SQLite" : "当前浏览器"}</small></span><span><Database size={19} weight="duotone" /><b>业务数据</b><small>{recordCount} 条记录</small></span></div><SettingRow icon={CloudArrowUp} title="跨浏览器同步" description="Edge 与内置浏览器连接同一本机服务后读取同一数据库" control={<span className="setting-control">{isLedgerBackendConnected() ? "已启用" : "等待本机服务"}</span>} tone="blue" /><SettingRow icon={DownloadSimple} title="导出数据" description="下载当前完整 JSON 备份" control={<button className="outline-action" onClick={exportBackup}>导出备份</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="业务数据不是缓存，不会被删除" control={<button className="outline-action" onClick={() => onToast("无需清理：经营数据已安全保留")}>检查缓存</button>} tone="red" /></SectionCard>}
     {section === "界面主题" && <SectionCard id="settings-live-界面主题" className="theme-settings settings-panel-card"><PanelHeader title="界面主题与外观" /><div className="mode-choice"><span><i />界面模式<small>当前产品保持浅色 SaaS 设计</small></span><button className="active" onClick={() => update({ colorMode: "light" })}>浅色模式</button><button disabled title="当前浅色设计暂未提供深色配色">深色模式</button></div><div className="theme-colors"><span><b>主题色彩</b><small>主要按钮与选中状态使用该颜色</small></span>{["#6544f4", "#4c8cf5", "#25c879", "#ffac18", "#f35b68", "#12b9cd"].map((color) => <button aria-label={`选择主题色 ${color}`} className={(settings.themeColor || "#6544f4") === color ? "active" : ""} style={{ background: color }} onClick={() => update({ themeColor: color })} key={color} />)}</div></SectionCard>}
   </section>;
 
@@ -612,8 +798,9 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
   </div></div>;
 }
 
-export function OtherPages({ page, snapshot, onQuickAdd, onSnapshotChange, onNavigate, globalSearch, initialSettingsSection }: OtherPagesProps) {
+export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onNavigate, globalSearch, initialSettingsSection, projectRoute, onProjectRouteChange, customerRoute, onCustomerRouteChange }: OtherPagesProps) {
   const [modal, setModal] = useState<ActionKind | null>(null);
+  const [createProjectKind, setCreateProjectKind] = useState<ProjectKind>("client");
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const created = (kind: ActionKind, value: CrudValue) => {
@@ -621,14 +808,14 @@ export function OtherPages({ page, snapshot, onQuickAdd, onSnapshotChange, onNav
     const stamp = Date.now();
     const today = new Date();
     if (kind === "project") {
-      let customer = next.customers.find((item) => item.name.trim() === value.customerName.trim());
-      if (!customer) {
+      let customer = value.projectKind === "client" ? next.customers.find((item) => item.name.trim() === value.customerName.trim()) : undefined;
+      if (value.projectKind === "client" && !customer) {
         customer = { id: `c-${stamp}`, name: value.customerName, source: "xianyu", phone: "待补充", followUpStatus: "contacted", lastContactAt: today.toISOString(), level: "C", tags: ["项目客户"] };
         next.customers.unshift(customer);
       }
       const due = new Date(today);
       due.setDate(due.getDate() + Math.max(1, Number(value.durationDays) || 30));
-      next.projects.unshift({ id: `p-${stamp}`, name: value.name, customerId: customer.id, totalAmount: Number(value.amount), startDate: today.toISOString().slice(0, 10), dueDate: due.toISOString().slice(0, 10), progress: 0, status: "pending", notes: value.notes || undefined, type: "定制开发", estimatedHours: Math.max(1, Number(value.durationDays) || 30) * 5, accent: "blue" });
+      next.projects.unshift({ id: `p-${stamp}`, name: value.name, customerId: customer?.id || "", totalAmount: value.projectKind === "personal" ? 0 : Number(value.amount), startDate: today.toISOString().slice(0, 10), dueDate: due.toISOString().slice(0, 10), progress: 0, status: "pending", notes: value.notes || undefined, type: value.projectKind === "personal" ? "个人开发" : "定制开发", estimatedHours: Math.max(1, Number(value.durationDays) || 30) * 5, accent: value.projectKind === "personal" ? "purple" : "blue", projectKind: value.projectKind });
     }
     if (kind === "expense") {
       const expense = { id: editingExpenseId || `e-${stamp}`, projectId: value.projectId || undefined, name: value.name, category: value.category as "software" | "outsourcing" | "server" | "office" | "refund" | "other", amount: Number(value.amount), paidAt: next.expenses.find((item) => item.id === editingExpenseId)?.paidAt || today.toISOString(), notes: value.notes || undefined };
@@ -642,14 +829,20 @@ export function OtherPages({ page, snapshot, onQuickAdd, onSnapshotChange, onNav
     window.setTimeout(() => setToast(""), 2200);
   };
   const content = useMemo(() => {
-    if (page === "项目管理") return <EnhancedProjectManagementPage snapshot={snapshot} onCreateProject={() => setModal("project")} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
-    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
+    if (page === "客户消息") return <CustomerMessagesPage customers={snapshot.customers} onOpenRequirement={(customerId, caseId) => onCustomerRouteChange({ customerId, caseId }, "push")} onProjectCreated={(projectId) => { window.location.hash = encodeURIComponent(`项目管理/${projectId}/immersive`); window.location.reload(); }} />;
+    if (page === "商品经营") return <ProductIntelligencePage globalSearch={globalSearch} />;
+    if (page === "项目管理") return <ProjectWorkspacePage snapshot={snapshot} onCreateProject={(projectKind = "client") => { setCreateProjectKind(projectKind); setModal("project"); }} onCreatePaymentPlan={onCreatePaymentPlan} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} projectRoute={projectRoute} onProjectRouteChange={onProjectRouteChange} />;
+    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} onCreatePaymentPlan={onCreatePaymentPlan} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
     if (page === "支出记录") return <CleanExpenseRecordsPage snapshot={snapshot} onAction={setModal} extraRows={[]} globalSearch={globalSearch} onViewExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense) { setToast(`${expense.name} · ¥${expense.amount.toLocaleString()} · ${expense.notes || "无备注"}`); window.setTimeout(() => setToast(""), 3200); } }} onEditExpense={(id) => { setEditingExpenseId(id); setModal("expense"); }} onDeleteExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense && window.confirm(`确认删除支出“${expense.name}”？此操作无法撤销。`)) { onSnapshotChange({ ...snapshot, expenses: snapshot.expenses.filter((item) => item.id !== id) }); setToast(`${expense.name} 已删除`); window.setTimeout(() => setToast(""), 2200); } }} />;
-    if (page === "客户管理") return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setModal("customer")} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
+    if (page === "客户管理") {
+      const customer = customerRoute ? snapshot.customers.find((item) => item.id === customerRoute.customerId) : null;
+      if (customerRoute && customer) return <CustomerRequirementBlueprintPage customer={customer} route={customerRoute} onRouteChange={onCustomerRouteChange} />;
+      return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setModal("customer")} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} onOpenRequirements={(customerId) => onCustomerRouteChange({ customerId, caseId: null }, "push")} />;
+    }
     if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
     if (page === "目标计划") return <CleanGoalPlanPage snapshot={snapshot} onEditGoal={() => { onNavigate("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />;
     if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} />;
     return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} initialSection={initialSettingsSection} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
-  }, [globalSearch, initialSettingsSection, onNavigate, onQuickAdd, onSnapshotChange, page, snapshot]);
-  return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
+  }, [customerRoute, globalSearch, initialSettingsSection, onConfirmPayment, onCreatePaymentPlan, onCustomerRouteChange, onNavigate, onProjectRouteChange, onQuickAdd, onRecordSettlementIssue, onSnapshotChange, page, projectRoute, snapshot]);
+  return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} initialProjectKind={createProjectKind} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
 }

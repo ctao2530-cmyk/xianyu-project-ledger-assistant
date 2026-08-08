@@ -19,13 +19,28 @@ export function runPageTransition(update: () => void) {
     return;
   }
 
-  activeTransition?.skipTransition();
+  if (activeTransition) {
+    try {
+      activeTransition.skipTransition();
+    } catch {
+      // A navigation or reload can finish the native transition between the
+      // state check and skipTransition(). Treat that race as already settled.
+      activeTransition = null;
+    }
+  }
 
   try {
     const transition = startViewTransition.call(document, () => {
       flushSync(update);
     });
     activeTransition = transition;
+
+    // `skipTransition()` and a rapid hash navigation can reject `ready` even
+    // though `finished` settles cleanly. Observe every native promise so that
+    // an expected cancelled animation never leaks an unhandled
+    // InvalidStateError into the browser console.
+    void transition.ready.catch(() => undefined);
+    void transition.updateCallbackDone.catch(() => undefined);
     void transition.finished.then(
       () => {
         if (activeTransition === transition) activeTransition = null;

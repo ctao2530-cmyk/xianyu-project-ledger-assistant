@@ -7,9 +7,20 @@ export type ProjectStatus =
 
 export type PaymentType = "deposit" | "milestone" | "final" | "full";
 
-export type PaymentStatus = "pending" | "confirmed" | "refunded";
+export type PaymentStatus = "pending" | "confirmed" | "refunded" | "written_off";
+
+export type SettlementIssueType =
+  | "customer_dissatisfied"
+  | "refund"
+  | "project_cancelled"
+  | "payment_refused"
+  | "cooperation_terminated"
+  | "scope_dispute"
+  | "other";
 
 export type TaskStatus = "todo" | "in_progress" | "done";
+
+export type ProjectKind = "personal" | "client";
 
 export type CustomerFollowUpStatus =
   | "new"
@@ -33,6 +44,11 @@ export interface Project {
   type?: string;
   estimatedHours?: number;
   accent: "blue" | "green" | "purple" | "orange";
+  leadId?: string;
+  conversationId?: number;
+  requirementVersionId?: number;
+  quoteId?: string;
+  projectKind?: ProjectKind;
 }
 
 export interface Payment {
@@ -45,6 +61,43 @@ export interface Payment {
   paidAt: string;
   dueAt: string;
   notes?: string;
+  confirmationRequestId?: string;
+  remainderOfRequestId?: string;
+}
+
+export interface PaymentConfirmationValue {
+  requestId: string;
+  projectId: string;
+  paymentId?: string;
+  amount: number;
+  paidAt: string;
+  type: PaymentType;
+  notes?: string;
+}
+
+export interface ProjectSettlementIssue {
+  id: string;
+  projectId: string;
+  customerId: string;
+  type: SettlementIssueType;
+  receivableImpact: number;
+  refundAmount: number;
+  occurredAt: string;
+  reason: string;
+  notes?: string;
+  createdAt: string;
+  requestId: string;
+}
+
+export interface SettlementIssueValue {
+  requestId: string;
+  projectId: string;
+  type: SettlementIssueType;
+  receivableImpact: number;
+  refundAmount: number;
+  occurredAt: string;
+  reason: string;
+  notes?: string;
 }
 
 export interface Customer {
@@ -56,6 +109,7 @@ export interface Customer {
   lastContactAt: string;
   level: CustomerLevel;
   tags?: string[];
+  channelIdentities?: Array<{ channel: "xianyu" | "wechat"; externalCustomerId: string; conversationId?: number }>;
 }
 
 export interface ProjectTask {
@@ -67,6 +121,13 @@ export interface ProjectTask {
   dueDate: string;
   estimatedHours: number;
   actualHours: number;
+  stage?: {
+    objective?: string;
+    work_items?: string[];
+    deliverables?: string[];
+    acceptance_criteria?: string[];
+    dependencies?: string[];
+  };
 }
 
 export interface ProjectLog {
@@ -86,6 +147,7 @@ export interface ProjectAttachment {
   type: "document" | "design" | "archive";
   uploadedAt: string;
   dataUrl?: string;
+  storagePath?: string;
 }
 
 export interface Expense {
@@ -118,11 +180,15 @@ export interface OperationSettings {
   backupTime?: string;
   themeColor?: string;
   colorMode?: "light" | "dark";
+  targetHourlyRate?: number | null;
+  quoteRiskBuffer?: number;
+  replySpeedMode?: "fast" | "balanced" | "quality" | "custom";
 }
 
 export interface LedgerSnapshot {
   projects: Project[];
   payments: Payment[];
+  settlementIssues: ProjectSettlementIssue[];
   expenses: Expense[];
   customers: Customer[];
   tasks: ProjectTask[];

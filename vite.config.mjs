@@ -11,6 +11,20 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     allowedHosts: ["terminal.local"],
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8877",
+        changeOrigin: false,
+      },
+      "/events": {
+        target: "ws://127.0.0.1:8877",
+        ws: true,
+      },
+      "/wechat": {
+        target: "http://127.0.0.1:8877",
+        changeOrigin: false,
+      },
+    },
     warmup: {
       clientFiles: ["./src/main.tsx"],
     },

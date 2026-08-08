@@ -9,6 +9,7 @@ import {
   CaretRight,
   ChartBar,
   ChartLineUp,
+  ChatCircleDots,
   CheckCircle,
   CheckSquare,
   ClipboardText,
@@ -63,16 +64,30 @@ import {
   useState,
 } from "react";
 import { mockLedgerService } from "./data/mockService";
-import { getBusinessSummary } from "./data/businessMetrics";
+import { isClientProject } from "./data/projectKinds";
+import { localPlatformService, type ProductIntelligenceView } from "./data/localPlatformService";
+import { getBusinessSummary, getProjectFinancials } from "./data/businessMetrics";
+import { latestSettlementIssue, settlementIssueLabels } from "./data/settlementIssues";
 import { OtherPages, type OtherPageName, type SettingsSectionName } from "./pages/OtherPages";
+import type { ProjectDetailTab, ProjectPageRoute, ProjectRouteMode } from "./pages/BusinessAssistantPages";
+import {
+  PaymentConfirmationModal,
+  type PaymentConfirmationTarget,
+} from "./pages/PaymentConfirmationModal";
+import {
+  SettlementIssueModal,
+  type SettlementIssueTarget,
+} from "./pages/SettlementIssueModal";
 import { runPageTransition } from "./utils/pageTransition";
 import type {
   Customer,
   LedgerSnapshot,
   Payment,
+  PaymentConfirmationValue,
   PaymentType,
   Project,
   QuickAccountingFormValue,
+  SettlementIssueValue,
 } from "./types";
 
 const currency = new Intl.NumberFormat("zh-CN", {
@@ -104,6 +119,8 @@ const paymentLabels: Record<PaymentType, string> = {
 
 const navItems: Array<{ label: string; icon: PhosphorIcon }> = [
   { label: "首页概览", icon: House },
+  { label: "客户消息", icon: ChatCircleDots },
+  { label: "商品经营", icon: ShoppingBag },
   { label: "项目管理", icon: Briefcase },
   { label: "收入记录", icon: CurrencyCircleDollar },
   { label: "支出记录", icon: Receipt },
@@ -116,7 +133,9 @@ const navItems: Array<{ label: string; icon: PhosphorIcon }> = [
 
 const pageMeta: Record<string, { title: string; subtitle: string; placeholder: string }> = {
   首页概览: { title: "早安，开发者！", subtitle: "今天又是认真接单的一天，加油！", placeholder: "搜索项目、客户或订单..." },
-  项目管理: { title: "项目管理", subtitle: "管理接单项目、工期与交付进度", placeholder: "搜索项目名称、客户、编号..." },
+  客户消息: { title: "客户消息", subtitle: "统一处理闲鱼与微信咨询，从回复、需求到报价和项目转化", placeholder: "在会话中查找客户与消息..." },
+  商品经营: { title: "商品经营", subtitle: "每天一次读取商品信号，判断该观察、优化还是进行人工流量测试", placeholder: "搜索商品名称或商品 ID..." },
+  项目管理: { title: "项目管理", subtitle: "统一管理个人与接单项目、任务节奏和交付进度", placeholder: "搜索项目名称、客户、编号..." },
   收入记录: { title: "收入记录", subtitle: "管理到账记录、定金、尾款与项目收款，清晰每一笔进账", placeholder: "搜索项目、客户或订单..." },
   支出记录: { title: "支出记录", subtitle: "全面追踪工具成本、外包成本、退款与日常支出", placeholder: "搜索项目、客户或订单..." },
   客户管理: { title: "客户管理", subtitle: "管理客户资料、来源、成交记录与跟进状态", placeholder: "搜索客户名称、联系人、标签..." },
@@ -126,7 +145,33 @@ const pageMeta: Record<string, { title: string; subtitle: string; placeholder: s
   设置中心: { title: "设置中心", subtitle: "管理账号信息、界面风格、运营日期、提醒与数据同步", placeholder: "搜索项目、客户或订单..." },
 };
 
-const settingsSections: SettingsSectionName[] = ["个人资料", "账号设置", "记账设置", "项目默认值", "提醒通知", "数据与同步", "界面主题"];
+const settingsSections: SettingsSectionName[] = ["个人资料", "账号设置", "记账设置", "项目默认值", "提醒通知", "渠道连接", "商品采集", "AI与回复", "报价参数", "数据迁移", "数据与同步", "界面主题"];
+const projectDetailTabs: ProjectDetailTab[] = ["overview", "tasks", "gantt", "immersive", "communication", "quote", "logs", "files"];
+
+function sameProjectRoute(left: ProjectPageRoute | null, right: ProjectPageRoute | null) {
+  return left?.projectId === right?.projectId && left?.tab === right?.tab;
+}
+
+function projectRouteHash(route: ProjectPageRoute | null) {
+  const value = route ? `项目管理/${route.projectId}/${route.tab}` : "项目管理";
+  return `#${encodeURIComponent(value)}`;
+}
+
+export interface CustomerRequirementRoute {
+  customerId: string;
+  caseId: string | null;
+}
+
+function sameCustomerRoute(left: CustomerRequirementRoute | null, right: CustomerRequirementRoute | null) {
+  return left?.customerId === right?.customerId && left?.caseId === right?.caseId;
+}
+
+function customerRouteHash(route: CustomerRequirementRoute | null) {
+  const value = route
+    ? `客户管理/${route.customerId}/requirements${route.caseId ? `/${route.caseId}` : ""}`
+    : "客户管理";
+  return `#${encodeURIComponent(value)}`;
+}
 
 function readAppRoute() {
   let requested = "";
@@ -135,10 +180,22 @@ function readAppRoute() {
   } catch {
     requested = "";
   }
-  const [page, rawSection] = requested.split("/");
+  const [page, rawSection, rawProjectTab, rawCaseId] = requested.split("/");
+  const resolvedPage = navItems.some((item) => item.label === page) ? page : "首页概览";
+  const projectRoute = resolvedPage === "项目管理" && rawSection
+    ? {
+        projectId: rawSection,
+        tab: projectDetailTabs.includes(rawProjectTab as ProjectDetailTab) ? rawProjectTab as ProjectDetailTab : "immersive" as const,
+      }
+    : null;
+  const customerRoute = resolvedPage === "客户管理" && rawSection && rawProjectTab === "requirements"
+    ? { customerId: rawSection, caseId: rawCaseId || null }
+    : null;
   return {
-    page: navItems.some((item) => item.label === page) ? page : "首页概览",
+    page: resolvedPage,
     settingsSection: settingsSections.includes(rawSection as SettingsSectionName) ? rawSection as SettingsSectionName : "个人资料" as SettingsSectionName,
+    projectRoute,
+    customerRoute,
   };
 }
 
@@ -174,14 +231,6 @@ function isSameLocalDay(value: string, target = new Date()) {
     date.getFullYear() === target.getFullYear() &&
     date.getMonth() === target.getMonth() &&
     date.getDate() === target.getDate()
-  );
-}
-
-function isSameLocalMonth(value: string, target = new Date()) {
-  const date = new Date(value);
-  return (
-    date.getFullYear() === target.getFullYear() &&
-    date.getMonth() === target.getMonth()
   );
 }
 
@@ -297,10 +346,10 @@ function Sidebar({
       />
       <aside className={`sidebar ${open ? "is-open" : ""}`}>
         <div className="brand">
-          <img src="/assets/duck-logo.png" alt="咸鱼项目记账助手吉祥物" />
+          <img src="/assets/chrome-v2/duck-logo.png" alt="" aria-hidden="true" draggable={false} />
           <div>
-            <strong>咸鱼项目记账助手</strong>
-            <span>咸鱼接单记账 · 项目好管家</span>
+            <strong>咸鱼经营助手</strong>
+            <span>客户 · 项目 · 收支一体化</span>
           </div>
           <button className="mobile-close" aria-label="关闭导航" onClick={onClose}>
             <X size={20} />
@@ -333,7 +382,9 @@ function Sidebar({
               立即记账 <ArrowRight size={15} weight="bold" />
             </button>
           </div>
-          <img src="/assets/duck-laptop.png" alt="吉祥物在电脑前记账" />
+          <div className="sidebar-promo-artwork" aria-hidden="true">
+            <img src="/assets/chrome-v2/duck-laptop.png" alt="" draggable={false} />
+          </div>
         </div>
 
         <div className="sidebar-countdown">
@@ -341,10 +392,12 @@ function Sidebar({
           <strong>{furthestDelivery}<small>天</small></strong>
           <span>{activeProjects.length} 个项目待交付</span>
           <div className="countdown-bar"><i style={{ width: `${Math.min(100, furthestDelivery * 7)}%` }} /></div>
-          <img src="/assets/delivery-hourglass.png" alt="紫色沙漏" />
+          <div className="sidebar-countdown-artwork" aria-hidden="true">
+            <img src="/assets/chrome-v2/delivery-hourglass.png" alt="" draggable={false} />
+          </div>
         </div>
 
-        <footer>© {new Date().getFullYear()} 咸鱼项目记账助手<br />All rights reserved.</footer>
+        <footer>© {new Date().getFullYear()} 咸鱼经营助手<br />Local-first business OS.</footer>
       </aside>
     </>
   );
@@ -385,7 +438,7 @@ function TopHeader({
         <h1>{meta.title}{activePage === "首页概览" && <span aria-hidden="true"><HandWaving size={25} weight="duotone" /></span>}</h1>
         <p>{meta.subtitle}</p>
       </div>
-      <img className="header-planet" src="/assets/header-planet.png" alt="紫色星球装饰" />
+      <img className="header-planet" src="/assets/chrome-v2/header-planet.png" alt="" aria-hidden="true" draggable={false} />
       <label className="search-box">
         <MagnifyingGlass size={23} />
         <input
@@ -493,7 +546,12 @@ function MetricCard({
   return (
     <Card className={`metric-card tone-${tone}`}>
       <div className="metric-content">
-        <h2>{title}</h2>
+        <div className="metric-topline">
+          <h2>{title}</h2>
+          <div className="metric-artwork" aria-hidden="true">
+            <img className="metric-image" src={image} alt="" draggable={false} />
+          </div>
+        </div>
         <strong className="metric-value">
           {prefix}{animated.toLocaleString("zh-CN", {
             minimumFractionDigits: precision,
@@ -502,18 +560,24 @@ function MetricCard({
         </strong>
         <p>{comparison}</p>
       </div>
-      <img className="metric-image" src={image} alt="" />
       {chart && <MiniChart type={chart} empty={value === 0} color={tone === "green" ? "#16c77a" : tone === "blue" ? "#3978ff" : "#6646f5"} />}
       <span className="metric-index">0{index + 1}</span>
     </Card>
   );
 }
 
-function IncomeTrendCard({ payments }: { payments: Payment[] }) {
-  const confirmedPayments = payments.filter((payment) => payment.status === "confirmed");
-  const monthlyTotal = confirmedPayments.filter((payment) => isSameLocalMonth(payment.paidAt)).reduce((sum, payment) => sum + payment.amount, 0);
+function IncomeTrendCard({ snapshot }: { snapshot: LedgerSnapshot }) {
+  const monthlyTotal = getBusinessSummary(snapshot).monthlyIncome;
 
   const data = useMemo(() => {
+    const netEvents = [
+      ...snapshot.payments
+        .filter((payment) => payment.status === "confirmed")
+        .map((payment) => ({ occurredAt: payment.paidAt, amount: payment.amount })),
+      ...snapshot.settlementIssues
+        .filter((issue) => issue.refundAmount > 0)
+        .map((issue) => ({ occurredAt: issue.occurredAt, amount: -issue.refundAmount })),
+    ];
     const last30Days = Array.from({ length: 8 }, (_, index) => {
       const date = new Date();
       date.setDate(date.getDate() - (7 - index) * 4);
@@ -524,16 +588,16 @@ function IncomeTrendCard({ payments }: { payments: Payment[] }) {
       bucketEnd.setHours(23, 59, 59, 999);
       return {
         date: `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`,
-        value: confirmedPayments.filter((payment) => { const paidAt = new Date(payment.paidAt); return paidAt >= bucketStart && paidAt <= bucketEnd; }).reduce((sum, payment) => sum + payment.amount, 0),
+        value: netEvents.filter((event) => { const occurredAt = new Date(event.occurredAt); return occurredAt >= bucketStart && occurredAt <= bucketEnd; }).reduce((sum, event) => sum + event.amount, 0),
       };
     });
     return last30Days;
-  }, [confirmedPayments]);
+  }, [snapshot.payments, snapshot.settlementIssues]);
 
   return (
     <Card className="trend-card">
       <CardHeader
-        title="收入趋势"
+        title="净收入趋势"
         action={<span className="subtle-select" aria-label="统计周期：近30天">近30天</span>}
       />
       <span className="chart-unit">单位：元</span>
@@ -546,7 +610,7 @@ function IncomeTrendCard({ payments }: { payments: Payment[] }) {
             <Tooltip
               cursor={{ stroke: "#d9d3ff", strokeDasharray: "3 3" }}
               contentStyle={{ border: 0, borderRadius: 12, boxShadow: "0 10px 32px rgba(75, 59, 170, .18)" }}
-              formatter={(value) => [currency.format(Number(value)), "收入"]}
+              formatter={(value) => [currency.format(Number(value)), "净收入"]}
             />
             <Area
               type="monotone"
@@ -573,31 +637,69 @@ const projectIcons: Record<Project["accent"], PhosphorIcon> = {
   orange: ClipboardText,
 };
 
-function ActiveProjectsCard({ projects, onNavigate }: { projects: Project[]; onNavigate: () => void }) {
-  const active = projects.filter((project) => project.status === "in_progress").slice(0, 3);
+function ActiveProjectsCard({
+  snapshot,
+  projects,
+  onNavigate,
+  onOpenProject,
+}: {
+  snapshot: LedgerSnapshot;
+  projects: Project[];
+  onNavigate: () => void;
+  onOpenProject: (projectId: string) => void;
+}) {
+  const financialByProject = new Map(getProjectFinancials(snapshot).map((item) => [item.project.id, item]));
+  const statusRank: Record<Project["status"], number> = {
+    overdue: 0,
+    delivered: 1,
+    in_progress: 2,
+    pending: 3,
+    completed: 4,
+  };
+  const active = projects
+    .filter((project) => {
+      const outstanding = financialByProject.get(project.id)?.outstanding || 0;
+      return project.status === "pending"
+        || project.status === "in_progress"
+        || project.status === "overdue"
+        || (project.status === "delivered" && outstanding > 0);
+    })
+    .sort((left, right) => statusRank[left.status] - statusRank[right.status] || left.dueDate.localeCompare(right.dueDate))
+    .slice(0, 3);
 
   return (
     <Card className="projects-card" id="active-projects">
-      <CardHeader title="进行中的项目" action={<button className="text-button" onClick={onNavigate}>查看全部 <CaretRight size={14} /></button>} />
+      <CardHeader title="当前项目" action={<button className="text-button" onClick={onNavigate}>查看全部 <CaretRight size={14} /></button>} />
       <div className="project-list">
         {active.length ? active.map((project) => {
           const Icon = projectIcons[project.accent];
           const duration = Math.max(1, diffInDays(project.startDate, new Date(`${project.dueDate}T00:00:00`)));
+          const financial = financialByProject.get(project.id);
+          const outstanding = financial?.outstanding || 0;
+          const latestIssue = latestSettlementIssue(financial?.settlementIssues || []);
+          const dueDays = remainingDays(project.dueDate);
+          const statusCopy = project.status === "overdue"
+            ? `已超期 ${Math.max(1, Math.abs(dueDays))} 天`
+            : project.status === "delivered" && outstanding > 0
+              ? `待回款 ${compactCurrency.format(outstanding)}`
+              : project.status === "pending"
+                ? dueDays >= 0 ? `待开始 · 距交付 ${dueDays} 天` : "待开始 · 已到交付日"
+                : dueDays >= 0 ? `剩余 ${dueDays} 天` : `已到期 ${Math.abs(dueDays)} 天`;
           return (
-            <article className="project-row" key={project.id}>
+            <button type="button" className="project-row project-row-button" key={project.id} onClick={() => onOpenProject(project.id)} aria-label={`打开${project.name}的沉浸任务流`}>
               <span className={`project-icon ${project.accent}`}><Icon size={24} weight="duotone" /></span>
               <div className="project-details">
                 <strong>{project.name}</strong>
-                <span>工期：{duration}天</span>
+                <span>{latestIssue ? `异常：${settlementIssueLabels[latestIssue.type]}` : project.status === "delivered" && outstanding > 0 ? "已交付 · 等待回款" : `工期：${duration}天`}</span>
                 <div className="project-progress-line">
                   <div><i style={{ width: `${project.progress}%` }} /></div>
                   <small>{project.progress}%</small>
                 </div>
               </div>
-              <span className="days-pill">剩余 {remainingDays(project.dueDate)} 天</span>
-            </article>
+              <span className={`days-pill ${project.status === "overdue" ? "is-overdue" : project.status === "delivered" && outstanding > 0 ? "is-receivable" : ""}`}>{statusCopy}</span>
+            </button>
           );
-        }) : <div className="dashboard-empty"><Briefcase size={34} weight="duotone" /><strong>暂无进行中的项目</strong><span>导入自己的项目后会显示在这里</span></div>}
+        }) : <div className="dashboard-empty"><Briefcase size={34} weight="duotone" /><strong>暂无当前项目</strong><span>待开始、进行中、逾期或待回款项目会显示在这里</span></div>}
       </div>
     </Card>
   );
@@ -612,7 +714,9 @@ function OperationDurationCard({ startedAt }: { startedAt: string }) {
       <h2>运营时长</h2>
       <strong>{Math.round(animated)}<small>天</small></strong>
       <p>自 {formatDateOnly(startedAt)} 起</p>
-      <img src="/assets/operation-calendar.png" alt="环绕星球的紫色日历" />
+      <div className="operation-artwork" aria-hidden="true">
+        <img src="/assets/dashboard-v2/operation-calendar.png" alt="" draggable={false} />
+      </div>
       <RocketLaunch className="operation-rocket" size={28} weight="duotone" />
       <Sparkle className="operation-spark one" size={16} weight="fill" />
       <Sparkle className="operation-spark two" size={20} weight="fill" />
@@ -664,10 +768,13 @@ function PaymentTable({
 
 function DailyBalanceCard({ todayIncome, todayExpense }: { todayIncome: number; todayExpense: number }) {
   const todayProfit = todayIncome - todayExpense;
-  const total = Math.max(1, todayIncome + todayExpense);
+  const positiveIncome = Math.max(0, todayIncome);
+  const refundImpact = Math.max(0, -todayIncome);
+  const total = Math.max(1, positiveIncome + refundImpact + todayExpense);
   const pie = [
-    { name: "收入", value: todayIncome / total * 100, color: "#3b82f6" },
+    { name: "净收入", value: positiveIncome / total * 100, color: "#3b82f6" },
     { name: "支出", value: todayExpense / total * 100, color: "#ff7359" },
+    ...(refundImpact > 0 ? [{ name: "退款净额", value: refundImpact / total * 100, color: "#f59e0b" }] : []),
   ];
   return (
     <Card className="balance-card">
@@ -684,8 +791,9 @@ function DailyBalanceCard({ todayIncome, todayExpense }: { todayIncome: number; 
           <div><span>净利润</span><strong>{compactCurrency.format(todayProfit)}</strong></div>
         </div>
         <div className="balance-legend">
-          <p><i className="blue" />收入 <strong>{compactCurrency.format(todayIncome)}</strong></p>
+          <p><i className="blue" />净收入 <strong>{compactCurrency.format(todayIncome)}</strong></p>
           <p><i className="red" />支出 <strong>{compactCurrency.format(todayExpense)}</strong></p>
+          {refundImpact > 0 && <p><i className="orange" />退款净额 <strong>{compactCurrency.format(refundImpact)}</strong></p>}
         </div>
       </div>
     </Card>
@@ -702,21 +810,65 @@ function OperatingInsightStrip({
   const summary = getBusinessSummary(snapshot);
   const bestProject = summary.projectFinancials.slice().sort((a, b) => b.profit - a.profit)[0];
   const dueSoon = snapshot.payments.filter((payment) => payment.status === "pending" && remainingDays(payment.dueAt) <= 3).length;
+  const unsettledCount = summary.projectFinancials.filter(({ project, outstanding }) => isClientProject(project) && outstanding > 0).length;
   return <Card className="operating-insight-strip">
     <div className="insight-heading"><span><Sparkle size={16} weight="fill" />经营洞察</span><strong>把流水变成下一步行动</strong></div>
     <div className="insight-item profit"><i><TrendUp size={22} weight="duotone" /></i><span><small>实际利润</small><b>{compactCurrency.format(summary.actualProfit)}</b><em>利润率 {summary.totalIncome ? Math.round(summary.actualProfit / summary.totalIncome * 100) : 0}%</em></span></div>
-    <div className="insight-item collection"><i><Bell size={22} weight="duotone" /></i><span><small>回款风险</small><b>{compactCurrency.format(summary.outstanding)} 待收</b><em>{dueSoon} 个节点三天内到期</em></span></div>
+    <div className="insight-item collection"><i><Bell size={22} weight="duotone" /></i><span><small>回款风险</small><b>{compactCurrency.format(summary.outstanding)} 待收</b><em>{unsettledCount} 个项目未结清{dueSoon ? ` · ${dueSoon} 个节点临期` : ""}</em></span></div>
     <div className="insight-item value"><i><Lightbulb size={22} weight="duotone" /></i><span><small>定价建议</small><b>{bestProject?.project.name || "暂无项目"}</b><em>小时收益 {compactCurrency.format(bestProject?.hourlyIncome || 0)}</em></span></div>
     <div className="insight-actions"><button onClick={() => onNavigate("数据统计")}>查看利润分析</button><button className="primary" onClick={() => onNavigate("AI经营助手")}><Brain size={15} />询问 AI 助手</button></div>
   </Card>;
 }
 
-function ReminderCard({ projects, payments, onNavigate }: { projects: Project[]; payments: Payment[]; onNavigate: () => void }) {
-  const nearest = projects
+function CustomerPipelineStrip({ onNavigate }: { onNavigate: (page: string) => void }) {
+  const [summary, setSummary] = useState<{ unread: number; pending_replies: number; open_leads: number; quoted_leads: number; converted_leads: number } | null>(null);
+  useEffect(() => {
+    let active = true;
+    void localPlatformService.operationsSummary().then((value) => { if (active) setSummary(value); }).catch(() => { if (active) setSummary(null); });
+    return () => { active = false; };
+  }, []);
+  if (!summary) return null;
+  return <Card className="customer-pipeline-strip">
+    <div className="pipeline-title"><span><ChatCircleDots size={17} weight="fill" />客户经营漏斗</span><small>闲鱼与微信实时汇总</small></div>
+    <div><strong>{summary.unread}</strong><small>未读消息</small></div>
+    <div><strong>{summary.pending_replies}</strong><small>待回复会话</small></div>
+    <div><strong>{summary.open_leads}</strong><small>待转化线索</small></div>
+    <div><strong>{summary.quoted_leads}</strong><small>报价中</small></div>
+    <button onClick={() => onNavigate("客户消息")}>进入客户消息 <ArrowRight size={14} /></button>
+  </Card>;
+}
+
+function ProductStrategyStrip({ onNavigate }: { onNavigate: (page: string) => void }) {
+  const [insight, setInsight] = useState<ProductIntelligenceView | null>(null);
+  useEffect(() => {
+    let active = true;
+    void localPlatformService.productIntelligence().then((value) => { if (active) setInsight(value); }).catch(() => { if (active) setInsight(null); });
+    return () => { active = false; };
+  }, []);
+  if (!insight) return null;
+  const top = insight.recommendations[0];
+  return <Card className="product-strategy-strip">
+    <div className="product-strip-title"><span><ShoppingBag size={17} weight="fill" />商品经营雷达</span><small>每日最多一次只读采集</small></div>
+    <div><strong>{insight.summary.monitored_products}</strong><small>监测商品</small></div>
+    <div><strong>{insight.summary.needs_attention}</strong><small>需要关注</small></div>
+    <div><strong>{insight.summary.traffic_candidates}</strong><small>人工投流候选</small></div>
+    <div className="product-strip-advice"><small>今日首要建议</small><strong>{top?.title || "继续积累商品快照"}</strong></div>
+    <button onClick={() => onNavigate("商品经营")}>查看经营策略 <ArrowRight size={14} /></button>
+  </Card>;
+}
+
+function ReminderCard({ snapshot, onNavigate }: { snapshot: LedgerSnapshot; onNavigate: () => void }) {
+  const financials = getProjectFinancials(snapshot).filter(({ project }) => isClientProject(project));
+  const nearest = snapshot.projects
     .filter((project) => project.status === "in_progress")
     .sort((a, b) => remainingDays(a.dueDate) - remainingDays(b.dueDate));
-  const pendingFinal = payments.find((payment) => payment.type === "final" && payment.status === "pending");
-  const reminderCount = Math.min(2, nearest.length) + (pendingFinal ? 1 : 0);
+  const unsettled = financials
+    .filter((item) => item.outstanding > 0)
+    .sort((left, right) => Number(right.project.status === "delivered") - Number(left.project.status === "delivered") || left.project.dueDate.localeCompare(right.project.dueDate));
+  const latestIssue = financials
+    .flatMap((financial) => financial.settlementIssues.map((issue) => ({ issue, financial })))
+    .sort((left, right) => right.issue.occurredAt.localeCompare(left.issue.occurredAt))[0];
+  const reminderCount = Math.min(2, nearest.length) + (unsettled.length ? 1 : 0) + (latestIssue ? 1 : 0);
   return (
     <Card className="reminder-card">
       <CardHeader title="智能提醒" action={<span className="reminder-badge">{reminderCount} 条待处理事项</span>} />
@@ -724,7 +876,8 @@ function ReminderCard({ projects, payments, onNavigate }: { projects: Project[];
         {nearest.slice(0, 2).map((project) => (
           <li key={project.id}><i /><span>项目「{project.name}」{remainingDays(project.dueDate) === 1 ? "明日" : `${remainingDays(project.dueDate)}天后`}交付</span><time>{new Date(`${project.dueDate}T00:00:00`).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}</time></li>
         ))}
-        {pendingFinal && <li><i /><span>项目尾款待收</span><strong>{compactCurrency.format(pendingFinal.amount)}</strong><button onClick={onNavigate}>去处理</button></li>}
+        {unsettled[0] && <li><i /><span>{unsettled[0].project.status === "delivered" ? `「${unsettled[0].project.name}」已交付待回款` : `「${unsettled[0].project.name}」合同余额待收`}</span><strong>{compactCurrency.format(unsettled[0].outstanding)}</strong><button onClick={onNavigate}>去确认</button></li>}
+        {latestIssue && <li className="is-exception"><WarningCircle size={17} weight="fill" /><span>「{latestIssue.financial.project.name}」{settlementIssueLabels[latestIssue.issue.type]}</span><time>{dateTimeFormatter.format(new Date(latestIssue.issue.occurredAt))}</time><button onClick={onNavigate}>查看</button></li>}
         {reminderCount === 0 && <li className="reminder-empty"><CheckCircle size={17} weight="fill" /><span>暂无待处理事项</span></li>}
       </ul>
     </Card>
@@ -742,7 +895,9 @@ function MonthlyGoalCard({ current, goal, onEdit }: { current: number; goal: num
         <div className="goal-progress"><i style={{ width: `${progress}%` }} /></div>
         <p>{goal > 0 ? <>还差 <b>{compactCurrency.format(Math.max(0, goal - current))}</b> 元可达成目标！</> : "设置你的首个月度目标后开始追踪"}</p>
       </div>
-      <img src="/assets/goal-trophy.png" alt="金色冠军奖杯" />
+      <div className="goal-artwork" aria-hidden="true">
+        <img src="/assets/dashboard-v2/goal-trophy.png" alt="" draggable={false} />
+      </div>
     </Card>
   );
 }
@@ -798,6 +953,7 @@ function QuickAccountingDrawer({
   projects,
   customers,
   settings,
+  initialProjectId,
   onClose,
   onSubmit,
 }: {
@@ -805,6 +961,7 @@ function QuickAccountingDrawer({
   projects: Project[];
   customers: Customer[];
   settings: LedgerSnapshot["settings"];
+  initialProjectId?: string | null;
   onClose: () => void;
   onSubmit: (value: QuickAccountingFormValue) => Promise<void>;
 }) {
@@ -831,7 +988,19 @@ function QuickAccountingDrawer({
     if (!open) return;
     setType(settings.defaultPaymentType || "deposit");
     setDurationDays(String(settings.defaultDurationDays || 30));
-  }, [open, settings.defaultDurationDays, settings.defaultPaymentType]);
+    const project = projects.find((item) => item.id === initialProjectId);
+    if (project) {
+      setProjectName(project.name);
+      const customer = customers.find((item) => item.id === project.customerId);
+      if (customer) setCustomerName(customer.name);
+      setContractTotal(String(project.totalAmount || ""));
+      setRecordStatus("pending");
+      setDueAt(project.dueDate.slice(0, 10));
+    } else {
+      setRecordStatus("confirmed");
+      setContractTotal("");
+    }
+  }, [customers, initialProjectId, open, projects, settings.defaultDurationDays, settings.defaultPaymentType]);
 
   useEffect(() => {
     if (!open) return;
@@ -966,17 +1135,25 @@ function LoadingDashboard() {
 function DashboardLayout({
   snapshot,
   onSnapshotChange,
+  onPersistedSnapshot,
 }: {
   snapshot: LedgerSnapshot;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
+  onPersistedSnapshot: (snapshot: LedgerSnapshot) => void;
 }) {
-  const [activeNav, setActiveNav] = useState(() => readAppRoute().page);
-  const [settingsSection, setSettingsSection] = useState<SettingsSectionName>(() => readAppRoute().settingsSection);
+  const initialRoute = useRef(readAppRoute()).current;
+  const [activeNav, setActiveNav] = useState(initialRoute.page);
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionName>(initialRoute.settingsSection);
+  const [projectRoute, setProjectRoute] = useState<ProjectPageRoute | null>(initialRoute.projectRoute);
+  const [customerRoute, setCustomerRoute] = useState<CustomerRequirementRoute | null>(initialRoute.customerRoute);
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerProjectId, setDrawerProjectId] = useState<string | null>(null);
+  const [receiptTarget, setReceiptTarget] = useState<PaymentConfirmationTarget | null>(null);
+  const [settlementIssueTarget, setSettlementIssueTarget] = useState<SettlementIssueTarget | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [success, setSuccess] = useState<{ amount: number; status: "pending" | "confirmed" } | null>(null);
-  const routeRef = useRef({ page: activeNav, settingsSection });
+  const routeRef = useRef({ page: activeNav, settingsSection, projectRoute, customerRoute });
 
   useLayoutEffect(() => {
     const scrollingElement = document.scrollingElement;
@@ -987,35 +1164,83 @@ function DashboardLayout({
 
   const changePage = (value: string) => {
     const nextSettingsSection = value === "设置中心" ? "个人资料" : settingsSection;
-    if (value === activeNav && nextSettingsSection === settingsSection) return;
-    routeRef.current = { page: value, settingsSection: nextSettingsSection };
+    if (value === activeNav && nextSettingsSection === settingsSection && projectRoute === null && customerRoute === null) return;
+    routeRef.current = { page: value, settingsSection: nextSettingsSection, projectRoute: null, customerRoute: null };
     runPageTransition(() => {
       setActiveNav(value);
       setSettingsSection(nextSettingsSection);
+      setProjectRoute(null);
+      setCustomerRoute(null);
       setSearch("");
       window.history.replaceState(null, "", value === "首页概览" ? window.location.pathname : `#${encodeURIComponent(value)}`);
     });
   };
 
   const openSettings = (section: SettingsSectionName) => {
-    if (activeNav === "设置中心" && settingsSection === section) return;
-    routeRef.current = { page: "设置中心", settingsSection: section };
+    if (activeNav === "设置中心" && settingsSection === section && projectRoute === null && customerRoute === null) return;
+    routeRef.current = { page: "设置中心", settingsSection: section, projectRoute: null, customerRoute: null };
     runPageTransition(() => {
       setActiveNav("设置中心");
       setSettingsSection(section);
+      setProjectRoute(null);
+      setCustomerRoute(null);
       setSearch("");
       window.history.replaceState(null, "", `#${encodeURIComponent(`设置中心/${section}`)}`);
+    });
+  };
+
+  const changeProjectRoute = (nextRoute: ProjectPageRoute | null, mode: ProjectRouteMode = "replace") => {
+    if (mode === "back" && window.history.state?.xianyuProjectFromList) {
+      window.history.back();
+      return;
+    }
+    const resolvedRoute = nextRoute && snapshot.projects.some((project) => project.id === nextRoute.projectId) ? nextRoute : null;
+    if (sameProjectRoute(projectRoute, resolvedRoute)) return;
+    routeRef.current = { page: "项目管理", settingsSection, projectRoute: resolvedRoute, customerRoute: null };
+    runPageTransition(() => {
+      setActiveNav("项目管理");
+      setProjectRoute(resolvedRoute);
+      setCustomerRoute(null);
+      setSearch("");
+      const nextState = mode === "push"
+        ? { ...(window.history.state || {}), xianyuProjectFromList: true }
+        : window.history.state;
+      const historyMode = mode === "push" ? "pushState" : "replaceState";
+      window.history[historyMode](nextState, "", projectRouteHash(resolvedRoute));
+    });
+  };
+
+  const changeCustomerRoute = (nextRoute: CustomerRequirementRoute | null, mode: ProjectRouteMode = "replace") => {
+    if (mode === "back" && window.history.state?.xianyuCustomerFromList) {
+      window.history.back();
+      return;
+    }
+    const resolvedRoute = nextRoute && snapshot.customers.some((customer) => customer.id === nextRoute.customerId) ? nextRoute : null;
+    if (sameCustomerRoute(customerRoute, resolvedRoute)) return;
+    routeRef.current = { page: "客户管理", settingsSection, projectRoute: null, customerRoute: resolvedRoute };
+    runPageTransition(() => {
+      setActiveNav("客户管理");
+      setProjectRoute(null);
+      setCustomerRoute(resolvedRoute);
+      setSearch("");
+      const nextState = mode === "push"
+        ? { ...(window.history.state || {}), xianyuCustomerFromList: true }
+        : window.history.state;
+      const historyMode = mode === "push" ? "pushState" : "replaceState";
+      window.history[historyMode](nextState, "", customerRouteHash(resolvedRoute));
     });
   };
 
   useEffect(() => {
     const syncHash = () => {
       const route = readAppRoute();
-      if (route.page === routeRef.current.page && route.settingsSection === routeRef.current.settingsSection) return;
+      if (route.page === routeRef.current.page && route.settingsSection === routeRef.current.settingsSection && sameProjectRoute(route.projectRoute, routeRef.current.projectRoute) && sameCustomerRoute(route.customerRoute, routeRef.current.customerRoute)) return;
       routeRef.current = route;
       runPageTransition(() => {
         setActiveNav(route.page);
         setSettingsSection(route.settingsSection);
+        setProjectRoute(route.projectRoute);
+        setCustomerRoute(route.customerRoute);
         setSearch("");
       });
     };
@@ -1027,21 +1252,54 @@ function DashboardLayout({
     };
   }, []);
 
+  useEffect(() => {
+    if (activeNav !== "项目管理" || !projectRoute) return;
+    if (!snapshot.projects.some((project) => project.id === projectRoute.projectId)) {
+      routeRef.current = { page: "项目管理", settingsSection, projectRoute: null, customerRoute: null };
+      setProjectRoute(null);
+      window.history.replaceState(null, "", projectRouteHash(null));
+      return;
+    }
+    const expectedHash = projectRouteHash(projectRoute);
+    if (window.location.hash !== expectedHash) window.history.replaceState(window.history.state, "", expectedHash);
+  }, [activeNav, projectRoute, settingsSection, snapshot.projects]);
+
+  useEffect(() => {
+    if (activeNav !== "客户管理" || !customerRoute) return;
+    if (!snapshot.customers.some((customer) => customer.id === customerRoute.customerId)) {
+      routeRef.current = { page: "客户管理", settingsSection, projectRoute: null, customerRoute: null };
+      setCustomerRoute(null);
+      window.history.replaceState(null, "", customerRouteHash(null));
+      return;
+    }
+    const expectedHash = customerRouteHash(customerRoute);
+    if (window.location.hash !== expectedHash) window.history.replaceState(window.history.state, "", expectedHash);
+  }, [activeNav, customerRoute, settingsSection, snapshot.customers]);
+
   const confirmedPayments = snapshot.payments.filter((payment) => payment.status === "confirmed");
-  const totalIncome = confirmedPayments.reduce((sum, payment) => sum + payment.amount, 0);
-  const monthlyIncome = confirmedPayments
-    .filter((payment) => isSameLocalMonth(payment.paidAt))
-    .reduce((sum, payment) => sum + payment.amount, 0);
-  const todayIncome = confirmedPayments
-    .filter((payment) => isSameLocalDay(payment.paidAt))
-    .reduce((sum, payment) => sum + payment.amount, 0);
   const todayExpense = snapshot.expenses
     .filter((expense) => isSameLocalDay(expense.paidAt))
     .reduce((sum, expense) => sum + expense.amount, 0);
   const operationDays = diffInDays(snapshot.settings.xianyuStartedAt);
   const businessSummary = getBusinessSummary(snapshot);
-  const notificationCount = snapshot.settings.notificationsEnabled === false ? 0 : snapshot.projects.filter((project) => project.status === "in_progress" && remainingDays(project.dueDate) <= (snapshot.settings.reminderDays || 3)).length
-    + (snapshot.settings.paymentRemindersEnabled === false ? 0 : snapshot.payments.filter((payment) => payment.status === "pending").length);
+  const totalIncome = businessSummary.totalIncome;
+  const monthlyIncome = businessSummary.monthlyIncome;
+  const todayIncome = businessSummary.todayIncome;
+  const unsettledProjects = businessSummary.projectFinancials.filter(
+    ({ project, outstanding }) => isClientProject(project) && outstanding > 0,
+  );
+  const recentIssueCutoff = Date.now() - 30 * 86_400_000;
+  const actionableIssueProjects = businessSummary.projectFinancials.filter(({ project, outstanding, settlementIssues }) => (
+    isClientProject(project) && settlementIssues.some((issue) => outstanding > 0 || new Date(issue.occurredAt).getTime() >= recentIssueCutoff)
+  ));
+  const notificationProjectIds = new Set([
+    ...snapshot.projects
+      .filter((project) => project.status === "in_progress" && remainingDays(project.dueDate) <= (snapshot.settings.reminderDays || 3))
+      .map((project) => project.id),
+    ...(snapshot.settings.paymentRemindersEnabled === false ? [] : unsettledProjects.map(({ project }) => project.id)),
+    ...actionableIssueProjects.map(({ project }) => project.id),
+  ]);
+  const notificationCount = snapshot.settings.notificationsEnabled === false ? 0 : notificationProjectIds.size;
 
   const normalizedSearch = search.trim().toLowerCase();
   const filteredProjects = normalizedSearch
@@ -1060,21 +1318,45 @@ function DashboardLayout({
 
   const addPayment = async (value: QuickAccountingFormValue) => {
     const next = await mockLedgerService.addConfirmedPayment(snapshot, value);
-    onSnapshotChange(next);
+    onPersistedSnapshot(next);
     setDrawerOpen(false);
+    setDrawerProjectId(null);
     setSuccess({ amount: value.amount, status: value.status || "confirmed" });
     window.setTimeout(() => setSuccess(null), 2700);
   };
 
+  const confirmReceipt = async (value: PaymentConfirmationValue) => {
+    const next = await mockLedgerService.confirmPayment(snapshot, value);
+    onPersistedSnapshot(next);
+    setReceiptTarget(null);
+    setSuccess({ amount: value.amount, status: "confirmed" });
+    window.setTimeout(() => setSuccess(null), 2700);
+  };
+
+  const recordSettlementIssue = async (value: SettlementIssueValue) => {
+    const next = await mockLedgerService.recordSettlementIssue(snapshot, value);
+    onPersistedSnapshot(next);
+    setSettlementIssueTarget(null);
+  };
+
+  const refreshReceiptData = async () => {
+    onPersistedSnapshot(await mockLedgerService.refreshDashboard());
+  };
+
+  const openQuickAccounting = (projectId?: string) => {
+    setDrawerProjectId(projectId || null);
+    setDrawerOpen(true);
+  };
+
   const metrics = [
     {
-      title: "累计收入（元）",
+      title: "累计净收入（元）",
       value: totalIncome,
       prefix: "¥",
       precision: 2,
-      comparison: totalIncome > 0 ? <>累计确认 <b>{confirmedPayments.length} 笔</b></> : <>等待导入 <b>收入数据</b></>,
+      comparison: totalIncome > 0 || businessSummary.totalRefunded > 0 ? <>累计入账 {compactCurrency.format(businessSummary.totalGrossIncome)}{businessSummary.totalRefunded > 0 && <> · 已退款 <b>{compactCurrency.format(businessSummary.totalRefunded)}</b></>}</> : <>等待导入 <b>收入数据</b></>,
       tone: "purple" as const,
-      image: "/assets/metric-wallet-purple.png",
+      image: "/assets/metrics-v2/income-wallet-3d.png",
       chart: "line" as const,
     },
     {
@@ -1082,9 +1364,9 @@ function DashboardLayout({
       value: businessSummary.actualProfit,
       prefix: "¥",
       precision: 2,
-      comparison: totalIncome || businessSummary.totalExpenses ? <>收入 - 支出 <b>利润率 {totalIncome ? Math.round(businessSummary.actualProfit / totalIncome * 100) : 0}%</b></> : <>等待导入 <b>收支数据</b></>,
+      comparison: totalIncome || businessSummary.totalExpenses ? <>净收入 - 支出 <b>利润率 {totalIncome ? Math.round(businessSummary.actualProfit / totalIncome * 100) : 0}%</b></> : <>等待导入 <b>收支数据</b></>,
       tone: "green" as const,
-      image: "/assets/metric-wallet-green.png",
+      image: "/assets/metrics-v2/profit-wallet-3d.png",
       chart: "bar" as const,
     },
     {
@@ -1092,9 +1374,9 @@ function DashboardLayout({
       value: businessSummary.outstanding,
       prefix: "¥",
       precision: 2,
-      comparison: businessSummary.pendingCount > 0 ? <>{businessSummary.pendingCount} 个付款节点 <b>待跟进</b></> : <>暂无 <b>待回款节点</b></>,
+      comparison: unsettledProjects.length > 0 ? <>{unsettledProjects.length} 个项目 <b>尚未结清</b></> : <>全部项目 <b>已结清</b></>,
       tone: "blue" as const,
-      image: "/assets/pages/income-pending.png",
+      image: "/assets/metrics-v2/receivable-checklist-3d.png",
       chart: "bar" as const,
     },
     {
@@ -1104,7 +1386,7 @@ function DashboardLayout({
       precision: 2,
       comparison: businessSummary.actualHours > 0 ? <>累计投入 <b>{businessSummary.actualHours} 小时</b></> : <>等待导入 <b>工时数据</b></>,
       tone: "indigo" as const,
-      image: "/assets/metric-clipboard.png",
+      image: "/assets/metrics-v2/hourly-clipboard-3d.png",
       chart: "bar" as const,
     },
     {
@@ -1113,7 +1395,7 @@ function DashboardLayout({
       suffix: "个",
       comparison: <><span>运营第 {operationDays} 天</span><br />{formatDateOnly(snapshot.settings.xianyuStartedAt)} 起</>,
       tone: "orange" as const,
-      image: "/assets/metric-calendar-orange.png",
+      image: "/assets/metrics-v2/active-project-calendar-3d.png",
     },
   ];
 
@@ -1122,14 +1404,14 @@ function DashboardLayout({
       <Sidebar
         active={activeNav}
         onActiveChange={changePage}
-        onQuickAdd={() => setDrawerOpen(true)}
+        onQuickAdd={() => openQuickAccounting()}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         projects={snapshot.projects}
       />
       <main className="dashboard-main">
         <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} notificationCount={notificationCount} onNavigate={changePage} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "张同学"} profilePlan={snapshot.settings.accountPlan || "高级版"} />
-        <div className="page-route-view" key={`${activeNav}-${settingsSection}`}>
+        <div className="page-route-view" key={`${activeNav}-${settingsSection}-${projectRoute?.projectId || ""}-${customerRoute?.caseId || customerRoute?.customerId || ""}`}>
           {activeNav === "首页概览" && normalizedSearch && (
             <div className="search-status">
               <MagnifyingGlass size={16} />“{search}” 找到 {filteredProjects.length} 个项目、{filteredPayments.length} 笔收款
@@ -1141,16 +1423,18 @@ function DashboardLayout({
               {metrics.map((metric, index) => <MetricCard key={metric.title} {...metric} index={index} />)}
             </section>
             <OperatingInsightStrip snapshot={snapshot} onNavigate={changePage} />
+            <CustomerPipelineStrip onNavigate={changePage} />
+            <ProductStrategyStrip onNavigate={changePage} />
             <section className="main-grid">
-              <IncomeTrendCard payments={confirmedPayments} />
-              <ActiveProjectsCard projects={filteredProjects} onNavigate={() => changePage("项目管理")} />
+              <IncomeTrendCard snapshot={snapshot} />
+              <ActiveProjectsCard snapshot={snapshot} projects={filteredProjects} onNavigate={() => changePage("项目管理")} onOpenProject={(projectId) => changeProjectRoute({ projectId, tab: "immersive" }, "push")} />
               <OperationDurationCard startedAt={snapshot.settings.xianyuStartedAt} />
             </section>
             <section className="bottom-grid">
               <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("收入记录")} />
               <div className="bottom-stack center-stack">
                 <DailyBalanceCard todayIncome={todayIncome} todayExpense={todayExpense} />
-                <ReminderCard projects={snapshot.projects} payments={snapshot.payments} onNavigate={() => changePage("收入记录")} />
+                <ReminderCard snapshot={snapshot} onNavigate={() => changePage("收入记录")} />
               </div>
               <div className="bottom-stack right-stack">
                 <MonthlyGoalCard current={monthlyIncome} goal={snapshot.settings.monthlyIncomeGoal} onEdit={() => openSettings("记账设置")} />
@@ -1160,22 +1444,39 @@ function DashboardLayout({
                 </div>
               </div>
             </section>
-          </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => setDrawerOpen(true)} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} />}
+          </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => openQuickAccounting()} onCreatePaymentPlan={(projectId) => openQuickAccounting(projectId)} onConfirmPayment={(projectId, paymentId) => setReceiptTarget({ projectId, paymentId })} onRecordSettlementIssue={(projectId) => setSettlementIssueTarget({ projectId })} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} projectRoute={projectRoute} onProjectRouteChange={changeProjectRoute} customerRoute={customerRoute} onCustomerRouteChange={changeCustomerRoute} />}
         </div>
       </main>
 
-      <button className="floating-add" onClick={() => setDrawerOpen(true)} aria-label="立即记账">
+      <button className="floating-add" onClick={() => openQuickAccounting()} aria-label="立即记账">
         <Plus size={24} weight="bold" /><span>立即记账</span>
       </button>
 
       <QuickAccountingDrawer
         open={drawerOpen}
-        projects={snapshot.projects}
+        projects={snapshot.projects.filter(isClientProject)}
         customers={snapshot.customers}
         settings={snapshot.settings}
-        onClose={() => setDrawerOpen(false)}
+        initialProjectId={drawerProjectId}
+        onClose={() => { setDrawerOpen(false); setDrawerProjectId(null); }}
         onSubmit={addPayment}
       />
+
+      {receiptTarget && <PaymentConfirmationModal
+        snapshot={snapshot}
+        target={receiptTarget}
+        onClose={() => setReceiptTarget(null)}
+        onSubmit={confirmReceipt}
+        onRefresh={refreshReceiptData}
+      />}
+
+      {settlementIssueTarget && <SettlementIssueModal
+        snapshot={snapshot}
+        target={settlementIssueTarget}
+        onClose={() => setSettlementIssueTarget(null)}
+        onSubmit={recordSettlementIssue}
+        onRefresh={refreshReceiptData}
+      />}
 
       {success !== null && (
         <div className="success-toast" role="status">
@@ -1231,5 +1532,9 @@ export function App() {
     setSnapshot(await mockLedgerService.saveSnapshot(next));
   };
 
-  return <DashboardLayout snapshot={snapshot} onSnapshotChange={(next) => { void saveSnapshot(next); }} />;
+  return <DashboardLayout
+    snapshot={snapshot}
+    onSnapshotChange={(next) => { void saveSnapshot(next); }}
+    onPersistedSnapshot={setSnapshot}
+  />;
 }
