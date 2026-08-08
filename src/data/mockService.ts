@@ -1,13 +1,36 @@
 import type {
   LedgerSnapshot,
+  PaymentConfirmationValue,
   QuickAccountingFormValue,
+  SettlementIssueValue,
 } from "../types";
+import { isClientProject, projectKindOf } from "./projectKinds";
 
-const STORAGE_KEY = "xianyu-ledger-snapshot-v1";
+export const LEGACY_STORAGE_KEY = "xianyu-ledger-snapshot-v1";
+let backendRevision: number | null = null;
+let backendConnected = false;
+
+export class LedgerRevisionConflictError extends Error {
+  revision: number | null;
+
+  constructor(message: string, revision: number | null = null) {
+    super(message);
+    this.name = "LedgerRevisionConflictError";
+    this.revision = revision;
+  }
+}
+
+export class LedgerBackendRequiredError extends Error {
+  constructor(message = "确认到账需要连接本机经营服务，离线状态不会写入收款数据") {
+    super(message);
+    this.name = "LedgerBackendRequiredError";
+  }
+}
 
 const initialSnapshot: LedgerSnapshot = {
   projects: [],
   payments: [],
+  settlementIssues: [],
   expenses: [],
   customers: [],
   tasks: [],
@@ -37,8 +60,15 @@ const initialSnapshot: LedgerSnapshot = {
   completedOrderCount: 0,
 };
 
-const cloneSnapshot = (snapshot = initialSnapshot): LedgerSnapshot =>
-  JSON.parse(JSON.stringify(snapshot)) as LedgerSnapshot;
+const cloneSnapshot = (snapshot = initialSnapshot): LedgerSnapshot => {
+  const cloned = JSON.parse(JSON.stringify(snapshot)) as LedgerSnapshot;
+  cloned.settlementIssues = Array.isArray(cloned.settlementIssues) ? cloned.settlementIssues : [];
+  cloned.projects = cloned.projects.map((project) => ({
+    ...project,
+    projectKind: projectKindOf(project),
+  }));
+  return cloned;
+};
 
 const isLedgerSnapshot = (value: unknown): value is LedgerSnapshot => {
   if (!value || typeof value !== "object") return false;
@@ -56,7 +86,7 @@ const isLedgerSnapshot = (value: unknown): value is LedgerSnapshot => {
 
 const readStoredSnapshot = () => {
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
+    const stored = window.localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!stored) return cloneSnapshot();
     const parsed = JSON.parse(stored) as unknown;
     if (!isLedgerSnapshot(parsed)) return cloneSnapshot();
@@ -70,24 +100,144 @@ const readStoredSnapshot = () => {
 
 const persistSnapshot = (snapshot: LedgerSnapshot) => {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    window.localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(snapshot));
   } catch {
     // Storage may be unavailable in privacy mode; the current session still works.
   }
 };
 
+const readBackendSnapshot = async (): Promise<LedgerSnapshot> => {
+  const response = await fetch("/api/ledger/snapshot", { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const payload = await response.json() as { revision: number; snapshot: LedgerSnapshot };
+  backendRevision = payload.revision;
+  backendConnected = true;
+  return cloneSnapshot(payload.snapshot);
+};
+
+const responseMessage = async (response: Response, fallback: string) => {
+  const body = await response.json().catch(() => null) as {
+    detail?: string | { message?: string; revision?: number };
+  } | null;
+  const detail = body?.detail;
+  return {
+    message: typeof detail === "string" ? detail : detail?.message || fallback,
+    revision: typeof detail === "object" && typeof detail?.revision === "number" ? detail.revision : null,
+  };
+};
+
 export const mockLedgerService = {
   async getDashboard(): Promise<LedgerSnapshot> {
-    await new Promise((resolve) => window.setTimeout(resolve, 320));
-    return readStoredSnapshot();
+    try {
+      return await readBackendSnapshot();
+    } catch {
+      backendRevision = null;
+      backendConnected = false;
+      return readStoredSnapshot();
+    }
+  },
+
+  async refreshDashboard(): Promise<LedgerSnapshot> {
+    try {
+      return await readBackendSnapshot();
+    } catch {
+      backendRevision = null;
+      backendConnected = false;
+      throw new LedgerBackendRequiredError("无法刷新本机经营数据，请确认 8877 服务已经连接");
+    }
+  },
+
+  async confirmPayment(
+    _snapshot: LedgerSnapshot,
+    value: PaymentConfirmationValue,
+  ): Promise<LedgerSnapshot> {
+    if (!backendConnected || backendRevision === null) {
+      throw new LedgerBackendRequiredError();
+    }
+    let response: Response;
+    try {
+      response = await fetch("/api/ledger/payments/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_id: value.requestId,
+          expected_revision: backendRevision,
+          project_id: value.projectId,
+          payment_id: value.paymentId || null,
+          amount: value.amount,
+          paid_at: new Date(value.paidAt).toISOString(),
+          type: value.type,
+          notes: value.notes || "",
+        }),
+      });
+    } catch {
+      throw new LedgerBackendRequiredError("本机经营服务暂时无法连接，本次到账没有写入，请稍后重试");
+    }
+    if (response.status === 409) {
+      const detail = await responseMessage(response, "经营数据已在其他浏览器更新，请刷新后重新确认");
+      throw new LedgerRevisionConflictError(detail.message, detail.revision);
+    }
+    if (!response.ok) {
+      const detail = await responseMessage(response, `到账确认失败（${response.status}）`);
+      throw new Error(detail.message);
+    }
+    const payload = await response.json() as {
+      revision: number;
+      snapshot: LedgerSnapshot;
+    };
+    backendRevision = payload.revision;
+    backendConnected = true;
+    return cloneSnapshot(payload.snapshot);
+  },
+
+  async recordSettlementIssue(
+    _snapshot: LedgerSnapshot,
+    value: SettlementIssueValue,
+  ): Promise<LedgerSnapshot> {
+    if (!backendConnected || backendRevision === null) {
+      throw new LedgerBackendRequiredError("记录项目异常需要连接本机经营服务，离线状态不会写入财务数据");
+    }
+    let response: Response;
+    try {
+      response = await fetch("/api/ledger/settlement-issues", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_id: value.requestId,
+          expected_revision: backendRevision,
+          project_id: value.projectId,
+          type: value.type,
+          receivable_impact: value.receivableImpact,
+          refund_amount: value.refundAmount,
+          occurred_at: new Date(value.occurredAt).toISOString(),
+          reason: value.reason,
+          notes: value.notes || "",
+        }),
+      });
+    } catch {
+      throw new LedgerBackendRequiredError("本机经营服务暂时无法连接，本次异常没有写入，请稍后重试");
+    }
+    if (response.status === 409) {
+      const detail = await responseMessage(response, "经营数据已在其他浏览器更新，请刷新后重新记录异常");
+      throw new LedgerRevisionConflictError(detail.message, detail.revision);
+    }
+    if (!response.ok) {
+      const detail = await responseMessage(response, `项目异常保存失败（${response.status}）`);
+      throw new Error(detail.message);
+    }
+    const payload = await response.json() as {
+      revision: number;
+      snapshot: LedgerSnapshot;
+    };
+    backendRevision = payload.revision;
+    backendConnected = true;
+    return cloneSnapshot(payload.snapshot);
   },
 
   async addConfirmedPayment(
     snapshot: LedgerSnapshot,
     value: QuickAccountingFormValue,
   ): Promise<LedgerSnapshot> {
-    await new Promise((resolve) => window.setTimeout(resolve, 420));
-
     const next = cloneSnapshot(snapshot);
     let customer = next.customers.find(
       (item) => item.name.trim() === value.customerName.trim(),
@@ -108,14 +258,14 @@ export const mockLedgerService = {
     }
 
     let project = next.projects.find(
-      (item) => item.name.trim() === value.projectName.trim(),
+      (item) => isClientProject(item) && item.name.trim() === value.projectName.trim(),
     );
 
     if (project) {
       const linkedCustomer = next.customers.find((item) => item.id === project?.customerId);
       if (linkedCustomer) customer = linkedCustomer;
       const plannedTotal = next.payments
-        .filter((item) => item.projectId === project?.id && item.status !== "refunded")
+        .filter((item) => item.projectId === project?.id && item.status !== "written_off")
         .reduce((sum, item) => sum + item.amount, 0) + value.amount;
       project.totalAmount = Math.max(project.totalAmount, value.contractTotal || 0, plannedTotal);
     }
@@ -137,6 +287,7 @@ export const mockLedgerService = {
         notes: value.notes,
         type: "定制开发",
         estimatedHours: value.durationDays * 5,
+        projectKind: "client",
       };
       next.projects.unshift(project);
     }
@@ -159,13 +310,59 @@ export const mockLedgerService = {
       next.completedOrderCount += 1;
     }
 
-    persistSnapshot(next);
-    return next;
+    return mockLedgerService.saveSnapshot(next);
   },
 
   async saveSnapshot(snapshot: LedgerSnapshot): Promise<LedgerSnapshot> {
     const next = cloneSnapshot(snapshot);
-    persistSnapshot(next);
-    return next;
+    if (!backendConnected || backendRevision === null) {
+      persistSnapshot(next);
+      return next;
+    }
+    try {
+      const response = await fetch("/api/ledger/snapshot", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_revision: backendRevision, snapshot: next }),
+      });
+      if (response.status === 409) {
+        window.dispatchEvent(new CustomEvent("ledger-conflict"));
+        const latest = await fetch("/api/ledger/snapshot");
+        if (!latest.ok) throw new Error("无法刷新最新经营数据");
+        const payload = await latest.json() as { revision: number; snapshot: LedgerSnapshot };
+        backendRevision = payload.revision;
+        return cloneSnapshot(payload.snapshot);
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json() as { revision: number; snapshot: LedgerSnapshot };
+      backendRevision = payload.revision;
+      return cloneSnapshot(payload.snapshot);
+    } catch {
+      backendConnected = false;
+      backendRevision = null;
+      persistSnapshot(next);
+      window.dispatchEvent(new CustomEvent("ledger-backend-offline"));
+      return next;
+    }
   },
 };
+
+export function getLegacyLedgerSnapshot(): LedgerSnapshot | null {
+  try {
+    const stored = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored) as unknown;
+    return isLedgerSnapshot(parsed) ? cloneSnapshot(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isLedgerBackendConnected() {
+  return backendConnected;
+}
+
+export function acceptMigratedLedger(revision: number) {
+  backendRevision = revision;
+  backendConnected = true;
+}

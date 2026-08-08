@@ -1,116 +1,205 @@
-# 咸鱼项目记账助手 — Design QA
+# 项目工作区与浅色任务流 Design QA
 
-## Comparison Target
+## 验收目标
 
-- Source visual truth: `/Users/chentao/Downloads/咸鱼项目记账助手_Codex参考素材/00_full_reference.png`
-- Source layout guide: `/Users/chentao/Downloads/咸鱼项目记账助手_Codex参考素材/layout_annotated.png`
-- Source focused references: `/Users/chentao/Downloads/咸鱼项目记账助手_Codex参考素材/03_summary_cards.png` through `11_delivery_countdown.png`
-- Browser-rendered implementation: `/Users/chentao/Documents/New project 3/qa/implementation-final.png`
-- Full-view comparison: `/Users/chentao/Documents/New project 3/qa/compare-final.png`
-- Focused comparison: `/Users/chentao/Documents/New project 3/qa/focused-comparison.png`
-- Final verified URL: `http://127.0.0.1:4341/#%E9%A1%B9%E7%9B%AE%E7%AE%A1%E7%90%86`
-- State: desktop dashboard, initial loaded state, no search filter, drawer closed.
+- 用户列表参考：`/var/folders/sy/k3k07pxn1g94vr4gr9hsxlq80000gn/T/codex-clipboard-ca979344-6ce5-4f99-9e83-af8596c79ef8.png`。
+- 用户详情参考：`/var/folders/sy/k3k07pxn1g94vr4gr9hsxlq80000gn/T/codex-clipboard-c3fbb11e-3481-4a14-a3b0-7c74ea417238.png`。
+- 修改前保存截图：`qa/project-workspace-before.png`。
+- 项目列表实现截图：`qa/project-workspace-list-1440x900-final.png`。
+- 浅色任务流实现截图：`qa/project-workspace-detail-light-default.png`。
+- 列表前后对比：`qa/project-workspace-list-comparison.png`。
+- 详情前后对比：`qa/project-workspace-detail-comparison.png`。
+- 隔离验收地址：`http://127.0.0.1:8990/`，数据库为 `/tmp/xianyu-project-workspace.8c8uKQ/qa.db`，未读取闲鱼 Cookie，也未污染用户真实经营数据。
+- 最终交付地址：`http://127.0.0.1:8991/#%E9%A1%B9%E7%9B%AE%E7%AE%A1%E7%90%86`。
+- 最终同地址可见视口截图：`qa/project-workspace-final-8991-viewport.png`；全页截图的浏览器后端会产生平铺，因此最终视觉证据使用未平铺的可见视口版本。
 
-## Viewport And Normalization
+## 设计结果
 
-- Source pixels: 1448 × 1086.
-- Implementation pixels: 1448 × 1086, captured full-page from a 1448 × 1086 CSS viewport.
-- CSS viewport: 1448 × 1086.
-- Device scale factor: 1.
-- Density normalization: none required; source and implementation are equal-density, equal-size PNGs.
-- Full-view alignment: top-left aligned with no browser chrome or extra canvas padding.
+- 项目管理已从“混合项目列表”改成一个统一浅色工作区。标题、分类、当前分类指标、阶段筛选、项目卡片、分类洞察、近期节点和组合时间线均位于同一工作区内。
+- “个人项目 / 接单项目”是工作区内部的主分类，一次只显示一个类别；切换后指标、筛选、卡片、洞察和时间线同步更新。
+- 每个项目使用整张可点击卡片。卡片展示名称、类型、状态、进度、任务、日期以及分类相关数据，点击后默认进入该项目的沉浸任务流。
+- 个人项目不显示客户、合同、报价或回款字段；接单项目继续显示合同金额、已收/未收、利润、小时收益、客户沟通和需求报价。
+- 项目详情的摘要、工期与进度、分类指标、详情标签和任务流都被收进同一个浅色工作区，不再出现孤立的黑色驾驶舱。
+- 沉浸任务流保留阶段列表、空间任务卡、任务时间线、智能详情和本地规则建议；普通卡为白色，当前卡为紫色，进行中为蓝色、完成为绿色、逾期为红色，视觉语言与全站浅色 SaaS 保持一致。
 
-## Full-view Comparison Evidence
+## 对比结论
 
-The final comparison confirms the same high-level composition: 270 px fixed sidebar, greeting/search/profile header, five unequal-width metric cards, three-card core row, payment/detail row, light blue-purple background, rounded white surfaces, and the same visual hierarchy. All major regions remain visible within the 1448 × 1086 frame.
+### Pass 1
 
-## Focused Region Evidence
+- [P1] 原任务流使用整块黑色驾驶舱，与用户要求的全站浅色 UI 不一致。
+  - 修复：保留空间交互和数据密度，仅将表面、边框、阴影、状态色和焦点卡重构为白色/浅紫体系。
+- [P1] 原项目列表把个人项目和接单项目混在一起，且无法表达两类项目不同的数据语义。
+  - 修复：新增工作区内分类切换和分类专属指标、字段与洞察；旧项目缺少分类时按接单项目兼容。
+- [P2] 列表卡片只有内部按钮区域可点击，交互目标不够明确。
+  - 修复：整张项目卡改为语义化按钮，并补齐 hover、focus、指针和清晰的“进入项目”反馈。
 
-`qa/focused-comparison.png` contains equal-size source and implementation pairs for:
+### Pass 2
 
-1. Metrics: titles, amount hierarchy, illustration placement, mini charts, colors, and card proportions.
-2. Core row: income chart, project progress rows, operation-duration card, radii, and spacing.
-3. Detail row: payment table, daily balance, goal, reminders, customer source, and delivery countdown.
+- [P1] 隔离浏览器中创建个人项目后，任务可在前端显示，但刷新后丢失；后端日志显示个人项目因为没有客户外键而未进入规范化项目表，任务插入触发外键失败。
+  - 修复：`business_projects.customer_id` 改为可空，新增 `project_kind` 规范化字段和版本化迁移；旧 SQLite 自动安全重建项目表并执行外键检查。
+  - 结果：个人项目、任务、任务状态、实际工时和项目进度均在刷新后保留，规范化表无外键错误。
+- [P2] 收入页下拉仍会枚举全部项目。
+  - 修复：收入与快速记账只接收接单项目；个人项目不会进入合同、回款和客户消费统计。
 
-These focused views were required because table typography, small labels, chart scales, and asset crops are too small to judge confidently from the full-view comparison alone.
+### Pass 3
 
-## Comparison History
+- 未发现剩余 P0、P1 或 P2 视觉与交互问题。
+- P3 非阻塞说明：浏览器视口能力的最窄 CSS 宽度会钳制为 480 px，无法生成精确 390 px 截图；同一 `max-width: 560px` 规则已在 480 × 844 验证，文档横向溢出为 0。
 
-### Pass 1 — blocked
+## 交互与数据回归
 
-- [P2] Metric amounts collided with the decorative 3D objects because the initial grid used equal-width columns.
-  - Fix: changed the desktop grid to the source's unequal card ratios and tightened the first amount's optical size.
-  - Post-fix evidence: `qa/implementation-1448x1086-pass2.png` and the Metrics row in `qa/focused-comparison.png`.
-- [P2] The initial month total showed ¥4,700 instead of the source-grounded ¥5,680, and due-date pills were one day high.
-  - Fix: corrected the mock payment date and normalized date arithmetic to local midnights.
-  - Post-fix evidence: the final DOM and screenshot show ¥5,680, 2/6/1-day project pills, and a 10-day delivery countdown.
-- [P2] Sidebar promo/countdown cards sat too low because a flexible spacer consumed the available column height.
-  - Fix: changed the spacer to fixed height so both cards align with the source's vertical rhythm.
-  - Post-fix evidence: `qa/compare-final.png`.
-- [P2] The operation-duration crop contained duplicated source text and visually overlapped the implementation copy.
-  - Fix: recropped the supplied source artwork to the illustration-only region.
-  - Post-fix evidence: the Core row in `qa/focused-comparison.png`.
-- [P2] A desktop floating CTA covered the delivery countdown and did not appear in the source.
-  - Fix: hid the floating CTA on the reference desktop breakpoint while retaining it for tablet/mobile access.
-  - Post-fix evidence: `qa/implementation-final.png`.
+- 分类：个人 / 接单切换、分类计数、分类指标、状态筛选、搜索、排序、近期节点和时间线均可操作。
+- 路由：整卡点击进入 `#项目管理/<projectId>/immersive`；刷新保持项目和标签；浏览器后退/前进在项目列表与详情间恢复；页面“返回项目列表”回到正确分类。
+- 任务：卡片点击、阶段点击、时间线点击、上一项/下一项、ArrowLeft/ArrowRight、Home/End、水平拖动和滚轮均能改变选中任务并同步右侧详情。
+- 滚轮边界：轨道内任务 3 → 4 时页面 `scrollY` 保持不变；到达末项继续向下滚动时，任务保持末项且页面正常从 `1267` 滚动到 `1527`，没有滚动锁或自动跳底。
+- 状态推进：任务从待开始 → 进行中 → 已完成后，指标从 `4/0/0/0` 更新为 `3/0/1/0`，个人项目完成度更新为 25%，实际工时更新为 4h，刷新后保持一致。
+- 持久化：个人项目在规范化表中的 `customer_id = NULL`、`project_kind = personal`；4 个个人任务均拥有有效项目外键；`PRAGMA foreign_key_check` 无结果。
+- 接单项目：合同金额、已收/未收、实际利润、小时收益、客户沟通和需求报价全部保留；旧项目按接单项目兼容。
+- 收入页：项目下拉仅显示 `uni-app页面修改`，不包含个人项目 `个人产品增长实验`。
+- 浏览器控制台：项目工作区、个人详情、接单详情和收入页均无 error 或 warning。
 
-### Pass 2 / Final — passed
+## 响应式验收
 
-No actionable P0/P1/P2 design differences remain after the fixes above.
+- 1440 × 900：列表使用阶段 / 卡片 / 洞察三段布局；项目卡完整，分类切换与四项指标基线稳定。
+- 1024 × 768：任务流为“阶段 + 3D 轨道”两列，时间线和详情移到下方；任务卡保持 CSS 3D，文档横向溢出为 0。
+- 768 × 1024：任务流变为单列，任务卡为无透视的 158 px 横向卡片，个人项目不出现客户沟通和需求报价，横向页面溢出为 0。
+- 480 × 844：项目卡单列；任务卡变为 368 px 全宽紧凑列表，`position: relative`、`transform: none`；分类按钮和工作区均未溢出。
+- `prefers-reduced-motion`：现有媒体查询保留即时透明度反馈，并取消透视位移动画。
 
-## Required Fidelity Surfaces
+## 工程验收
 
-- Fonts and typography: uses a PingFang/SF/Inter-aligned system stack with matching heavy display headings, compact table copy, tabular amount figures, coherent weight hierarchy, and no clipped or overlapping desktop text. The Chinese fallback renders consistently at tested widths.
-- Spacing and layout rhythm: card widths, three-row composition, 11–12 px region gaps, 20–22 px radii, fixed sidebar, core card proportions, and bottom detail grouping closely match the reference. The final 1448 frame has no horizontal overflow.
-- Colors and visual tokens: blue-purple primary, green income, orange duration, red attention states, muted slate copy, soft borders, translucent surfaces, and restrained shadows map to the source palette and retain readable contrast.
-- Image quality and asset fidelity: all prominent supplied visual subjects are present—duck mascot, planet, wallets, payment card, clipboard, orange calendar, purple operation calendar, trophy, and hourglass. They use real raster source assets, not custom SVG/CSS substitutes. Final crops are sharp at the rendered slot sizes.
-- Copy and content: app-specific Chinese labels match the supplied prompt; currency uses CNY formatting; dates use Chinese-local formatting; dynamic dates intentionally differ from the static 2025 reference.
-- Icons: Phosphor icons provide one consistent rounded/duotone family for navigation, controls, project rows, notifications, and form feedback.
-- Responsiveness: 1280, 1024, and 768 screenshots are saved under `qa/`. Each has `scrollWidth === clientWidth`. At 1024 and 768 the fixed sidebar becomes an accessible off-canvas menu and the metric/detail grids reflow without overlap.
-- Accessibility: semantic headings/regions/table/dialog, explicit input labels, alt text for meaningful images, visible focus rings, Escape-to-close drawer behavior, practical tablet tap targets, and `prefers-reduced-motion` support are present.
+- TypeScript 类型检查通过。
+- Vite 生产构建通过，并生成 `dist/client/index.html`、`dist/server/index.js` 与 `dist/.openai/hosting.json`。
+- 后端完整测试 79/79 通过，其中包含个人项目无客户、任务外键和快照修订回归。
+- Sites Worker 4/4 通过；迁移与后端关键模块均通过 Python 语法编译检查。
+- 真实数据库在迁移前备份到 `data/backups/pre-project-workspace-20260806-2110.db`；迁移后 `customer_id` 可空、`project_kind` 已建立，外键违规为 0。
+- 最终 8991 仅保留一个真实服务，闲鱼监听状态为 connected；全新标签页从分类切换、整卡进入详情、刷新直达、返回列表到控制台检查全部通过，最终标签停留在交付地址。
 
-## Interaction And Browser Verification
+final result: passed
 
-- Opened the quick-accounting drawer from the sidebar.
-- Confirmed validation rejects a blank/zero amount with a visible field error.
-- Submitted a ¥320 stage payment and verified cumulative income, monthly income, today income, trend badge, goal progress, net income, row count, and newest payment row all update together.
-- Verified success toast and icon-based particle feedback.
-- Searched for “李老板” and verified one matching project and two matching payments.
-- Opened and closed the tablet sidebar at 1024 px.
-- Checked the browser console after the stable final render: no errors or warnings.
+---
 
-## Seven-page Extension QA
+# 2026-08-08 项目异常结算与净回款 Design QA
 
-- New reference sources: `public/reference/pages/project-management.png`, `income-records.png`, `expense-records.png`, `customer-management.png`, `data-statistics.png`, `goal-plan.png`, and `settings-center.png`.
-- Final normalized comparisons: `qa/pages/comparison-sheet-final.png`; every pair places the supplied reference on the left and the matching implementation on the right at the same 4:3 frame.
-- Final individual implementation captures: `qa/pages/project-v2.png`, `income.png`, `expense-v4.png`, `customer-v3.png`, `analytics-v4.png`, `goals-v4.png`, and `settings-v4.png`.
-- The project and customer pages were corrected so their right-side dashboards begin beside the first-row summary cards, matching the supplied desktop composition.
-- The goal page was corrected to use an independent achievement/focus/reminder rail so the route map and learning plan remain visible in the first frame.
-- Expense alerts and settings groups were density-tuned so the reference's bottom content remains reachable without horizontal overflow.
-- Recharts animations were allowed to settle before comparison; donut, area, line, and grouped-bar charts were visibly populated in the final captures.
+## 验收范围
 
-### Extension interaction checks
+- 新增客户不满意、退款、项目取消、客户拒付、终止合作、需求范围争议和其他异常的统一记录入口。
+- 统一首页、收入页、项目驾驶舱、项目详情、客户累计消费、目标页和支出页的净到账口径。
+- 明确区分累计入账、实际退款、确认核销、可收余额、净到账、净回款率和结算完成度。
+- 所有写入使用 SQLite 修订号与请求 ID；异常记录不自动改变项目交付状态，退款不重复生成支出。
 
-- Left navigation changed the active route and URL hash for all seven pages.
-- Created a new project through the modal and verified the new row appeared immediately.
-- Switched the customer list between table and nine-card views.
-- Opened and closed the income quick-accounting drawer from the income page.
-- Toggled automatic backup and verified `aria-pressed` changed from `true` to `false`.
-- Triggered immediate sync and verified the “数据同步完成” toast.
-- Verified the mobile off-canvas navigation opens and the page has no horizontal document overflow at the tested narrow viewport.
-- Final fresh-port handoff tab reported title “咸鱼项目记账助手”, visible H1 “项目管理”, active navigation “项目管理”, and no console errors or warnings.
+## 隔离数据验收
 
-## Follow-up Polish
+- 使用临时数据库 `/tmp/xianyu-settlement-qa.T2p19Y/qa.db` 和临时 `127.0.0.1:8994` 完成写流程；真实 `8877` 数据未被写入。
+- 仅记录风险：需求范围争议写入原因和备注，净到账与可收余额不变。
+- 全额核销：待收 ¥4,000 节点变为“已核销”，可收余额同步减少 ¥4,000。
+- 部分核销：无付款计划项目核销 ¥2,500，可收余额从 ¥10,000 调整为 ¥7,500，并保留原项目状态。
+- 退款并核销剩余款：累计入账 ¥3,000、实际退款 ¥1,000、剩余尾款核销 ¥3,000；项目净到账为 ¥2,000，可收余额为 ¥0，结算完成度为 100%。
+- 最终隔离汇总为净到账 ¥2,000、可收余额 ¥7,500、退款 ¥1,000、核销 ¥9,500；三个项目仍分别保持 `in_progress`、`delivered`、`delivered`。
+- 并发冲突：在弹层打开后把后端修订从 5 更新为 6，再提交会显示“经营数据已在其他浏览器更新”，保留弹层并提供“刷新最新数据”，没有静默覆盖。
 
-- [P3] Some screenshot-derived 3D assets retain a faint light-background edge under close inspection; bespoke transparent originals would make these seams fully invisible.
-- [P3] The top-right avatar uses a consistent icon treatment rather than the exact illustrated portrait from the static reference.
+## 视觉、响应式与无障碍
+
+- 1440 × 900、1024 × 768、768 × 1024 和浏览器可用最窄 480 × 844 均无文档横向溢出。
+- 桌面保持四项财务指标和主内容/提醒侧栏；平板切为两列指标与单列工作区；窄屏操作按钮、财务拆分和异常历史自动折叠。
+- 异常界面继续使用白色圆角、浅紫品牌色与橙色风险提示，没有引入深色工作区。
+- 异常弹层在 480 × 844 下宽 443 px、内部 `scrollWidth === clientWidth`；三项影响预览切为单列，金额字段和原因字段保持可读。
+- 弹层打开后原因字段自动获得焦点，Escape 可以关闭；修订冲突错误使用 `role=alert`，刷新与关闭按钮均可键盘操作。
+- 首页“累计净收入”、净收入趋势、当日退款净额、当前项目异常类型和智能提醒均读取同一财务派生模型。
+- 浏览器控制台新增 error / warning 为 0。
+
+## 工程验收
+
+- 后端完整测试 106/106 通过，其中统一账本套件覆盖仅风险、全额/部分核销、退款、退款与核销组合、超额拒绝、个人项目拒绝、请求幂等、修订冲突、退款后再次到账上限和数据库约束。
+- TypeScript 类型检查通过。
+- Vite 生产构建通过，并生成 `dist/client/index.html`、`dist/server/index.js` 与 `dist/.openai/hosting.json`。
+- Sites Worker 4/4 通过，`git diff --check` 通过。
+
+final result: passed
+
+---
+
+# 2026-08-08 项目驾驶舱中心扇形空间场景 Design QA
+
+## 对照目标与证据
+
+- 设计源真值：`/tmp/project-cockpit-reference-latest-landscape.png`，2400 × 1080 px。该图只作为“中心扇形、轻薄玻璃、前后景深与选中卡抽出”的空间和材质参考；按用户确认，不复刻其黑色系统外壳、独立侧栏、手机状态栏或绿色主题。
+- 修改前证据：`qa/project-cockpit-before-20260808.png`，1188 × 1500 px，用于确认原来的普通项目网格与右侧洞察结构。
+- 最终实现证据：`qa/project-cockpit-final-1440x900.jpg`，1410 × 900 px；浏览器 CSS 视口为 1440 × 900，30 px 差值来自浏览器可见内容宽度。
+- 任务级轻玻璃证据：`qa/task-flow-light-final-1440x900.jpg`，1410 × 900 px。
+- 全视图同屏对照：`qa/project-cockpit-comparison-full-20260808.jpg`。参考图与最终实现被放在同一个比较画布的等宽面板中，参考图按比例居中，不拉伸。
+- 中央轨道聚焦对照：`qa/project-cockpit-comparison-focus-20260808.jpg`。该图用于检查卡片角度、前后层级、玻璃边缘、中心焦点和文字可读性。
+- 状态：`#项目管理`，默认“接单项目”，按当前 SQLite 真实数据显示 2 个项目，选中“去除豆包水印”；没有创建装饰性假项目。
+
+## 尺寸与密度归一化
+
+- 浏览器响应式能力在本机后端请求 720 × 450 后暴露为 `innerWidth: 1440`、`innerHeight: 900`、`devicePixelRatio: 0.5`。
+- 浏览器原始截图 `qa/project-cockpit-final-1440x900@2x.png` 为 2820 × 1800 px，并将同一 1410 × 900 可见内容平铺为 2 × 2；这是浏览器截图后端现象，不是页面 DOM 重复。
+- 最终证据从原始截图提取一个 1410 × 900 完整可见瓦片，未缩放、未改变颜色，因而与 CSS 可见内容保持 1:1。
+- 参考图是独立宽屏概念图，不能与本产品完整外壳形成严格像素级同视口匹配；全视图比较用于判断信息架构，聚焦比较用于判断用户明确指定的中心空间场景。
+
+## Findings
+
+- 未发现剩余 P0、P1 或 P2 问题。
+- [P3] 当前真实分类只有 2 个项目，因此最终静态截图只能看到 1 张选中卡和 1 张后退卡，扇形密度低于参考图。该差异是“不生成假项目卡”的数据约束，不影响 3 个以上项目时前后各两张的正式布局，也不应通过伪造数据修正。
+
+## 必查视觉面
+
+- 字体与排版：沿用全站现有中文无衬线栈、字号、字重和行高。选中项目名称、状态、金额、任务和日期在半透明阅读层内清晰；侧卡仍可辨识项目名称，没有使用参考图中过窄、过暗的小字。长名称使用受控换行或省略，不压住操作按钮。
+- 间距与布局节奏：顶部分类和四项指标、左侧阶段、中间轨道、右侧 Inspector、底部时间线形成稳定三列层级。1440 × 900 首屏可完整看到驾驶舱主任务，页面横向溢出为 0；选中卡没有遮住 Inspector 或筛选控件。
+- 颜色与视觉令牌：保留现有浅色 SaaS 的白、浅紫、紫蓝品牌色，橙色只用于待回款风险。卡面为单层半透明白紫渐变、1 px 紫灰边、轻 blur 和柔和光晕；没有黑色驾驶舱、双边框、厚侧壁、玻璃底座或实心紫色选中面。
+- 图像与资产质量：中央空间由 DOM、CSS 透视、渐变光场和低对比点阵组成，没有新增位图背景、WebGL 或占位图；参考图本身没有需要迁入的独立产品图片资产。全站既有透明装饰素材未被本轮改坏，项目与任务图标继续使用既有 Phosphor 图标体系。
+- 文案与真实内容：项目名称、客户/类型、状态、任务、交付日、合同额、已收和未收均来自现有数据。空分类展示真实空状态；界面没有参考图的虚构任务、人员或数值。
+- 图标与操作可见性：分类、筛选、排序、上一项/下一项、进入项目、新建项目和 Inspector 操作使用同一图标家族，按钮对齐一致；“首次点击选择”和“进入项目”是两个视觉上分离的动作。
+
+## 交互、响应式与无障碍
+
+- 已实际验证：未选中项目卡点击后只抽出并更新 Inspector，URL 不变；“进入项目”进入 `#项目管理/<projectId>/immersive`。
+- 已实际验证：上一项/下一项、Home、End、方向键、水平拖动和滚轮切换；轨道首尾恢复页面滚动，不产生自动跳底。
+- 已实际验证：分类切换、阶段筛选、搜索、排序和空个人项目；分类切换不写入 SQLite 或 LocalStorage。
+- 任务轨道已实际验证卡片点击和前后切换；选中任务前移、相邻任务保持约 9° 的可读轻透视，没有深色或不透明紫色卡面。
+- 响应式：1024 × 768 为阶段与轨道两列且 Inspector 下移；768 × 1024 为平面横向卡；480 × 844 触发 `max-width: 560px` 单列模式并取消 3D。三个尺寸的文档横向溢出均为 0。
+- 可访问性：项目卡使用按钮语义、`aria-current`、明确 `focus-visible`；粗指针、窄屏和 `prefers-reduced-motion` 关闭持续视差和大幅位移。
+
+## 比较历史
+
+### Pass 1：结构与主题
+
+- [P1] 修改前为普通项目卡网格，中心没有明确焦点和空间纵深。
+  - 修复：`#项目管理` 直接改为驾驶舱，新增中心扇形轨道、左侧阶段、右侧 Inspector 和底部时间线。
+- [P1] 项目详情任务流仍混有深色基础样式和实心选中卡，与确认的浅色全站方向冲突。
+  - 修复：合并为正式浅色样式，并统一为薄玻璃材质；项目层空间最强、任务层角度和景深减半。
+
+### Pass 2：点击与可读性
+
+- [P2] 3D 父平面会吞掉后退卡片的指针命中，视觉上能看到但无法可靠点击。
+  - 修复：轨道父层设为 `pointer-events: none`，可见项目卡恢复 `pointer-events: auto`；随后实际点击侧卡确认会抽出并更新 Inspector。
+- [P2] 任务相邻卡过于侧向且露出宽度不足，项目名称/任务名称难以辨认。
+  - 修复：项目卡保持面向中心但选中卡只约 4°，任务相邻卡收敛到约 9°，任务横向距离调整为 92 px。
+- [P2] 首页只筛选 `in_progress`，导致待开始和已交付待回款项目被错误显示为空。
+  - 修复：首页改为“当前项目”，纳入待开始、进行中、逾期及已交付待回款，并让项目行直达沉浸任务流。
+
+### Pass 3：最终同屏对照
+
+- 全视图与聚焦对照确认中心焦点、卡面抽出、后退景深、细边玻璃和浅色产品一致性均已建立。
+- 当前 2 项真实数据限制了静态扇形数量，但不存在需要用假卡补齐的 P0/P1/P2 问题。
+- 项目列表、项目详情、首页入口、桌面/平板/窄屏及键盘焦点均通过最终回归。
+
+### Pass 4：常驻服务与控制台
+
+- [P2] 常驻服务重启后的首次快速 Hash 导航会让被跳过的原生 View Transition `ready` Promise 产生未处理的 `InvalidStateError`，虽然页面和数据没有异常，但控制台不干净。
+  - 修复：`runPageTransition` 同时观察 `ready`、`updateCallbackDone` 和 `finished`，将快速导航导致的预期动画取消安全收口。
+  - 结果：在同一 8877 标签中执行“重新加载 → 首页概览 → 项目管理”的快速连续切换后，新增 error / warning 为 0，最终 URL 保持精确的 `#项目管理`。
 
 ## Implementation Checklist
 
-- [x] Source and implementation compared at the same desktop viewport and state.
-- [x] Focused comparisons reviewed for metrics, core cards, and detail cards.
-- [x] All P0/P1/P2 findings fixed and rechecked.
-- [x] Primary interaction path and responsive menu tested in the in-app browser.
-- [x] Typecheck, production build, and Sites worker tests passed.
+- [x] 项目管理默认进入浅色驾驶舱。
+- [x] 个人 / 接单分类、筛选、搜索和排序驱动同一套真实数据。
+- [x] 中央项目卡支持选择抽出与独立进入项目动作。
+- [x] 任务轨道复用轻玻璃材质并降低动态强度。
+- [x] 首页当前项目纳入待开始、逾期和已交付待回款。
+- [x] 响应式、键盘、滚轮边界和减少动态效果通过。
+- [x] 同屏全视图和中央轨道聚焦比较无 P0/P1/P2。
+- [x] LaunchAgent 受控重启恢复，快速导航后控制台无新增错误或警告。
 
 final result: passed
