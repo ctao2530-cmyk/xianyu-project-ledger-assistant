@@ -119,6 +119,75 @@ export interface LeadAnalysis {
   };
 }
 
+export interface SalesAnalysisResult {
+  customer_type: "新访客" | "潜在客户" | "意向客户" | "已有客户" | "低匹配客户";
+  need_type: string;
+  purchase_probability: number;
+  stage: "初次咨询" | "需求沟通" | "方案评估" | "报价决策" | "待跟进" | "已成交" | "暂不匹配";
+  customer_profile: string;
+  need_signals: string[];
+  sales_strategy: string;
+  next_action: string;
+  recommended_reply: string;
+  evidence_refs: number[];
+  risk_flags: string[];
+  tools_used: Array<"customer_history" | "similar_projects" | "pricing_history">;
+  needs_human_confirmation: true;
+}
+
+export interface SalesAnalysis {
+  id: string;
+  conversation_id: number;
+  message_id: number;
+  provider: string;
+  model: string;
+  status: "running" | "completed" | "failed" | string;
+  result: SalesAnalysisResult | null;
+  tools_used: string[];
+  context_summary: {
+    message_count: number;
+    project_count: number;
+    quote_count: number;
+    confirmed_revenue: number;
+    memory_version: number;
+  };
+  error_code: string | null;
+  error_message: string | null;
+  confirmed_at: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface SalesMemoryItem {
+  id: string;
+  customer_id: string | null;
+  conversation_id: number;
+  source_analysis_id: string | null;
+  customer_background: string;
+  requirements: string[];
+  communication_summary: string;
+  latest_analysis: Record<string, unknown>;
+  follow_up_status: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SalesMemory {
+  customer_id: string | null;
+  memories: SalesMemoryItem[];
+  memory_count: number;
+  latest_version: number;
+}
+
+export interface SalesConfirmation {
+  analysis: SalesAnalysis;
+  lead: LeadView;
+  memory: SalesMemoryItem;
+  revision: number;
+  idempotent: boolean;
+}
+
 export interface RequirementBlueprint {
   schema_version: "2.0";
   title: string;
@@ -415,6 +484,11 @@ export const localPlatformService = {
   getLead: (conversationId: number) => api<LeadView | null>(`/api/conversations/${conversationId}/lead`),
   analyzeLead: (conversationId: number, refresh = false) => api<LeadAnalysis>(`/api/conversations/${conversationId}/lead/analyze?refresh=${refresh ? "true" : "false"}`, { method: "POST" }),
   confirmLead: (conversationId: number, analysisRunId?: string) => api<LeadView>(`/api/conversations/${conversationId}/lead`, { method: "POST", body: JSON.stringify({ confirmed: true, analysis_run_id: analysisRunId || null }) }),
+  salesAnalysis: (conversationId: number) => api<SalesAnalysis | null>(`/api/conversations/${conversationId}/sales/analysis`),
+  salesHistory: (conversationId: number, limit = 10) => api<SalesAnalysis[]>(`/api/conversations/${conversationId}/sales/history?limit=${limit}`),
+  salesMemory: (conversationId: number) => api<SalesMemory>(`/api/conversations/${conversationId}/sales/memory`),
+  analyzeSales: (conversationId: number, refresh = false, provider?: DraftProvider) => api<SalesAnalysis>(`/api/conversations/${conversationId}/sales/analyze?refresh=${refresh ? "true" : "false"}${provider ? `&provider=${encodeURIComponent(provider)}` : ""}`, { method: "POST" }),
+  confirmSales: (conversationId: number, analysisRunId: string) => api<SalesConfirmation>(`/api/conversations/${conversationId}/sales/confirm`, { method: "POST", body: JSON.stringify({ confirmed: true, analysis_run_id: analysisRunId }) }),
   requirementExport: (conversationId: number) => api<RequirementExport>(`/api/conversations/${conversationId}/requirement-export`),
   previewRequirementImport: (payload: { conversation_id: number; customer_id: string; case_id?: string | null; case_title?: string | null; source_label?: string; document: string | Record<string, unknown> }) => api<RequirementImportPreview>("/api/requirements/import/preview", { method: "POST", body: JSON.stringify(payload) }),
   commitRequirementImport: (token: string, expectedVersion: number) => api<{ case: RequirementCaseDetail; version_id: number; version: number; idempotent: boolean }>("/api/requirements/import/commit", { method: "POST", body: JSON.stringify({ token, expected_version: expectedVersion }) }),

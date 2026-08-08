@@ -52,6 +52,14 @@ class RecordingNotifier:
         self.count += 1
 
 
+class RecordingSalesScheduler:
+    def __init__(self) -> None:
+        self.message_ids: list[int] = []
+
+    def schedule(self, message_id: int) -> None:
+        self.message_ids.append(message_id)
+
+
 def event(external_id: str, received_at: datetime) -> IncomingMessage:
     return IncomingMessage(
         external_id=external_id,
@@ -195,4 +203,38 @@ async def test_burst_messages_in_different_conversations_remain_independent(tmp_
     await asyncio.sleep(0.05)
 
     assert len(queue.message_ids) == 2
+    await processor.stop()
+
+
+@pytest.mark.asyncio
+async def test_latest_inbound_message_schedules_independent_sales_analysis(tmp_path) -> None:
+    now = datetime.now(timezone.utc)
+    database = Database(f"sqlite:///{tmp_path / 'sales-schedule.db'}")
+    database.create_all()
+    queue = RecordingQueue()
+    sales = RecordingSalesScheduler()
+    processor = MessageProcessor(
+        database,
+        ReconcileAdapter([]),  # type: ignore[arg-type]
+        queue,  # type: ignore[arg-type]
+        RecordingNotifier(),  # type: ignore[arg-type]
+        history_limit=20,
+        reply_burst_coalesce_seconds=0.02,
+        sales_agent=sales,
+    )
+
+    await processor.process(conversation_event("sales-1", "sales", "先问一下", now))
+    await processor.process(
+        conversation_event("sales-2", "sales", "我想做订单系统", now)
+    )
+    await asyncio.sleep(0.06)
+
+    assert queue.message_ids == sales.message_ids
+    assert len(sales.message_ids) == 1
+    with database.session() as session:
+        latest = session.scalar(
+            select(Message).where(Message.external_id == "sales-2")
+        )
+        assert latest is not None
+        assert sales.message_ids == [latest.id]
     await processor.stop()

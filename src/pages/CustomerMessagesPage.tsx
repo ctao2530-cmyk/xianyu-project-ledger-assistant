@@ -10,7 +10,6 @@ import {
   FileText,
   Funnel,
   PaperPlaneTilt,
-  Question,
   ShieldCheck,
   Sparkle,
   Storefront,
@@ -28,7 +27,6 @@ import {
   type ConversationSummary,
   type AIProviderStatus,
   type DraftProvider,
-  type LeadAnalysis,
   type LeadView,
   type PlatformStatus,
   type QuoteView,
@@ -36,6 +34,8 @@ import {
   type RequirementExport,
   type RequirementImportPreview,
   type RequirementCaseSummary,
+  type SalesAnalysis,
+  type SalesMemory,
 } from "../data/localPlatformService";
 import type { Customer } from "../types";
 import "./customer-messages.css";
@@ -74,6 +74,108 @@ function EmptyMessages({ offline }: { offline: boolean }) {
   </section>;
 }
 
+function SalesInsightCard({
+  analysis,
+  history,
+  memory,
+  lead,
+  working,
+  showHistory,
+  onAnalyze,
+  onConfirm,
+  onToggleHistory,
+  onCreateProject,
+  onCopyReply,
+}: {
+  analysis: SalesAnalysis | null;
+  history: SalesAnalysis[];
+  memory: SalesMemory | null;
+  lead: LeadView | null;
+  working: string;
+  showHistory: boolean;
+  onAnalyze: (refresh?: boolean, provider?: DraftProvider) => void;
+  onConfirm: () => void;
+  onToggleHistory: () => void;
+  onCreateProject: () => void;
+  onCopyReply: (reply: string) => void;
+}) {
+  const result = analysis?.result;
+  const providerLabel = analysis?.provider === "deepseek" ? "DeepSeek 快速分析" : "Codex 销售分析";
+  const completedHistory = history.filter((item) => item.status === "completed" && item.result);
+
+  return <article className={`sales-agent-card status-${analysis?.status || "empty"}`}>
+    <header className="sales-agent-heading">
+      <span><Sparkle size={17} weight="fill" /><b>AI 销售助手</b><small>独立 Sales Agent</small></span>
+      <em>{analysis ? providerLabel : "等待分析"}</em>
+    </header>
+
+    {!analysis && <div className="sales-agent-state">
+      <Brain size={28} weight="duotone" />
+      <div><strong>把回复升级为销售决策</strong><p>读取客户历史、相似项目和真实报价后，给出客户价值、策略与下一步。</p></div>
+      <button type="button" disabled={Boolean(working)} onClick={() => onAnalyze(false)}><Sparkle size={15} />生成客户分析</button>
+    </div>}
+
+    {analysis?.status === "running" && <div className="sales-agent-state compact" role="status">
+      <ArrowClockwise size={22} className="spin" />
+      <div><strong>正在分析客户意图</strong><p>只读调用业务工具，不会写入客户、发送消息或确认报价。</p></div>
+    </div>}
+
+    {analysis?.status === "failed" && <div className="sales-agent-state compact failed" role="alert">
+      <WarningCircle size={22} weight="fill" />
+      <div><strong>销售分析未完成</strong><p>{analysis.error_message || "模型暂时不可用，请明确重试。"}</p></div>
+      <div className="sales-error-actions"><button type="button" disabled={Boolean(working)} onClick={() => onAnalyze(true, analysis.provider === "codex_cli" ? "codex_cli" : "deepseek")}><ArrowClockwise size={14} />重试当前模型</button>{analysis.provider === "deepseek" && <button type="button" disabled={Boolean(working)} onClick={() => onAnalyze(true, "codex_cli")}><Brain size={14} />改用 Codex</button>}</div>
+    </div>}
+
+    {analysis?.status === "completed" && result && <>
+      <div className="sales-signal-grid">
+        <span><small>客户类型</small><b>{result.customer_type}</b></span>
+        <span><small>当前阶段</small><b>{result.stage}</b></span>
+        <span className="probability"><small>购买意愿</small><b>{result.purchase_probability}%</b><i><em style={{ width: `${result.purchase_probability}%` }} /></i></span>
+      </div>
+
+      <div className="sales-need-line"><TargetIcon /><span><small>需求判断</small><b>{result.need_type}</b><p>{result.customer_profile}</p></span></div>
+
+      <div className="sales-strategy-block">
+        <span><small>建议策略</small><p>{result.sales_strategy}</p></span>
+        <span><small>下一步动作</small><p>{result.next_action}</p></span>
+      </div>
+
+      <div className="sales-recommended-reply">
+        <header><span>推荐回复</span><small>复制后仍需人工审核</small></header>
+        <p>{result.recommended_reply}</p>
+        {result.risk_flags.length > 0 && <div><WarningCircle size={14} weight="fill" />{result.risk_flags.join(" · ")}</div>}
+      </div>
+
+      <div className="sales-agent-actions">
+        <button type="button" className="primary" onClick={() => onCopyReply(result.recommended_reply)}><Copy size={14} />复制回复</button>
+        <button type="button" className={analysis.confirmed_at ? "confirmed" : ""} disabled={Boolean(working) || Boolean(analysis.confirmed_at)} onClick={onConfirm}><UserCircle size={14} />{analysis.confirmed_at ? "客户已保存" : "保存客户"}</button>
+        <button type="button" disabled={!lead} title={lead ? "进入报价与项目转化" : "请先人工确认保存客户"} onClick={onCreateProject}><Funnel size={14} />创建项目</button>
+        <button type="button" onClick={onToggleHistory}><Clock size={14} />{showHistory ? "收起历史" : "查看历史"}</button>
+      </div>
+
+      <footer className="sales-context-proof">
+        <span>已读取 {analysis.context_summary.message_count} 条对话</span>
+        <span>{analysis.context_summary.project_count} 个历史项目</span>
+        <span>{analysis.context_summary.quote_count} 份历史报价</span>
+        {analysis.context_summary.confirmed_revenue > 0 && <span>历史到账 {money.format(analysis.context_summary.confirmed_revenue)}</span>}
+      </footer>
+
+      {showHistory && <section className="sales-history-panel" aria-label="销售分析历史">
+        <header><span>客户销售记忆</span><small>{memory?.latest_version ? `记忆 V${memory.latest_version}` : "尚未确认保存"}</small></header>
+        {memory?.memories[0] && <article className="sales-memory-summary"><b>{memory.memories[0].customer_background}</b><p>{memory.memories[0].communication_summary}</p><small>跟进状态：{memory.memories[0].follow_up_status}</small></article>}
+        {!memory?.memories.length && <p className="sales-history-empty">点击“保存客户”后，本次客户背景、需求和跟进动作会写入可复用销售记忆。</p>}
+        <div className="sales-history-list">{completedHistory.slice(0, 5).map((item) => <article key={item.id}><span><b>{item.result?.need_type}</b><small>{dateTime.format(new Date(item.created_at))} · {item.result?.stage}</small></span><strong>{item.result?.purchase_probability}%</strong><p>{item.result?.next_action}</p></article>)}</div>
+      </section>}
+
+      <button type="button" className="sales-refresh-link" disabled={Boolean(working)} onClick={() => onAnalyze(true, analysis.provider === "codex_cli" ? "codex_cli" : "deepseek")}><ArrowClockwise size={13} />基于最新对话重新分析</button>
+    </>}
+  </article>;
+}
+
+function TargetIcon() {
+  return <span className="sales-target-icon"><Funnel size={17} weight="duotone" /></span>;
+}
+
 export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequirement }: { customers: Customer[]; onProjectCreated?: (projectId: string) => void; onOpenRequirement?: (customerId: string, caseId: string) => void }) {
   const [filter, setFilter] = useState<ChannelFilter>("all");
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -81,7 +183,10 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [requirements, setRequirements] = useState<RequirementWorkspace | null>(null);
   const [lead, setLead] = useState<LeadView | null>(null);
-  const [leadAnalysis, setLeadAnalysis] = useState<LeadAnalysis | null>(null);
+  const [salesAnalysis, setSalesAnalysis] = useState<SalesAnalysis | null>(null);
+  const [salesHistory, setSalesHistory] = useState<SalesAnalysis[]>([]);
+  const [salesMemory, setSalesMemory] = useState<SalesMemory | null>(null);
+  const [showSalesHistory, setShowSalesHistory] = useState(false);
   const [quotes, setQuotes] = useState<QuoteView[]>([]);
   const [status, setStatus] = useState<PlatformStatus | null>(null);
   const [providers, setProviders] = useState<AIProviderStatus[]>([]);
@@ -135,17 +240,23 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
 
   const loadConversation = async (conversationId: number) => {
     try {
-      const [nextDetail, nextRequirements, nextLead] = await Promise.all([
+      const [nextDetail, nextRequirements, nextLead, nextSales, nextMemory, nextSalesHistory] = await Promise.all([
         localPlatformService.conversation(conversationId),
         localPlatformService.requirements(conversationId),
         localPlatformService.getLead(conversationId).catch(() => null),
+        localPlatformService.salesAnalysis(conversationId).catch(() => null),
+        localPlatformService.salesMemory(conversationId).catch(() => null),
+        localPlatformService.salesHistory(conversationId).catch(() => []),
       ]);
       setDetail(nextDetail);
       setRequirements(nextRequirements);
       setDraftIndex(0);
       setDraftText(nextDetail.drafts[0]?.content || "");
       setLead(nextLead);
-      setLeadAnalysis(null);
+      setSalesAnalysis(nextSales);
+      setSalesMemory(nextMemory);
+      setSalesHistory(nextSalesHistory);
+      setShowSalesHistory(false);
       setQuotes(nextLead ? await localPlatformService.quotes(nextLead.id).catch(() => []) : []);
       setExportBundle(null);
       setJsonInput("");
@@ -162,7 +273,7 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
     if (selectedId !== null) void loadConversation(selectedId);
   }, [selectedId]);
   useEffect(() => connectPlatformEvents((event) => {
-    if (["new_reply", "requirement_completed", "requirement_imported", "customer_requirement_updated", "lead_updated", "quote_completed", "project_created"].includes(String(event.type))) {
+    if (["new_reply", "requirement_completed", "requirement_imported", "customer_requirement_updated", "lead_updated", "quote_completed", "project_created", "sales_analysis_completed", "sales_analysis_failed", "sales_analysis_confirmed", "customer_memory_updated"].includes(String(event.type))) {
       void loadList(selectedId);
       if (selectedId !== null) void loadConversation(selectedId);
     }
@@ -187,8 +298,6 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
     ...(selectedDraft?.risk_flags || []),
     ...(detail?.ai_task?.risk_reasons || []),
   ])), [detail?.ai_task?.risk_reasons, selectedDraft?.risk_flags]);
-  const deepseekStatus = providers.find((item) => item.provider === "deepseek");
-
   const refreshCurrent = async () => {
     await loadList(selectedId);
     if (selectedId !== null) await loadConversation(selectedId);
@@ -335,30 +444,37 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
     }
   };
 
-  const analyzeLead = async (refresh = false) => {
+  const analyzeSales = async (refresh = false, provider?: DraftProvider) => {
     if (!detail) return;
-    setWorking("lead-analysis");
+    setWorking("sales-analysis");
     try {
-      const result = await localPlatformService.analyzeLead(detail.id, refresh);
-      setLeadAnalysis(result);
-      showNotice("DeepSeek 线索分析完成，尚未写入经营数据");
+      const result = await localPlatformService.analyzeSales(detail.id, refresh, provider);
+      setSalesAnalysis(result);
+      setSalesHistory(await localPlatformService.salesHistory(detail.id).catch(() => [result]));
+      showNotice("AI 销售分析完成，尚未写入客户或线索");
     } catch (error) {
-      showNotice(error instanceof Error ? error.message : "线索分析失败");
+      showNotice(error instanceof Error ? error.message : "销售分析失败");
     } finally {
       setWorking("");
     }
   };
 
-  const confirmLead = async () => {
-    if (!detail || !leadAnalysis || !window.confirm("确认把本次分析保存为销售线索？这不会自动报价或创建项目。")) return;
-    setWorking("lead-confirm");
+  const confirmSales = async () => {
+    if (!detail || !salesAnalysis?.result || !window.confirm("确认保存客户、销售线索和本次销售记忆？系统不会自动报价、创建项目或发送消息。")) return;
+    setWorking("sales-confirm");
     try {
-      const nextLead = await localPlatformService.confirmLead(detail.id, leadAnalysis.id);
-      setLead(nextLead);
-      setLeadAnalysis({ ...leadAnalysis, confirmed_at: new Date().toISOString() });
-      showNotice("线索已人工确认保存");
+      const confirmed = await localPlatformService.confirmSales(detail.id, salesAnalysis.id);
+      setLead(confirmed.lead);
+      setSalesAnalysis(confirmed.analysis);
+      setSalesMemory((current) => ({
+        customer_id: confirmed.lead.customer_id,
+        memories: [confirmed.memory, ...(current?.memories || []).filter((item) => item.id !== confirmed.memory.id)],
+        memory_count: Math.max(1, current?.memory_count || 0),
+        latest_version: confirmed.memory.version,
+      }));
+      showNotice(confirmed.idempotent ? "客户与线索已经保存" : "客户、线索和销售记忆已人工确认保存");
     } catch (error) {
-      showNotice(error instanceof Error ? error.message : "线索保存失败");
+      showNotice(error instanceof Error ? error.message : "客户与线索保存失败");
     } finally {
       setWorking("");
     }
@@ -412,6 +528,26 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
         </nav>
 
         {tab === "reply" && detail && <section className="reply-panel">
+          <SalesInsightCard
+            analysis={salesAnalysis}
+            history={salesHistory}
+            memory={salesMemory}
+            lead={lead}
+            working={working}
+            showHistory={showSalesHistory}
+            onAnalyze={(refresh = false, provider) => void analyzeSales(refresh, provider)}
+            onConfirm={() => void confirmSales()}
+            onToggleHistory={() => setShowSalesHistory((value) => !value)}
+            onCreateProject={() => {
+              if (!lead) { showNotice("请先人工确认保存客户与销售线索"); return; }
+              setTab("conversion");
+            }}
+            onCopyReply={(reply) => {
+              void navigator.clipboard.writeText(reply);
+              showNotice("销售建议回复已复制，请人工审核后发送");
+            }}
+          />
+          <div className="reply-section-divider"><span>回复草稿</span><small>原有三条草稿与人工发送保持独立</small></div>
           <header><span><Brain size={18} weight="duotone" />三条 AI 草稿</span><small>{detail.ai_task?.status === "running" ? "生成中" : `${detail.drafts.length} 条可选`}</small></header>
           <div className="reply-provider-switch" aria-label="草稿生成模型">
             {providers.filter((item) => item.provider === "deepseek" || item.provider === "codex_cli").map((item) => <button type="button" className={replyProvider === item.provider ? "active" : ""} disabled={!item.configured || Boolean(working)} onClick={() => setReplyProvider(item.provider)} key={item.provider}><span>{item.label}</span><small>{item.configured ? item.last_latency_seconds ? `最近 ${item.last_latency_seconds}s` : item.model || "已就绪" : "未配置"}</small></button>)}
@@ -451,13 +587,13 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
         {tab === "conversion" && detail && <section className="conversion-panel">
           <header><span><Funnel size={18} weight="duotone" />线索到项目</span><small>{lead ? lead.status : "尚未写入"}</small></header>
           <ol className="conversion-steps">
-            <li className={lead ? "done" : leadAnalysis ? "active" : ""}><i>{lead ? <Check size={14} /> : "1"}</i><div><strong>DeepSeek 识别线索</strong><small>{lead ? "已人工确认写入" : leadAnalysis ? "分析完成，等待人工确认" : "只分析，不写入经营数据"}</small></div></li>
+            <li className={lead ? "done" : salesAnalysis?.result ? "active" : ""}><i>{lead ? <Check size={14} /> : "1"}</i><div><strong>Sales Agent 分析客户</strong><small>{lead ? "客户、线索与销售记忆已人工确认" : salesAnalysis?.result ? "分析完成，等待人工确认保存" : "只读分析，不写入经营数据"}</small></div></li>
             <li className={requirements?.latest ? "done" : ""}><i>{requirements?.latest ? <Check size={14} /> : "2"}</i><div><strong>确认需求版本</strong><small>{requirements?.latest ? `采用 V${requirements.latest.version}` : "请先导入 GPT 需求蓝图"}</small></div></li>
             <li className={quotes.length ? "done" : ""}><i>{quotes.length ? <Check size={14} /> : "3"}</i><div><strong>生成规则报价</strong><small>蓝图工时 × 目标时薪 × 风险缓冲，几秒内完成</small></div></li>
             <li className={lead?.converted_project_id ? "done" : ""}><i>{lead?.converted_project_id ? <Check size={14} /> : "4"}</i><div><strong>人工确认转项目</strong><small>一次创建客户、任务和付款节点</small></div></li>
           </ol>
-          {!lead && !leadAnalysis && <button className="panel-primary" disabled={!deepseekStatus?.configured || Boolean(working)} onClick={() => void analyzeLead()}><Sparkle size={16} />{deepseekStatus?.configured ? "用 DeepSeek 分析线索" : "请先配置 DeepSeek API"}</button>}
-          {!lead && leadAnalysis && <article className="lead-analysis-card"><header><span className={leadAnalysis.result.has_project_need ? "positive" : "neutral"}>{leadAnalysis.result.has_project_need ? "有效项目需求" : "暂不构成明确项目"}</span><b>{Math.round(leadAnalysis.result.confidence * 100)}%</b></header><h3>{leadAnalysis.result.suggested_title}</h3><p>{leadAnalysis.result.project_type} · {leadAnalysis.result.conversion_advice}</p><div>{leadAnalysis.result.confirmed_signals.map((item) => <span key={item}><CheckCircle size={13} />{item}</span>)}</div>{leadAnalysis.result.open_questions.length > 0 && <ul>{leadAnalysis.result.open_questions.map((item) => <li key={item}><Question size={13} />{item}</li>)}</ul>}<footer><button onClick={() => void analyzeLead(true)} disabled={Boolean(working)}><ArrowClockwise size={14} />重新分析</button><button className="confirm" onClick={() => void confirmLead()} disabled={Boolean(working)}><CheckCircle size={14} weight="fill" />确认保存为线索</button></footer></article>}
+          {!lead && !salesAnalysis?.result && <button className="panel-primary" disabled={Boolean(working)} onClick={() => void analyzeSales(Boolean(salesAnalysis))}><Sparkle size={16} />{salesAnalysis?.status === "failed" ? "重试 AI 销售分析" : "生成客户销售分析"}</button>}
+          {!lead && salesAnalysis?.result && <article className="lead-analysis-card"><header><span className={salesAnalysis.result.purchase_probability >= 60 ? "positive" : "neutral"}>{salesAnalysis.result.customer_type}</span><b>{salesAnalysis.result.purchase_probability}%</b></header><h3>{salesAnalysis.result.need_type}</h3><p>{salesAnalysis.result.sales_strategy}</p><div>{salesAnalysis.result.need_signals.map((item) => <span key={item}><CheckCircle size={13} />{item}</span>)}</div><footer><button onClick={() => void analyzeSales(true)} disabled={Boolean(working)}><ArrowClockwise size={14} />重新分析</button><button className="confirm" onClick={() => void confirmSales()} disabled={Boolean(working)}><CheckCircle size={14} weight="fill" />保存客户与线索</button></footer></article>}
           {lead && !quotes.length && <button className="panel-primary" disabled={!requirements?.latest || Boolean(working)} onClick={() => void doWork("quote", async () => { const activeLead = await ensureLead(); if (!activeLead) return; const quote = await localPlatformService.generateQuote(activeLead.id); setQuotes([quote]); }, "报价建议已生成，等待人工确认")}>生成报价建议</button>}
           {quotes[0] && <article className="quote-summary">
             <span>报价 V{quotes[0].version} · {quotes[0].status === "confirmed" ? "已确认" : "草稿"}</span>

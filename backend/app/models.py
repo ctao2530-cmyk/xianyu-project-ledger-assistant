@@ -377,6 +377,38 @@ class LeadAnalysisRun(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
 
 
+class SalesAnalysisRun(Base):
+    """Independent Sales Agent output; never sends or mutates business records."""
+
+    __tablename__ = "sales_analysis_runs"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id"), index=True
+    )
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    structured_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tools_used_json: Mapped[str] = mapped_column(Text, default="[]")
+    context_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_sales_analysis_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+        Index("idx_sales_analysis_message_status", "message_id", "status"),
+    )
+
+
 # Unified developer-business records.  The existing reply-assistant tables
 # above stay untouched so the copied database can be upgraded additively.
 
@@ -401,6 +433,31 @@ class BusinessCustomer(Base):
     last_contact_at: Mapped[str] = mapped_column(String(64), default="")
     level: Mapped[str] = mapped_column(String(8), default="C")
     tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class CustomerMemory(Base):
+    """Human-confirmed sales context that can be reused on later messages."""
+
+    __tablename__ = "customer_memory"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    customer_id: Mapped[str | None] = mapped_column(
+        ForeignKey("business_customers.id"), nullable=True, index=True
+    )
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id"), unique=True, index=True
+    )
+    source_analysis_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sales_analysis_runs.id"), nullable=True, index=True
+    )
+    customer_background: Mapped[str] = mapped_column(Text, default="")
+    requirements_json: Mapped[str] = mapped_column(Text, default="[]")
+    communication_summary: Mapped[str] = mapped_column(Text, default="")
+    latest_analysis_json: Mapped[str] = mapped_column(Text, default="{}")
+    follow_up_status: Mapped[str] = mapped_column(String(64), default="待跟进", index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 

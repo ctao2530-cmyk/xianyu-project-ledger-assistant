@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Protocol
 
 from sqlalchemy import func, select
 
@@ -18,6 +19,10 @@ from .repository import hydrate_conversation_context, ingest_message
 logger = logging.getLogger(__name__)
 
 
+class SalesAnalysisScheduler(Protocol):
+    def schedule(self, message_id: int) -> None: ...
+
+
 class MessageProcessor:
     def __init__(
         self,
@@ -29,6 +34,7 @@ class MessageProcessor:
         context_hydration_timeout_seconds: float = 1.5,
         item_cache_ttl_seconds: int = 1800,
         reply_burst_coalesce_seconds: float = 0,
+        sales_agent: SalesAnalysisScheduler | None = None,
     ) -> None:
         self.database = database
         self.adapter = adapter
@@ -38,6 +44,7 @@ class MessageProcessor:
         self.context_hydration_timeout_seconds = context_hydration_timeout_seconds
         self.item_cache_ttl_seconds = item_cache_ttl_seconds
         self.reply_burst_coalesce_seconds = reply_burst_coalesce_seconds
+        self.sales_agent = sales_agent
         self._ingest_lock = asyncio.Lock()
         self._hydration_tasks: set[asyncio.Task[None]] = set()
         self._reply_debounce_lock = asyncio.Lock()
@@ -143,7 +150,7 @@ class MessageProcessor:
         try:
             if self.reply_burst_coalesce_seconds:
                 await asyncio.sleep(self.reply_burst_coalesce_seconds)
-            await self.ai_queue.enqueue(message_id, automatic=True)
+            await self._enqueue_ai_services(message_id)
             logger.info(
                 "连续消息合并窗口结束，已进入 AI 队列 message_id=%s delay_ms=%s",
                 message_id,
@@ -161,7 +168,7 @@ class MessageProcessor:
         self, conversation_key: str, message_id: int
     ) -> None:
         if self.reply_burst_coalesce_seconds <= 0:
-            await self.ai_queue.enqueue(message_id, automatic=True)
+            await self._enqueue_ai_services(message_id)
             return
         async with self._reply_debounce_lock:
             previous = self._reply_debounce_tasks.get(conversation_key)
@@ -174,6 +181,13 @@ class MessageProcessor:
                 name=f"coalesce-reply-{message_id}",
             )
             self._reply_debounce_tasks[conversation_key] = (message_id, task)
+
+    async def _enqueue_ai_services(self, message_id: int) -> None:
+        await self.ai_queue.enqueue(message_id, automatic=True)
+        if self.sales_agent is not None:
+            # Sales analysis is independent: scheduling it never blocks or
+            # changes the existing reply-draft task and it cannot send.
+            self.sales_agent.schedule(message_id)
 
     async def process(self, event: IncomingMessage, *, source: str = "live") -> int:
         started = time.monotonic()

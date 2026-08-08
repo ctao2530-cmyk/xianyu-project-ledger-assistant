@@ -88,6 +88,14 @@ class Settings(BaseSettings):
     deepseek_lead_model: str = "deepseek-v4-flash"
     deepseek_timeout_seconds: float = Field(default=12, ge=3, le=60)
 
+    # Sales Agent runs independently from reply drafting. It performs only
+    # read-only analysis until the user explicitly confirms saving a customer
+    # and lead in the UI.
+    sales_agent_enabled: bool = True
+    sales_agent_auto_analyze: bool = True
+    sales_agent_timeout_seconds: float = Field(default=15, ge=3, le=120)
+    sales_agent_history_limit: int = Field(default=30, ge=5, le=60)
+
     codex_command: str = "codex"
     codex_timeout_seconds: float = Field(default=120, ge=10, le=600)
     codex_max_concurrency: int = Field(default=2, ge=1, le=8)
