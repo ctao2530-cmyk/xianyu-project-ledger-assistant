@@ -366,7 +366,7 @@ export function ProjectWorkspacePage({
           >
             <div className="project-scene-light" aria-hidden="true" />
             <header className="project-orbit-label"><span><Sparkle size={14} weight="fill" />PROJECT ORBIT</span><small>点击聚焦 · 拖动、滚轮或键盘切换</small></header>
-            <div className="project-orbit-deck" aria-live="polite">
+            <div className="project-orbit-deck" key={projectKind} data-project-kind={projectKind} aria-live="polite">
               {visible.map((item, index) => {
                 const { project, income, outstanding: due, profit, paymentProgress } = item;
                 const distance = index - selectedIndex;
@@ -392,6 +392,7 @@ export function ProjectWorkspacePage({
                   className={`project-glass-card project-card-${project.accent} ${active ? "active" : ""}`}
                   style={style}
                   key={project.id}
+                  data-distance={depth}
                   data-hidden={hidden ? "true" : undefined}
                 >
                   <button
