@@ -10,9 +10,15 @@ import {
   LinkSimple,
   ListChecks,
   Question,
+  PencilSimple,
+  Plus,
   Sparkle,
+  Storefront,
   Target,
+  Trash,
+  UserSwitch,
   WarningCircle,
+  X,
 } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -22,9 +28,12 @@ import {
   type RequirementCaseSummary,
 } from "../data/localPlatformService";
 import type { Customer } from "../types";
+import type { LedgerSnapshot } from "../types";
+import { acceptMigratedLedger, getLedgerRevision } from "../data/mockService";
 import type { CustomerRequirementRoute } from "../App";
 import type { ProjectRouteMode } from "./BusinessAssistantPages";
 import "./customer-requirement-blueprint.css";
+import "./customer-requirement-editor.css";
 
 
 type LayerKey = "objectives" | "capabilities" | "stages" | "acceptance";
@@ -104,10 +113,12 @@ export function CustomerRequirementBlueprintPage({
   customer,
   route,
   onRouteChange,
+  onSnapshotChange,
 }: {
   customer: Customer;
   route: CustomerRequirementRoute;
   onRouteChange: (route: CustomerRequirementRoute | null, mode?: ProjectRouteMode) => void;
+  onSnapshotChange: (snapshot: LedgerSnapshot) => void;
 }) {
   const [cases, setCases] = useState<RequirementCaseSummary[]>([]);
   const [detail, setDetail] = useState<RequirementCaseDetail | null>(null);
@@ -164,6 +175,7 @@ export function CustomerRequirementBlueprintPage({
           <i>{String(index + 1).padStart(2, "0")}</i>
           <span className={`case-status status-${item.status}`}>{statusLabel(item.status)}</span>
           <h3>{item.title}</h3>
+          <p><Storefront size={15} />{item.item_title || "未关联商品"}</p>
           <p><FileText size={15} />V{item.current_version} · {item.source_count} 个来源会话</p>
           <footer><span><Clock size={15} />{item.estimated_hours || "待补"} 小时</span><span className={item.open_question_count ? "warn" : "ok"}><Question size={15} />{item.open_question_count} 个待确认</span><ArrowRight size={18} /></footer>
         </button>)}
@@ -180,10 +192,20 @@ export function CustomerRequirementBlueprintPage({
     selectedVersion={selectedVersion}
     onVersion={setSelectedVersion}
     onBack={() => onRouteChange({ customerId: customer.id, caseId: null }, "back")}
+    onDetailChange={(value) => {
+      setDetail(value);
+      setSelectedVersion(null);
+      setCases((rows) => rows.map((item) => item.id === value.id ? value : item));
+    }}
+    onTransferred={(value) => {
+      acceptMigratedLedger(value.revision);
+      onSnapshotChange(value.snapshot);
+      onRouteChange({ customerId: value.target_customer_id, caseId: value.case.id }, "replace");
+    }}
   />;
 }
 
-function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersion, onBack }: { customer: Customer; detail: RequirementCaseDetail; selectedVersion: number | null; onVersion: (version: number | null) => void; onBack: () => void }) {
+function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersion, onBack, onDetailChange, onTransferred }: { customer: Customer; detail: RequirementCaseDetail; selectedVersion: number | null; onVersion: (version: number | null) => void; onBack: () => void; onDetailChange: (detail: RequirementCaseDetail) => void; onTransferred: (result: { revision: number; snapshot: LedgerSnapshot; target_customer_id: string; case: RequirementCaseDetail }) => void }) {
   const visual = useMemo(() => normalizeBlueprint(detail.document), [detail.document]);
   const allNodes = useMemo(() => Object.values(visual.nodes).flat(), [visual.nodes]);
   const defaultNode = visual.nodes.stages[0] || allNodes[0];
@@ -192,6 +214,8 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
   const [positions, setPositions] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [editing, setEditing] = useState(false);
+  const [transferring, setTransferring] = useState(false);
 
   useEffect(() => { setSelectedId(defaultNode?.id || ""); }, [defaultNode?.id]);
 
@@ -257,10 +281,12 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
   return <div className="requirement-blueprint-page">
     <header className="blueprint-command-bar">
       <button className="blueprint-back" onClick={onBack}><ArrowLeft size={16} />需求中心</button>
-      <div className="blueprint-title"><span>REQUIREMENT BLUEPRINT</span><h2>{detail.title}</h2><p>{customer.name} · {blueprint?.project_type || "历史需求文档"}</p></div>
+      <div className="blueprint-title"><span>REQUIREMENT BLUEPRINT</span><h2>{detail.title}</h2><p>{customer.name} · {detail.item_title || "未关联商品"} · {blueprint?.project_type || "历史需求文档"}</p></div>
       <div className="blueprint-command-actions">
         <span className={`blueprint-status status-${detail.status}`}><i />{statusLabel(detail.status)}</span>
         <label>版本<select value={selectedVersion || detail.selected_version?.version || detail.current_version} onChange={(event) => onVersion(Number(event.target.value))}>{detail.versions.map((version) => <option value={version.version} key={version.id}>V{version.version} · {version.source_label}</option>)}</select></label>
+        <button type="button" className="blueprint-secondary-action" onClick={() => setTransferring(true)}><UserSwitch size={15} />转移客户</button>
+        <button type="button" className="blueprint-primary-action" disabled={!blueprint || (detail.selected_version?.version || detail.current_version) !== detail.current_version} onClick={() => setEditing(true)}><PencilSimple size={15} />编辑蓝图</button>
       </div>
     </header>
 
@@ -323,10 +349,99 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
       <article className="blueprint-timeline"><header><span><FlowArrow size={18} />实施时间线</span><b>{totalHours} 小时</b></header><div>{blueprint.stages.map((stage, index) => <button onClick={() => setSelectedId(stage.id)} key={stage.id}><i>{index + 1}</i><span><b>{stage.title}</b><small>{stage.estimated_hours}h · {stage.deliverables.length} 项交付</small></span><em style={{ flexGrow: Math.max(stage.estimated_hours, 1) }} /></button>)}</div></article>
       <article className="blueprint-checklist"><header><span><CheckCircle size={18} />交付 Checklist</span><b>{blueprint.acceptance_gates.reduce((sum, gate) => sum + gate.criteria.length, 0)} 项</b></header>{blueprint.acceptance_gates.flatMap((gate) => gate.criteria.map((criterion) => <p key={`${gate.id}-${criterion}`}><CheckCircle size={16} weight="duotone" /><span>{criterion}</span><small>{gate.title}</small></p>))}</article>
     </section>}
+    {editing && blueprint && <BlueprintEditorDrawer caseId={detail.id} expectedVersion={detail.current_version} initial={blueprint} onClose={() => setEditing(false)} onSaved={(value) => { setEditing(false); onDetailChange(value); }} />}
+    {transferring && <RequirementTransferModal customer={customer} detail={detail} onClose={() => setTransferring(false)} onTransferred={(value) => { setTransferring(false); onTransferred(value); }} />}
   </div>;
 }
 
 function InspectorSection({ title, items, empty }: { title: string; items: string[]; empty?: string }) {
   if (!items.length && !empty) return null;
   return <section className="inspector-section"><h4>{title}</h4>{items.length ? <ul>{items.map((item) => <li key={item}><i />{item}</li>)}</ul> : <p>{empty}</p>}</section>;
+}
+
+type EditableLayer = "objectives" | "capabilities" | "stages" | "acceptance_gates";
+
+function splitList(value: string) {
+  return value.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function splitRefs(value: string) {
+  return value.split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function BlueprintEditorDrawer({ caseId, expectedVersion, initial, onClose, onSaved }: { caseId: string; expectedVersion: number; initial: RequirementBlueprint; onClose: () => void; onSaved: (detail: RequirementCaseDetail) => void }) {
+  const [draft, setDraft] = useState<RequirementBlueprint>(() => structuredClone(initial));
+  const [step, setStep] = useState<"edit" | "preview">("edit");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const updateTop = <K extends keyof RequirementBlueprint>(key: K, value: RequirementBlueprint[K]) => setDraft((current) => ({ ...current, [key]: value }));
+  const updateNode = <K extends EditableLayer>(layer: K, index: number, patch: Partial<RequirementBlueprint[K][number]>) => setDraft((current) => {
+    const rows = [...current[layer]] as RequirementBlueprint[K];
+    rows[index] = { ...rows[index], ...patch };
+    return { ...current, [layer]: rows };
+  });
+  const removeNode = (layer: EditableLayer, index: number) => setDraft((current) => ({ ...current, [layer]: current[layer].filter((_, rowIndex) => rowIndex !== index) }));
+  const nextId = (prefix: string) => `${prefix}-${Date.now().toString(36)}`;
+  const addNode = (layer: EditableLayer) => setDraft((current) => {
+    if (layer === "objectives") return { ...current, objectives: [...current.objectives, { id: nextId("objective"), title: "新项目目标", description: "请补充目标说明", evidence_refs: [] }] };
+    if (layer === "capabilities") return { ...current, capabilities: [...current.capabilities, { id: nextId("capability"), title: "新功能能力", description: "请补充功能说明", objective_ids: current.objectives[0] ? [current.objectives[0].id] : [], priority: "must", evidence_refs: [] }] };
+    if (layer === "stages") return { ...current, stages: [...current.stages, { id: nextId("stage"), title: "新实施阶段", objective: "请补充阶段目标", implementation: "请补充实现方式", estimated_hours: 1, capability_ids: current.capabilities[0] ? [current.capabilities[0].id] : [], dependency_ids: [], work_items: ["待补充工作项"], deliverables: ["待补充交付物"], evidence_refs: [] }] };
+    return { ...current, acceptance_gates: [...current.acceptance_gates, { id: nextId("gate"), title: "新验收门", description: "请补充验收说明", stage_ids: current.stages[0] ? [current.stages[0].id] : [], criteria: ["待补充验收标准"], evidence_refs: [] }] };
+  });
+
+  const save = async () => {
+    if (draft.change_summary.trim().length < 2) { setError("请填写本次修改说明"); return; }
+    setSaving(true); setError("");
+    try {
+      const result = await localPlatformService.editRequirementCase(caseId, { expected_version: expectedVersion, change_summary: draft.change_summary.trim(), document: draft });
+      onSaved(result.case);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "需求蓝图保存失败");
+      setStep("edit");
+    } finally { setSaving(false); }
+  };
+
+  const labels: Record<EditableLayer, string> = { objectives: "项目目标", capabilities: "功能能力", stages: "实施阶段", acceptance_gates: "交付验收" };
+  return <div className="blueprint-drawer-layer" role="dialog" aria-modal="true" aria-label="编辑需求蓝图">
+    <button className="blueprint-drawer-scrim" aria-label="关闭编辑器" onClick={onClose} />
+    <aside className="blueprint-editor-drawer">
+      <header><span><small>IMMUTABLE VERSION</small><h3>{step === "edit" ? "编辑需求蓝图" : `预览 V${expectedVersion + 1}`}</h3><p>保存会创建新版本，V{expectedVersion} 保持只读且不会被覆盖。</p></span><button aria-label="关闭" onClick={onClose}><X size={18} /></button></header>
+      {step === "edit" ? <div className="blueprint-editor-body">
+        <section className="blueprint-editor-basics"><label>蓝图标题<input value={draft.title} onChange={(event) => updateTop("title", event.target.value)} /></label><label>项目类型<input value={draft.project_type} onChange={(event) => updateTop("project_type", event.target.value)} /></label><label>成熟度<select value={draft.readiness} onChange={(event) => updateTop("readiness", event.target.value as RequirementBlueprint["readiness"])}><option value="discovery">探索中</option><option value="clarifying">澄清中</option><option value="ready">可报价</option><option value="approved">已确认</option></select></label></section>
+        {(["objectives", "capabilities", "stages", "acceptance_gates"] as EditableLayer[]).map((layer) => <section className={`blueprint-editor-layer editor-${layer}`} key={layer}><header><span><b>{labels[layer]}</b><small>{draft[layer].length} 个稳定节点</small></span><button type="button" onClick={() => addNode(layer)}><Plus size={14} />新增</button></header><div>{draft[layer].map((rawNode, index) => {
+          const node = rawNode as Record<string, unknown>;
+          return <article key={String(node.id)}><div className="editor-node-head"><code>{String(node.id)}</code><button type="button" aria-label={`删除 ${String(node.title)}`} onClick={() => removeNode(layer, index)}><Trash size={14} /></button></div>
+            <label>名称<input value={String(node.title || "")} onChange={(event) => updateNode(layer, index, { title: event.target.value } as never)} /></label>
+            {layer === "stages" ? <><label>阶段目标<textarea rows={2} value={String(node.objective || "")} onChange={(event) => updateNode("stages", index, { objective: event.target.value })} /></label><label>实现方式<textarea rows={3} value={String(node.implementation || "")} onChange={(event) => updateNode("stages", index, { implementation: event.target.value })} /></label><div className="editor-inline"><label>预计工时<input type="number" min="0.5" step="0.5" value={Number(node.estimated_hours || 0)} onChange={(event) => updateNode("stages", index, { estimated_hours: Number(event.target.value) })} /></label><label>关联功能 ID<input value={asStringArray(node.capability_ids).join(", ")} onChange={(event) => updateNode("stages", index, { capability_ids: splitRefs(event.target.value) })} /></label></div><label>依赖阶段 ID<input value={asStringArray(node.dependency_ids).join(", ")} onChange={(event) => updateNode("stages", index, { dependency_ids: splitRefs(event.target.value) })} /></label><label>工作项（每行一项）<textarea rows={3} value={asStringArray(node.work_items).join("\n")} onChange={(event) => updateNode("stages", index, { work_items: splitList(event.target.value) })} /></label><label>交付物（每行一项）<textarea rows={3} value={asStringArray(node.deliverables).join("\n")} onChange={(event) => updateNode("stages", index, { deliverables: splitList(event.target.value) })} /></label></> : <><label>说明<textarea rows={2} value={String(node.description || "")} onChange={(event) => updateNode(layer, index, { description: event.target.value } as never)} /></label>{layer === "capabilities" && <div className="editor-inline"><label>优先级<select value={String(node.priority || "must")} onChange={(event) => updateNode("capabilities", index, { priority: event.target.value as "must" | "should" | "could" })}><option value="must">必须</option><option value="should">建议</option><option value="could">可选</option></select></label><label>目标 ID<input value={asStringArray(node.objective_ids).join(", ")} onChange={(event) => updateNode("capabilities", index, { objective_ids: splitRefs(event.target.value) })} /></label></div>}{layer === "acceptance_gates" && <><label>阶段 ID<input value={asStringArray(node.stage_ids).join(", ")} onChange={(event) => updateNode("acceptance_gates", index, { stage_ids: splitRefs(event.target.value) })} /></label><label>验收准则（每行一项）<textarea rows={3} value={asStringArray(node.criteria).join("\n")} onChange={(event) => updateNode("acceptance_gates", index, { criteria: splitList(event.target.value) })} /></label></>}</>}</article>;
+        })}</div></section>)}
+        <section className="blueprint-editor-notes"><label>范围外事项（每行一项）<textarea rows={3} value={draft.out_of_scope.join("\n")} onChange={(event) => updateTop("out_of_scope", splitList(event.target.value))} /></label><label>假设（每行一项）<textarea rows={3} value={draft.assumptions.join("\n")} onChange={(event) => updateTop("assumptions", splitList(event.target.value))} /></label><label>待确认问题（每行一项）<textarea rows={3} value={draft.open_questions.join("\n")} onChange={(event) => updateTop("open_questions", splitList(event.target.value))} /></label></section>
+        <label className="blueprint-change-summary">本次修改说明<textarea rows={3} value={draft.change_summary} onChange={(event) => updateTop("change_summary", event.target.value)} placeholder="例如：补充登录能力与第二阶段验收标准" /></label>
+      </div> : <div className="blueprint-editor-preview"><div className="editor-version-arrow"><span>V{expectedVersion}<small>当前只读版本</small></span><ArrowRight size={23} /><span>V{expectedVersion + 1}<small>即将创建</small></span></div><h4>{draft.title}</h4><p>{draft.change_summary}</p><div className="editor-preview-layers">{(["objectives", "capabilities", "stages", "acceptance_gates"] as EditableLayer[]).map((layer) => <section key={layer}><b>{labels[layer]}</b><strong>{draft[layer].length}</strong><small>{draft[layer].slice(0, 3).map((node) => node.title).join(" · ")}</small></section>)}</div><div className="editor-preview-summary"><span><Clock size={17} />{draft.stages.reduce((sum, stage) => sum + Number(stage.estimated_hours || 0), 0)} 小时</span><span><Question size={17} />{draft.open_questions.length} 个待确认</span><span><CheckCircle size={17} />{draft.acceptance_gates.reduce((sum, gate) => sum + gate.criteria.length, 0)} 项验收</span></div><p className="editor-immutability-note"><CheckCircle size={17} weight="fill" />确认后只追加新版本，不覆盖、删除或改写 V{expectedVersion}。</p></div>}
+      {error && <p className="blueprint-editor-error"><WarningCircle size={16} />{error}</p>}
+      <footer><button type="button" onClick={step === "preview" ? () => setStep("edit") : onClose}>{step === "preview" ? "返回修改" : "取消"}</button>{step === "edit" ? <button className="primary" type="button" onClick={() => { setError(""); setStep("preview"); }}>预览新版本<ArrowRight size={15} /></button> : <button className="primary" type="button" disabled={saving} onClick={() => void save()}>{saving ? "正在保存…" : `确认创建 V${expectedVersion + 1}`}</button>}</footer>
+    </aside>
+  </div>;
+}
+
+function RequirementTransferModal({ customer, detail, onClose, onTransferred }: { customer: Customer; detail: RequirementCaseDetail; onClose: () => void; onTransferred: (result: { revision: number; snapshot: LedgerSnapshot; target_customer_id: string; case: RequirementCaseDetail }) => void }) {
+  const suggestedName = detail.sources[0]?.customer_name?.trim() || "";
+  const [name, setName] = useState(suggestedName);
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const requestIdRef = useRef(`requirement-transfer-${crypto.randomUUID?.() || Date.now()}`);
+  const submit = async () => {
+    const revision = getLedgerRevision();
+    if (revision === null) { setError("经营数据修订号尚未加载，请刷新页面后重试"); return; }
+    if (name.trim().length < 2) { setError("请填写独立客户名称"); return; }
+    if (!confirmed) { setError("请确认本次只转移需求蓝图与对应来源"); return; }
+    setBusy(true); setError("");
+    try {
+      const result = await localPlatformService.transferRequirementCase(detail.id, { request_id: requestIdRef.current, expected_customer_id: customer.id, expected_version: detail.current_version, expected_revision: revision, new_customer_name: name.trim() });
+      onTransferred(result);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "需求案例转移失败"); }
+    finally { setBusy(false); }
+  };
+  return <div className="blueprint-modal-layer" role="dialog" aria-modal="true" aria-label="转移需求案例"><button className="blueprint-modal-scrim" aria-label="关闭" onClick={onClose} /><section className="requirement-transfer-modal"><header><i><UserSwitch size={21} weight="duotone" /></i><span><small>TRANSFER REQUIREMENT CASE</small><h3>转移到独立客户</h3><p>只移动这份需求蓝图、对应来源身份和商品关联。</p></span><button aria-label="关闭" onClick={onClose}><X size={18} /></button></header><div className="transfer-path"><article><small>当前客户</small><b>{customer.name}</b><span>{detail.title}</span></article><ArrowRight size={24} /><article className="target"><small>新建独立客户</small><input aria-label="新客户名称" value={name} onChange={(event) => setName(event.target.value)} /><span>{detail.sources[0]?.channel === "xianyu" ? "闲鱼来源" : "来源会话"} · {detail.item_title || "未关联商品"}</span></article></div><div className="transfer-boundary"><b>本次会转移</b><span>需求案例及全部版本</span><span>案例来源会话身份</span><span>本案例对应商品关联</span><b>明确不会转移</b><span>项目、任务与交付状态</span><span>收入、付款与支出</span><span>原客户的其他历史</span></div>{detail.project_id && <p className="transfer-blocked"><WarningCircle size={16} />该需求已经关联项目，为避免移动经营历史，当前不能转移。</p>}<label className="transfer-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>我确认创建独立客户，并且只转移上面列出的需求关系。</span></label>{error && <p className="blueprint-editor-error"><WarningCircle size={16} />{error}</p>}<footer><button onClick={onClose}>取消</button><button className="primary" disabled={busy || Boolean(detail.project_id)} onClick={() => void submit()}>{busy ? "正在原子转移…" : "确认转移"}</button></footer></section></div>;
 }

@@ -51,6 +51,7 @@ from .services.actions import ActionConflictError, MessageNotFoundError
 from .services.ai_models import AIModelSelectionError, AIModelSettingsSnapshot
 from .services.automation import ENABLE_CONFIRMATION, AutomationUnavailableError
 from .services.requirements import RequirementAnalysisService, RequirementServiceError
+from .services.requirement_exchange import RequirementExchangeService
 from .services.reply_strategy import ReplyStrategyError
 
 
@@ -659,6 +660,10 @@ async def get_conversation(conversation_id: int, request: Request) -> Conversati
             )
             ai_task = ai_task_view(task_row) if task_row else None
         conversation.unread_count = 0
+        linked_customer_id = RequirementExchangeService._linked_customer_id(
+            session,
+            conversation,
+        )
         session.commit()
         item = (
             ItemView.model_validate(conversation.item) if conversation.item else None
@@ -668,6 +673,7 @@ async def get_conversation(conversation_id: int, request: Request) -> Conversati
             channel=conversation.channel,
             external_id=conversation.external_id,
             customer_id=conversation.customer_id,
+            linked_customer_id=linked_customer_id,
             customer_name=conversation.customer_name,
             unread_count=conversation.unread_count,
             item=item,

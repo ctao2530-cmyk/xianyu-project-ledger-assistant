@@ -22,6 +22,7 @@ from .models import (
     BusinessTask,
     LedgerState,
     PaymentNode,
+    ProjectChangeOrderRecord,
     ProjectSettlementIssueRecord,
     ProjectDevelopmentLog,
     utcnow,
@@ -30,6 +31,7 @@ from .models import (
 
 COLLECTIONS = (
     "projects",
+    "changeOrders",
     "payments",
     "settlementIssues",
     "expenses",
@@ -43,6 +45,7 @@ COLLECTIONS = (
 def default_snapshot() -> dict[str, Any]:
     return {
         "projects": [],
+        "changeOrders": [],
         "payments": [],
         "settlementIssues": [],
         "expenses": [],
@@ -107,6 +110,13 @@ def _identity_key(collection: str, row: dict[str, Any]) -> tuple[Any, ...] | Non
         return (str(row.get("name", "")).strip().casefold(),)
     if collection == "projects":
         return (str(row.get("name", "")).strip().casefold(), row.get("startDate", ""))
+    if collection == "changeOrders":
+        return (
+            row.get("projectId", ""),
+            str(row.get("title", "")).strip().casefold(),
+            float(row.get("amount", 0) or 0),
+            row.get("confirmedAt", ""),
+        )
     if collection == "payments":
         return (row.get("projectId", ""), float(row.get("amount", 0) or 0), row.get("dueAt", ""))
     if collection == "settlementIssues":
@@ -147,10 +157,22 @@ class PaymentConfirmationError(RuntimeError):
         self.code = code
 
 
+class ProjectChangeOrderError(RuntimeError):
+    def __init__(self, message: str, *, code: str = "invalid_change_order") -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class SettlementIssueError(RuntimeError):
     def __init__(self, message: str, *, code: str = "invalid_settlement_issue") -> None:
         super().__init__(message)
         self.code = code
+
+
+TERMINAL_SETTLEMENT_ISSUE_TYPES = {
+    "project_cancelled",
+    "cooperation_terminated",
+}
 
 
 class LedgerService:
@@ -175,11 +197,287 @@ class LedgerService:
             session.commit()
             return state.revision, normalize_snapshot(json.loads(state.snapshot_json))
 
+    def get_in_session(self, session: Session) -> tuple[int, dict[str, Any]]:
+        """Read the canonical snapshot inside a caller-owned transaction."""
+
+        state = self._state(session)
+        return state.revision, normalize_snapshot(json.loads(state.snapshot_json))
+
     def save(self, snapshot: dict[str, Any], expected_revision: int) -> tuple[int, dict[str, Any]]:
         with self.database.session() as session:
             revision, normalized = self.save_in_session(session, snapshot, expected_revision)
             session.commit()
             return revision, normalized
+
+    def upsert_system_expense_in_session(
+        self,
+        session: Session,
+        *,
+        expense_id: str,
+        name: str,
+        category: str,
+        amount: float,
+        paid_at: str,
+        notes: str = "",
+    ) -> tuple[int, bool]:
+        """Write an idempotent system expense inside the caller's transaction.
+
+        Product-intelligence actions and the canonical ledger must commit as one
+        SQLite transaction.  The stable expense id prevents request retries from
+        creating duplicate costs, while advancing the ledger revision ensures a
+        browser holding an older snapshot receives the normal 409 on its next
+        write instead of silently overwriting this expense.
+        """
+
+        state = self._state(session)
+        snapshot = normalize_snapshot(json.loads(state.snapshot_json))
+        normalized_amount = round(max(0, float(amount)), 2)
+        expense = {
+            "id": expense_id,
+            "name": name.strip() or "系统经营支出",
+            "category": category.strip() or "other",
+            "amount": normalized_amount,
+            "paidAt": paid_at,
+            "notes": notes.strip(),
+        }
+        existing_index = next(
+            (
+                index
+                for index, row in enumerate(snapshot["expenses"])
+                if str(row.get("id") or "") == expense_id
+            ),
+            None,
+        )
+        if existing_index is not None:
+            current = snapshot["expenses"][existing_index]
+            comparable = {
+                "id": str(current.get("id") or ""),
+                "name": str(current.get("name") or ""),
+                "category": str(current.get("category") or "other"),
+                "amount": round(float(current.get("amount") or 0), 2),
+                "paidAt": str(current.get("paidAt") or ""),
+                "notes": str(current.get("notes") or ""),
+            }
+            if comparable == expense:
+                return state.revision, False
+            snapshot["expenses"][existing_index] = expense
+        else:
+            snapshot["expenses"].insert(0, expense)
+
+        revision, _normalized = self.save_in_session(
+            session,
+            snapshot,
+            state.revision,
+        )
+        return revision, True
+
+    def create_project_change_order(
+        self,
+        *,
+        request_id: str,
+        expected_revision: int,
+        project_id: str,
+        title: str,
+        amount: float,
+        confirmed_at: str,
+        notes: str,
+        payment_plan: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Add paid scope to an existing project and create its receipts atomically."""
+
+        title = title.strip()
+        amount = round(float(amount), 2)
+        if len(title) < 2:
+            raise ProjectChangeOrderError(
+                "请填写至少 2 个字的追加修改内容",
+                code="title_invalid",
+            )
+        if amount <= 0:
+            raise ProjectChangeOrderError(
+                "追加金额必须大于 0",
+                code="amount_invalid",
+            )
+        if not payment_plan:
+            raise ProjectChangeOrderError(
+                "请至少设置一笔到账或待收安排",
+                code="payment_plan_required",
+            )
+
+        normalized_plan: list[dict[str, Any]] = []
+        for index, row in enumerate(payment_plan):
+            planned_amount = round(float(row.get("amount") or 0), 2)
+            payment_status = str(row.get("status") or "")
+            payment_type = str(row.get("type") or "")
+            paid_at = str(row.get("paidAt") or "")
+            due_at = str(row.get("dueAt") or "")
+            if planned_amount <= 0:
+                raise ProjectChangeOrderError(
+                    f"第 {index + 1} 笔金额必须大于 0",
+                    code="payment_amount_invalid",
+                )
+            if payment_status not in {"confirmed", "pending"}:
+                raise ProjectChangeOrderError(
+                    "追加订单只支持已到账或待收节点",
+                    code="payment_status_invalid",
+                )
+            if payment_type not in {"deposit", "milestone", "final", "full"}:
+                raise ProjectChangeOrderError(
+                    "收款类型无效",
+                    code="payment_type_invalid",
+                )
+            if payment_status == "confirmed" and not paid_at:
+                raise ProjectChangeOrderError(
+                    f"第 {index + 1} 笔已到账记录缺少到账时间",
+                    code="paid_at_required",
+                )
+            if payment_status == "pending" and not due_at:
+                raise ProjectChangeOrderError(
+                    f"第 {index + 1} 笔待收记录缺少应收日期",
+                    code="due_at_required",
+                )
+            normalized_plan.append(
+                {
+                    "amount": planned_amount,
+                    "status": payment_status,
+                    "type": payment_type,
+                    "paidAt": paid_at,
+                    "dueAt": due_at,
+                    "notes": str(row.get("notes") or "").strip(),
+                }
+            )
+
+        plan_total = round(sum(row["amount"] for row in normalized_plan), 2)
+        if abs(plan_total - amount) > 0.005:
+            raise ProjectChangeOrderError(
+                f"收款安排合计 ¥{plan_total:,.2f}，必须等于追加金额 ¥{amount:,.2f}",
+                code="payment_plan_total_mismatch",
+            )
+
+        with self.database.session() as session:
+            state = self._state(session)
+            snapshot = normalize_snapshot(json.loads(state.snapshot_json))
+            previous = next(
+                (
+                    row
+                    for row in snapshot["changeOrders"]
+                    if row.get("requestId") == request_id
+                ),
+                None,
+            )
+            if previous is not None:
+                if (
+                    str(previous.get("projectId") or "") != project_id
+                    or str(previous.get("title") or "").strip() != title
+                    or abs(float(previous.get("amount") or 0) - amount) > 0.005
+                ):
+                    raise ProjectChangeOrderError(
+                        "该追加订单请求编号已经用于另一笔记录，请重新打开窗口",
+                        code="request_reused",
+                    )
+                change_order_id = str(previous.get("id") or "")
+                return {
+                    "revision": state.revision,
+                    "snapshot": snapshot,
+                    "change_order_id": change_order_id,
+                    "payment_ids": [
+                        str(row.get("id") or "")
+                        for row in snapshot["payments"]
+                        if row.get("changeOrderId") == change_order_id
+                    ],
+                    "idempotent": True,
+                }
+            if state.revision != expected_revision:
+                raise RevisionConflict(state.revision)
+
+            project = next(
+                (row for row in snapshot["projects"] if row.get("id") == project_id),
+                None,
+            )
+            if project is None:
+                raise ProjectChangeOrderError(
+                    "项目不存在或已被删除",
+                    code="project_missing",
+                )
+            customer_id = str(project.get("customerId") or "")
+            if not customer_id or project.get("projectKind") == "personal":
+                raise ProjectChangeOrderError(
+                    "个人项目不支持记录客户追加订单",
+                    code="customer_missing",
+                )
+            if not any(row.get("id") == customer_id for row in snapshot["customers"]):
+                raise ProjectChangeOrderError(
+                    "项目关联客户不存在，请先修复客户关系",
+                    code="customer_missing",
+                )
+            if any(
+                row.get("projectId") == project_id
+                and row.get("type") in TERMINAL_SETTLEMENT_ISSUE_TYPES
+                for row in snapshot["settlementIssues"]
+            ):
+                raise ProjectChangeOrderError(
+                    "该项目已经取消或终止合作，请为新的付费需求创建新项目",
+                    code="project_terminated",
+                )
+
+            digest = hashlib.sha1(request_id.encode("utf-8")).hexdigest()[:24]
+            change_order_id = f"change-{digest}"
+            created_at = utcnow().isoformat()
+            snapshot["changeOrders"].insert(
+                0,
+                {
+                    "id": change_order_id,
+                    "projectId": project_id,
+                    "customerId": customer_id,
+                    "title": title,
+                    "amount": amount,
+                    "confirmedAt": confirmed_at,
+                    "status": "confirmed",
+                    "notes": notes,
+                    "requestId": request_id,
+                    "createdAt": created_at,
+                },
+            )
+            project["totalAmount"] = round(
+                float(project.get("totalAmount") or 0) + amount,
+                2,
+            )
+
+            payment_ids: list[str] = []
+            for index, row in enumerate(normalized_plan):
+                payment_id = f"pay-change-{digest}-{index + 1}"
+                payment_ids.append(payment_id)
+                payment_notes = row["notes"] or (
+                    f"{title} · 已确认到账"
+                    if row["status"] == "confirmed"
+                    else f"{title} · 等待收款"
+                )
+                payment: dict[str, Any] = {
+                    "id": payment_id,
+                    "projectId": project_id,
+                    "customerId": customer_id,
+                    "changeOrderId": change_order_id,
+                    "amount": row["amount"],
+                    "type": row["type"],
+                    "status": row["status"],
+                    "paidAt": row["paidAt"],
+                    "dueAt": row["dueAt"] or row["paidAt"][:10],
+                    "notes": payment_notes,
+                }
+                if row["status"] == "confirmed":
+                    payment["confirmationRequestId"] = f"{request_id}-change-{index + 1}"
+                snapshot["payments"].append(payment)
+
+            revision, normalized = self.save_in_session(
+                session, snapshot, expected_revision
+            )
+            session.commit()
+            return {
+                "revision": revision,
+                "snapshot": normalized,
+                "change_order_id": change_order_id,
+                "payment_ids": payment_ids,
+                "idempotent": False,
+            }
 
     def confirm_payment(
         self,
@@ -342,6 +640,7 @@ class LedgerService:
                             "id": remainder_id,
                             "projectId": project_id,
                             "customerId": customer_id,
+                            "changeOrderId": selected.get("changeOrderId"),
                             "amount": remainder,
                             "type": payment_type,
                             "status": "pending",
@@ -518,6 +817,14 @@ class LedgerService:
                     f"确认无法收回的金额不能超过当前可收余额 ¥{collectible_outstanding:,.2f}",
                     code="impact_exceeds_outstanding",
                 )
+            if (
+                issue_type in TERMINAL_SETTLEMENT_ISSUE_TYPES
+                and abs(receivable_impact - collectible_outstanding) > 0.005
+            ):
+                raise SettlementIssueError(
+                    f"项目取消或终止合作时，必须将当前可收余额 ¥{collectible_outstanding:,.2f} 全部确认为无法收回",
+                    code="terminal_issue_requires_full_writeoff",
+                )
             if refund_amount > refundable + 0.005:
                 raise SettlementIssueError(
                     f"实际退款不能超过当前可退款净到账 ¥{refundable:,.2f}",
@@ -674,6 +981,37 @@ class LedgerService:
                 "accent": str(row.get("accent") or "blue"),
                 "notes": str(row.get("notes") or ""),
             })
+        for row in snapshot["changeOrders"]:
+            if (
+                not _row_id(row)
+                or not row.get("projectId")
+                or not row.get("customerId")
+            ):
+                continue
+            created_at_raw = str(row.get("createdAt") or "")
+            try:
+                created_at_value = datetime.fromisoformat(
+                    created_at_raw.replace("Z", "+00:00")
+                )
+            except ValueError:
+                created_at_value = utcnow()
+            put(ProjectChangeOrderRecord, _row_id(row), {
+                "project_id": str(row["projectId"]),
+                "customer_id": str(row["customerId"]),
+                "title": str(row.get("title") or "追加订单"),
+                "amount": float(row.get("amount") or 0),
+                "confirmed_at": str(row.get("confirmedAt") or ""),
+                "status": str(row.get("status") or "confirmed"),
+                "notes": str(row.get("notes") or ""),
+                "request_id": str(row.get("requestId") or _row_id(row)),
+                "created_at": created_at_value,
+            })
+        # The payment-node table is upgraded additively on existing SQLite
+        # databases. Flush the parent audit rows before linking new children so
+        # foreign-key enforcement remains deterministic across both fresh and
+        # upgraded schemas.
+        if snapshot["changeOrders"]:
+            session.flush()
         for row in snapshot["tasks"]:
             if not _row_id(row) or not row.get("projectId"):
                 continue
@@ -693,6 +1031,7 @@ class LedgerService:
             put(PaymentNode, _row_id(row), {
                 "project_id": str(row["projectId"]),
                 "customer_id": str(row["customerId"]),
+                "change_order_id": row.get("changeOrderId"),
                 "amount": float(row.get("amount") or 0),
                 "type": str(row.get("type") or "milestone"),
                 "status": str(row.get("status") or "pending"),

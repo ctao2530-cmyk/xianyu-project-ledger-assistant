@@ -14,6 +14,7 @@ from .ledger import (
     LedgerService,
     MigrationTokenMismatch,
     PaymentConfirmationError,
+    ProjectChangeOrderError,
     RevisionConflict,
     SettlementIssueError,
 )
@@ -31,13 +32,18 @@ from .ledger_schemas import (
     MigrationPreviewRequest,
     PaymentConfirmationRequest,
     PaymentConfirmationResult,
+    ProjectChangeOrderRequest,
+    ProjectChangeOrderResult,
     SettlementIssueRequest,
     SettlementIssueResult,
     QuoteGenerateRequest,
     QuoteScopeResult,
     QuoteView,
     RequirementCaseDetailView,
+    RequirementCaseEditRequest,
     RequirementCaseSummaryView,
+    RequirementCaseTransferRequest,
+    RequirementCaseTransferResult,
     RequirementExportView,
     RequirementImportCommitRequest,
     RequirementImportCommitResult,
@@ -124,7 +130,14 @@ def lead_analysis_view(run: LeadAnalysisRun) -> LeadAnalysisView:
 def _raise_exchange_error(exc: RequirementExchangeError) -> None:
     if exc.code in {"conversation_not_found", "customer_not_found", "case_not_found", "source_missing"}:
         code = status.HTTP_404_NOT_FOUND
-    elif exc.code in {"version_conflict", "token_invalid"}:
+    elif exc.code in {
+        "version_conflict",
+        "token_invalid",
+        "customer_mismatch",
+        "customer_relationship_conflict",
+        "case_item_mismatch",
+        "item_changed",
+    }:
         code = status.HTTP_409_CONFLICT
     else:
         code = status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -177,6 +190,58 @@ async def confirm_ledger_payment(
         }
     )
     return PaymentConfirmationResult(**result)
+
+
+@ledger_router.post(
+    "/ledger/change-orders",
+    response_model=ProjectChangeOrderResult,
+)
+async def create_project_change_order(
+    payload: ProjectChangeOrderRequest,
+    request: Request,
+) -> ProjectChangeOrderResult:
+    try:
+        result = service_from(request).create_project_change_order(
+            request_id=payload.request_id,
+            expected_revision=payload.expected_revision,
+            project_id=payload.project_id,
+            title=payload.title,
+            amount=payload.amount,
+            confirmed_at=payload.confirmed_at.isoformat(),
+            notes=payload.notes.strip(),
+            payment_plan=[
+                {
+                    "amount": item.amount,
+                    "type": item.type,
+                    "status": item.status,
+                    "paidAt": item.paid_at.isoformat() if item.paid_at else "",
+                    "dueAt": item.due_at.isoformat() if item.due_at else "",
+                    "notes": item.notes.strip(),
+                }
+                for item in payload.payment_plan
+            ],
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "经营数据已在其他浏览器更新，请刷新后重新新增追加订单",
+                "revision": exc.revision,
+            },
+        ) from None
+    except ProjectChangeOrderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"message": str(exc), "code": exc.code},
+        ) from None
+    runtime_from(request).event_hub.publish_nowait(
+        {
+            "type": "ledger_updated",
+            "revision": result["revision"],
+            "source": "project_change_order",
+        }
+    )
+    return ProjectChangeOrderResult(**result)
 
 
 @ledger_router.post(
@@ -511,6 +576,77 @@ async def get_requirement_case(
     except RequirementExchangeError as exc:
         _raise_exchange_error(exc)
     return RequirementCaseDetailView(**result)
+
+
+@ledger_router.post(
+    "/requirement-cases/{case_id}/edit",
+    response_model=RequirementImportCommitResult,
+)
+async def edit_requirement_case(
+    case_id: str,
+    payload: RequirementCaseEditRequest,
+    request: Request,
+) -> RequirementImportCommitResult:
+    runtime = runtime_from(request)
+    try:
+        result = runtime.requirement_exchange.edit_case(
+            case_id,
+            **payload.model_dump(),
+        )
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    case = result["case"]
+    runtime.event_hub.publish_nowait(
+        {
+            "type": "customer_requirement_updated",
+            "case_id": case["id"],
+            "customer_id": case["customer_id"],
+            "version": result["version"],
+        }
+    )
+    return RequirementImportCommitResult(**result)
+
+
+@ledger_router.post(
+    "/requirement-cases/{case_id}/transfer",
+    response_model=RequirementCaseTransferResult,
+)
+async def transfer_requirement_case(
+    case_id: str,
+    payload: RequirementCaseTransferRequest,
+    request: Request,
+) -> RequirementCaseTransferResult:
+    runtime = runtime_from(request)
+    try:
+        result = runtime.requirement_exchange.transfer_case(
+            case_id,
+            **payload.model_dump(),
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "经营数据已在其他浏览器更新，请刷新后重新转移",
+                "revision": exc.revision,
+            },
+        ) from None
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    runtime.event_hub.publish_nowait(
+        {
+            "type": "ledger_updated",
+            "revision": result["revision"],
+            "source": "requirement_case_transfer",
+        }
+    )
+    runtime.event_hub.publish_nowait(
+        {
+            "type": "customer_requirement_updated",
+            "case_id": case_id,
+            "customer_id": result["target_customer_id"],
+        }
+    )
+    return RequirementCaseTransferResult(**result)
 
 
 QUOTE_SYSTEM_TASK = """你是个人开发者项目范围与工时分析器。基于已经版本化的需求文档，为每个实施阶段估算工时，并保留原阶段目标、依赖、工作项、交付物和验收标准。只分析范围、工时、依赖和风险，不决定价格、不发送消息、不执行操作。信息不足时在 risks 和 schedule_notes 中明确说明。只输出符合 JSON Schema 的 JSON。"""
@@ -857,14 +993,27 @@ async def convert_lead(
 
 
 @ledger_router.get("/operations/summary")
-async def operations_summary(request: Request) -> dict[str, int | float]:
+async def operations_summary(request: Request) -> dict[str, int | float | None]:
     runtime = runtime_from(request)
     with runtime.database.session() as session:
         leads = list(session.scalars(select(SalesLead)))
-        conversations = list(session.scalars(select(Conversation)))
+        conversations = list(
+            session.scalars(
+                select(Conversation).order_by(
+                    Conversation.unread_count.desc(),
+                    Conversation.last_message_at.desc(),
+                    Conversation.id.desc(),
+                )
+            )
+        )
+        first_pending = next(
+            (row.id for row in conversations if row.unread_count > 0),
+            None,
+        )
         return {
             "unread": sum(max(0, row.unread_count) for row in conversations),
             "pending_replies": sum(1 for row in conversations if row.unread_count > 0),
+            "first_pending_conversation_id": first_pending,
             "open_leads": sum(1 for row in leads if row.status not in {"won", "lost"}),
             "quoted_leads": sum(1 for row in leads if row.status == "quoted"),
             "converted_leads": sum(1 for row in leads if row.status == "won"),

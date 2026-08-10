@@ -678,3 +678,230 @@
   .deepseek-setup-actions .outline-action { width: 100%; min-width: 0; }
 }
 .ai-capability-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-bottom:14px}.ai-capability-grid>span{position:relative;display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:8px;min-height:105px;padding:13px;border:1px solid #e7e3ef;border-radius:14px;background:linear-gradient(145deg,#fff,#faf9ff);color:#6a50e9}.ai-capability-grid>span>svg{grid-row:1/3}.ai-capability-grid b{color:#484151;font-size:11px}.ai-capability-grid small{color:#8f8897;font-size:9px;line-height:1.45}.ai-capability-grid em{position:absolute;right:8px;bottom:8px;padding:3px 6px;border-radius:999px;background:#edf9f3;color:#22855f;font-style:normal;font-size:8px;font-weight:900}.ai-capability-grid em.muted{background:#f2f1f5;color:#8b8590}@media(max-width:980px){.ai-capability-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.ai-capability-grid{grid-template-columns:1fr}}
+
+/* Cross-product growth retrospective. Operational controls remain in 商品经营. */
+.growth-statistics-page {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+  margin-top: -28px;
+  padding-bottom: 30px;
+  color: #24304c;
+  animation: statistics-enter 220ms ease both;
+}
+
+.growth-statistics-toolbar,
+.growth-statistics-card,
+.growth-statistic-metric,
+.growth-statistics-state,
+.growth-attribution-note {
+  min-width: 0;
+  border: 1px solid rgba(224, 228, 241, .92);
+  background: rgba(255, 255, 255, .9);
+  box-shadow: 0 12px 34px rgba(74, 63, 132, .055);
+}
+
+.growth-statistics-toolbar {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 3px 0 3px 4px;
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.growth-statistics-toolbar > div { display: grid; min-width: 0; gap: 4px; }
+.growth-statistics-toolbar > div > span { display: inline-flex; width: max-content; align-items: center; gap: 6px; color: #6548e8; font-size: 10px; font-weight: 850; letter-spacing: .04em; }
+.growth-statistics-toolbar p { margin: 0; color: #7b86a1; font-size: 10px; line-height: 1.55; }
+.growth-statistics-toolbar nav { display: grid; flex: 0 0 auto; grid-template-columns: repeat(4, minmax(62px, 1fr)); overflow: hidden; padding: 4px; border: 1px solid #e6e8f1; border-radius: 13px; background: #f8f8fc; }
+.growth-statistics-toolbar nav button { min-height: 34px; padding: 0 12px; border: 0; border-right: 1px solid #ececf3; background: transparent; color: #67738f; cursor: pointer; font: inherit; font-size: 10px; font-weight: 750; transition: color 170ms ease, background 170ms ease, box-shadow 170ms ease; }
+.growth-statistics-toolbar nav button:last-child { border-right: 0; }
+.growth-statistics-toolbar nav button.active { border-radius: 9px; background: linear-gradient(135deg,#f1edff,#fff); color: #6246e5; box-shadow: inset 0 0 0 1px #8b72f1, 0 4px 11px rgba(91,65,203,.08); }
+.growth-statistics-toolbar nav button:focus-visible,
+.growth-contribution-card button:focus-visible,
+.growth-comparison-card button:focus-visible,
+.growth-statistics-state button:focus-visible { outline: 2px solid #7356eb; outline-offset: 2px; }
+
+.growth-statistics-metrics { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; }
+.growth-statistic-metric { position: relative; display: grid; min-height: 120px; grid-template-columns: 46px minmax(0,1fr); align-content: center; align-items: start; gap: 11px; overflow: hidden; padding: 16px; border-radius: 21px; }
+.growth-statistic-metric::after { position: absolute; right: -38px; bottom: -62px; width: 150px; height: 150px; border-radius: 50%; background: radial-gradient(circle,rgba(103,73,236,.11),transparent 68%); content: ""; pointer-events: none; }
+.growth-statistic-metric > i { display: grid; width: 45px; height: 45px; place-items: center; border-radius: 15px; background: #f0edff; color: #6548ef; font-style: normal; }
+.growth-statistic-metric > span { position: relative; z-index: 1; display: grid; min-width: 0; gap: 5px; }
+.growth-statistic-metric small { color: #66728e; font-size: 10px; font-weight: 650; }
+.growth-statistic-metric strong { color: #6046e8; font-size: clamp(25px,2.15vw,34px); line-height: 1.05; letter-spacing: -.8px; }
+.growth-statistic-metric em { color: #9098aa; font-size: 9px; font-style: normal; line-height: 1.45; }
+.growth-statistic-metric.tone-green > i { color: #19a968; background: #eaf8f1; }
+.growth-statistic-metric.tone-green strong { color: #18a867; }
+.growth-statistic-metric.tone-green::after { background: radial-gradient(circle,rgba(32,186,115,.11),transparent 68%); }
+.growth-statistic-metric.tone-orange > i { color: #f16c19; background: #fff0e8; }
+.growth-statistic-metric.tone-orange strong { color: #f36a12; }
+.growth-statistic-metric.tone-orange::after { background: radial-gradient(circle,rgba(246,108,25,.11),transparent 68%); }
+.growth-statistic-metric.tone-blue > i { color: #3476ee; background: #edf3ff; }
+.growth-statistic-metric.tone-blue strong { color: #3476ee; }
+.growth-statistic-metric.tone-blue::after { background: radial-gradient(circle,rgba(52,118,238,.11),transparent 68%); }
+
+.growth-statistics-overview { display: grid; min-width: 0; grid-template-columns: minmax(0,1.38fr) minmax(330px,1fr); gap: 14px; }
+.growth-statistics-card { border-radius: 21px; }
+.growth-statistics-card > header { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.growth-statistics-card > header > span { display: grid; min-width: 0; gap: 6px; }
+.growth-statistics-card h2 { margin: 0; color: #2c3753; font-size: 16px; line-height: 1.3; }
+.growth-statistics-card header small { display: inline-flex; align-items: center; gap: 5px; color: #8a94aa; font-size: 9px; line-height: 1.5; }
+.growth-statistics-card header small svg { flex: 0 0 auto; color: #a1a9ba; }
+
+.growth-trend-card { min-height: 300px; padding: 18px 18px 12px; }
+.growth-chart-legend { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; color: #68738d; font-size: 9px; }
+.growth-chart-legend i { width: 8px; height: 8px; border-radius: 50%; background: #6548f4; }
+.growth-chart-legend i.inquiry { background: #24b874; }
+.growth-chart-legend i.want { background: #ff730e; }
+.growth-trend-chart { height: 193px; margin: 7px 0 0; }
+.growth-trend-card > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 8px 0; color: #8992a7; font-size: 9px; }
+.growth-trend-card > footer b { color: #6651cc; font-size: 9px; }
+.growth-chart-empty { display: grid; height: 193px; place-items: center; color: #8a94aa; font-size: 11px; }
+
+.growth-contribution-card { min-height: 300px; padding: 18px; }
+.growth-contribution-card > div { display: grid; gap: 7px; margin-top: 12px; }
+.growth-contribution-card button { display: grid; min-width: 0; min-height: 41px; grid-template-columns: minmax(128px,1fr) minmax(100px,.85fr) 48px 38px; align-items: center; gap: 10px; padding: 5px 8px; border: 0; border-radius: 11px; background: transparent; color: #48536d; cursor: pointer; font: inherit; text-align: left; transition: background 170ms ease, transform 170ms ease; }
+.growth-contribution-card button:hover { background: #faf9ff; transform: translateY(-1px); }
+.growth-contribution-card button > span { overflow: hidden; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.growth-contribution-card button > i { height: 13px; overflow: hidden; border-radius: 4px; background: #f0eefb; font-style: normal; }
+.growth-contribution-card button > i > em { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#7657ef,#5b45ed); box-shadow: 0 5px 10px rgba(94,68,220,.13); }
+.growth-contribution-card button > b { color: #58647f; font-size: 10px; text-align: right; }
+.growth-contribution-card button > small { color: #77829b; font-size: 9px; text-align: right; }
+
+.growth-funnel-card { padding: 15px 18px 11px; }
+.growth-funnel-flow { display: grid; grid-template-columns: minmax(128px,1fr) 26px minmax(128px,1fr) 26px minmax(128px,1fr) 26px minmax(128px,1fr); align-items: center; gap: 9px; margin-top: 10px; }
+.growth-funnel-flow > svg { color: #c1c7d5; }
+.growth-funnel-flow article { display: grid; min-height: 60px; place-content: center; justify-items: center; gap: 4px; border: 1px solid #d7cdfd; border-radius: 13px; background: linear-gradient(145deg,#faf8ff,#fff); }
+.growth-funnel-flow article small { color: #737d95; font-size: 9px; }
+.growth-funnel-flow article strong { color: #6548e8; font-size: 20px; }
+.growth-funnel-flow article.tone-orange { border-color: #ffd9c0; background: linear-gradient(145deg,#fff8f3,#fff); }
+.growth-funnel-flow article.tone-orange strong { color: #f36c16; }
+.growth-funnel-flow article.tone-green { border-color: #ccebdd; background: linear-gradient(145deg,#f5fcf8,#fff); }
+.growth-funnel-flow article.tone-green strong { color: #1aaa6b; }
+.growth-funnel-flow article.tone-blue { border-color: #cfe0ff; background: linear-gradient(145deg,#f5f8ff,#fff); }
+.growth-funnel-flow article.tone-blue strong { color: #3477ec; }
+.growth-funnel-card > p { margin: 10px 0 0; color: #7e879b; font-size: 9px; text-align: center; }
+.growth-funnel-card > p b { color: #56627c; }
+
+.growth-comparison-card { overflow: hidden; padding: 19px 18px 9px; }
+.growth-comparison-card > header { padding: 0 3px 12px; }
+.growth-comparison-table-wrap { min-width: 0; overflow-x: auto; }
+.growth-comparison-card table { width: 100%; min-width: 980px; border-collapse: collapse; table-layout: fixed; }
+.growth-comparison-card th,
+.growth-comparison-card td { padding: 11px 8px; border-bottom: 1px solid #eceef4; color: #59657e; font-size: 9px; text-align: center; vertical-align: middle; }
+.growth-comparison-card thead th { background: #f8f8fc; color: #6f7992; font-weight: 700; }
+.growth-comparison-card thead th:first-child { border-radius: 10px 0 0 10px; }
+.growth-comparison-card thead th:last-child { border-radius: 0 10px 10px 0; }
+.growth-comparison-card th:first-child { width: 220px; text-align: left; }
+.growth-comparison-card th:last-child { width: 112px; }
+.growth-comparison-card tbody th { overflow: hidden; color: #4a566f; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.growth-comparison-card td.is-purple { color: #6548ea; font-weight: 800; }
+.growth-comparison-card td.is-orange { color: #f06c18; font-weight: 800; }
+.growth-comparison-card td.is-green { color: #1aaa6b; font-weight: 800; }
+.growth-comparison-card td button { display: inline-flex; align-items: center; gap: 4px; padding: 6px 7px; border: 0; background: transparent; color: #6548e8; cursor: pointer; font: inherit; font-size: 8.5px; font-weight: 750; white-space: nowrap; }
+.growth-comparison-card tbody tr:hover { background: #fcfbff; }
+
+.growth-attribution-note { display: flex; min-height: 62px; align-items: center; gap: 11px; padding: 12px 16px; border-color: #ded7fb; border-radius: 16px; background: linear-gradient(100deg,#f8f6ff,#fff); color: #6548e8; }
+.growth-attribution-note > svg { flex: 0 0 auto; }
+.growth-attribution-note > span { display: grid; min-width: 0; gap: 4px; }
+.growth-attribution-note b { color: #4d5871; font-size: 11px; }
+.growth-attribution-note small { color: #818aa0; font-size: 9px; line-height: 1.5; }
+
+.growth-statistics-state { display: grid; min-height: 430px; place-content: center; justify-items: center; gap: 9px; padding: 30px; border-radius: 22px; color: #6850de; text-align: center; }
+.growth-statistics-state h2 { margin: 4px 0 0; color: #35405c; font-size: 20px; }
+.growth-statistics-state p { max-width: 430px; margin: 0; color: #818ba3; font-size: 11px; line-height: 1.65; }
+.growth-statistics-state button { display: inline-flex; min-height: 38px; align-items: center; gap: 6px; margin-top: 5px; padding: 0 13px; border: 0; border-radius: 10px; background: #6548e8; color: #fff; cursor: pointer; }
+.growth-statistics-state.is-error { color: #df6a34; }
+
+@keyframes statistics-enter { from { opacity: 0; transform: translateY(5px); } }
+
+@media (max-width: 1180px) {
+  .growth-statistics-overview { grid-template-columns: minmax(0,1.15fr) minmax(300px,.85fr); }
+  .growth-contribution-card button { grid-template-columns: minmax(112px,1fr) minmax(70px,.72fr) 42px 34px; gap: 7px; }
+}
+
+@media (max-width: 980px) {
+  .growth-statistics-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .growth-statistics-overview { grid-template-columns: 1fr; }
+  .growth-contribution-card { min-height: 0; }
+  .growth-contribution-card button { grid-template-columns: minmax(150px,1.3fr) minmax(130px,1fr) 48px 40px; }
+  .growth-funnel-flow { grid-template-columns: 1fr 24px 1fr; }
+  .growth-funnel-flow > article:nth-of-type(3),
+  .growth-funnel-flow > article:nth-of-type(4) { margin-top: 2px; }
+  .growth-funnel-flow > svg:nth-of-type(2) { display: none; }
+  .growth-funnel-flow > article:nth-of-type(3) { grid-column: 1; }
+  .growth-funnel-flow > svg:nth-of-type(3) { grid-column: 2; }
+  .growth-funnel-flow > article:nth-of-type(4) { grid-column: 3; }
+}
+
+@media (max-width: 820px) {
+  .growth-statistics-page { margin-top: 55px; }
+  .growth-statistics-toolbar { align-items: stretch; flex-direction: column; }
+  .growth-statistics-toolbar nav { width: 100%; }
+}
+
+@media (max-width: 680px) {
+  .growth-statistics-page { gap: 10px; }
+  .growth-statistics-toolbar,
+  .growth-statistics-card,
+  .growth-statistic-metric,
+  .growth-attribution-note { border-radius: 16px; }
+  .growth-statistics-toolbar { padding: 12px; }
+  .growth-statistics-toolbar nav { grid-template-columns: repeat(4,minmax(0,1fr)); }
+  .growth-statistics-toolbar nav button { min-width: 0; padding-inline: 4px; }
+  .growth-statistics-metrics { gap: 8px; }
+  .growth-statistic-metric { min-height: 114px; grid-template-columns: 42px minmax(0,1fr); gap: 9px; padding: 14px; }
+  .growth-statistic-metric > i { width: 41px; height: 41px; border-radius: 13px; }
+  .growth-statistic-metric strong { font-size: 24px; }
+  .growth-trend-card,
+  .growth-contribution-card,
+  .growth-funnel-card { padding: 16px 14px; }
+  .growth-statistics-card > header { align-items: flex-start; flex-direction: column; }
+  .growth-chart-legend { justify-content: flex-start; }
+  .growth-trend-chart { height: 220px; }
+  .growth-trend-card > footer { align-items: flex-start; flex-direction: column; }
+  .growth-contribution-card button { grid-template-columns: minmax(0,1fr) 45px 36px; min-height: 54px; }
+  .growth-contribution-card button > i { grid-column: 1 / -1; grid-row: 2; }
+  .growth-contribution-card button > b { grid-column: 2; grid-row: 1; }
+  .growth-contribution-card button > small { grid-column: 3; grid-row: 1; }
+  .growth-funnel-flow { grid-template-columns: 1fr; }
+  .growth-funnel-flow > svg { display: none; }
+  .growth-funnel-flow > article:nth-of-type(n) { grid-column: 1; margin: 0; }
+  .growth-comparison-card { padding: 16px 13px 8px; }
+  .growth-comparison-table-wrap { overflow: visible; }
+  .growth-comparison-card table,
+  .growth-comparison-card tbody,
+  .growth-comparison-card tr,
+  .growth-comparison-card th,
+  .growth-comparison-card td { display: block; width: 100%; min-width: 0; box-sizing: border-box; }
+  .growth-comparison-card thead { display: none; }
+  .growth-comparison-card tbody { display: grid; gap: 10px; }
+  .growth-comparison-card tbody tr { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; padding: 12px; border: 1px solid #e8e8f1; border-radius: 13px; background: #fdfdff; }
+  .growth-comparison-card tbody th,
+  .growth-comparison-card tbody td { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0; border: 0; text-align: right; white-space: normal; }
+  .growth-comparison-card tbody th { grid-column: 1 / -1; width: auto; padding-bottom: 7px; border-bottom: 1px solid #ececf3; text-align: left; }
+  .growth-comparison-card tbody td::before { color: #8a94a9; content: attr(data-label); font-size: 8px; font-weight: 550; }
+  .growth-comparison-card tbody td:last-child { grid-column: 1 / -1; justify-content: flex-end; padding-top: 6px; }
+  .growth-comparison-card tbody td:last-child::before { display: none; }
+  .growth-attribution-note { align-items: flex-start; }
+}
+
+@media (max-width: 460px) {
+  .growth-statistics-metrics { grid-template-columns: 1fr; }
+  .growth-statistic-metric { min-height: 102px; }
+  .growth-comparison-card tbody tr { grid-template-columns: 1fr; }
+  .growth-comparison-card tbody th,
+  .growth-comparison-card tbody td,
+  .growth-comparison-card tbody td:last-child { grid-column: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .growth-statistics-page { animation: none; }
+  .growth-statistics-toolbar nav button,
+  .growth-contribution-card button { transition: none; }
+  .growth-contribution-card button:hover { transform: none; }
+}

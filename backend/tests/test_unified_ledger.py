@@ -10,6 +10,7 @@ from backend.app.database import Database
 from backend.app.ledger import (
     LedgerService,
     PaymentConfirmationError,
+    ProjectChangeOrderError,
     RevisionConflict,
     SettlementIssueError,
     default_snapshot,
@@ -17,6 +18,8 @@ from backend.app.ledger import (
 from backend.app.models import (
     BusinessProject,
     BusinessTask,
+    PaymentNode,
+    ProjectChangeOrderRecord,
     ProjectSettlementIssueRecord,
 )
 
@@ -161,6 +164,34 @@ def confirm(
     )
 
 
+def create_change_order(
+    ledger: LedgerService,
+    *,
+    revision: int,
+    request_id: str = "change-order-request-001",
+    amount: float = 1_200,
+    title: str = "新增登录方式",
+    payment_plan: list[dict] | None = None,
+) -> dict:
+    return ledger.create_project_change_order(
+        request_id=request_id,
+        expected_revision=revision,
+        project_id="project-1",
+        title=title,
+        amount=amount,
+        confirmed_at="2026-08-10",
+        notes="客户已在聊天中确认增项",
+        payment_plan=payment_plan or [{
+            "amount": amount,
+            "type": "milestone",
+            "status": "pending",
+            "paidAt": "",
+            "dueAt": "2026-08-15",
+            "notes": "追加修改款",
+        }],
+    )
+
+
 def record_issue(
     ledger: LedgerService,
     *,
@@ -283,6 +314,157 @@ def test_confirmation_request_is_idempotent(tmp_path: Path) -> None:
     assert len(repeated["snapshot"]["payments"]) == 2
 
 
+def test_change_order_expands_settled_contract_and_creates_pending_receivable(tmp_path: Path) -> None:
+    ledger = service(tmp_path)
+    revision, _snapshot = ledger.save(sample_snapshot(), 0)
+    settled = confirm(ledger, revision=revision)
+
+    result = create_change_order(ledger, revision=settled["revision"])
+
+    project = result["snapshot"]["projects"][0]
+    order = result["snapshot"]["changeOrders"][0]
+    added_payment = next(
+        row for row in result["snapshot"]["payments"]
+        if row.get("changeOrderId") == order["id"]
+    )
+    assert project["totalAmount"] == 11_200
+    assert project["status"] == "pending"
+    assert order["title"] == "新增登录方式"
+    assert order["amount"] == 1_200
+    assert order["status"] == "confirmed"
+    assert added_payment["status"] == "pending"
+    assert added_payment["amount"] == 1_200
+
+
+def test_change_order_can_record_immediate_receipt_without_completing_project(tmp_path: Path) -> None:
+    ledger = service(tmp_path)
+    revision, _snapshot = ledger.save(sample_snapshot(), 0)
+    settled = confirm(ledger, revision=revision)
+    result = create_change_order(
+        ledger,
+        revision=settled["revision"],
+        payment_plan=[{
+            "amount": 1_200,
+            "type": "full",
+            "status": "confirmed",
+            "paidAt": "2026-08-10T15:30:00+08:00",
+            "dueAt": "2026-08-10",
+            "notes": "追加款已到账",
+        }],
+    )
+
+    confirmed_total = sum(
+        row["amount"]
+        for row in result["snapshot"]["payments"]
+        if row["status"] == "confirmed"
+    )
+    assert result["snapshot"]["projects"][0]["totalAmount"] == 11_200
+    assert result["snapshot"]["projects"][0]["status"] == "pending"
+    assert confirmed_total == 11_200
+    assert result["snapshot"]["completedOrderCount"] == 0
+
+
+def test_change_order_installments_must_equal_added_amount(tmp_path: Path) -> None:
+    ledger = service(tmp_path)
+    revision, _snapshot = ledger.save(sample_snapshot(), 0)
+    plan = [
+        {"amount": 500, "type": "milestone", "status": "pending", "paidAt": "", "dueAt": "2026-08-12"},
+        {"amount": 700, "type": "final", "status": "pending", "paidAt": "", "dueAt": "2026-08-20"},
+    ]
+    result = create_change_order(ledger, revision=revision, payment_plan=plan)
+    linked = [
+        row for row in result["snapshot"]["payments"]
+        if row.get("changeOrderId") == result["change_order_id"]
+    ]
+    assert [row["amount"] for row in linked] == [500, 700]
+
+    with pytest.raises(ProjectChangeOrderError, match="必须等于追加金额"):
+        create_change_order(
+            ledger,
+            revision=result["revision"],
+            request_id="change-order-request-002",
+            payment_plan=[{
+                "amount": 1_199,
+                "type": "full",
+                "status": "pending",
+                "paidAt": "",
+                "dueAt": "2026-08-20",
+            }],
+        )
+
+
+def test_change_order_is_idempotent_and_revision_protected(tmp_path: Path) -> None:
+    ledger = service(tmp_path)
+    revision, _snapshot = ledger.save(sample_snapshot(), 0)
+    first = create_change_order(ledger, revision=revision)
+    repeated = create_change_order(ledger, revision=revision)
+
+    assert repeated["idempotent"] is True
+    assert repeated["change_order_id"] == first["change_order_id"]
+    assert len(repeated["snapshot"]["changeOrders"]) == 1
+    assert repeated["snapshot"]["projects"][0]["totalAmount"] == 11_200
+
+    with pytest.raises(ProjectChangeOrderError, match="已经用于另一笔记录"):
+        create_change_order(
+            ledger,
+            revision=first["revision"],
+            amount=1_300,
+        )
+    latest_revision, _latest = ledger.save(first["snapshot"], first["revision"])
+    assert latest_revision == first["revision"] + 1
+    with pytest.raises(RevisionConflict):
+        create_change_order(
+            ledger,
+            revision=first["revision"],
+            request_id="change-order-request-003",
+        )
+
+
+def test_change_order_schema_links_payment_nodes_and_keeps_foreign_keys_valid(tmp_path: Path) -> None:
+    ledger = service(tmp_path)
+    revision, _snapshot = ledger.save(sample_snapshot(), 0)
+    result = create_change_order(ledger, revision=revision)
+
+    with ledger.database.session() as session:
+        order = session.get(ProjectChangeOrderRecord, result["change_order_id"])
+        payment = session.get(PaymentNode, result["payment_ids"][0])
+        assert order is not None
+        assert order.request_id == "change-order-request-001"
+        assert payment is not None
+        assert payment.change_order_id == order.id
+    with ledger.database.engine.connect() as connection:
+        payment_columns = {
+            str(row[1])
+            for row in connection.exec_driver_sql("PRAGMA table_info(payment_nodes)")
+        }
+        indexes = {
+            str(row[1])
+            for row in connection.exec_driver_sql(
+                "PRAGMA index_list(project_change_orders)"
+            )
+        }
+        violations = list(connection.exec_driver_sql("PRAGMA foreign_key_check"))
+    assert "change_order_id" in payment_columns
+    assert any("request_id" in name for name in indexes)
+    assert violations == []
+
+
+def test_change_order_rejects_cancelled_or_terminated_project(tmp_path: Path) -> None:
+    ledger = service(tmp_path)
+    revision, _snapshot = ledger.save(sample_snapshot(), 0)
+    terminated = record_issue(
+        ledger,
+        revision=revision,
+        issue_type="cooperation_terminated",
+        receivable_impact=10_000,
+        reason="双方确认终止原合作",
+    )
+
+    with pytest.raises(ProjectChangeOrderError, match="创建新项目") as raised:
+        create_change_order(ledger, revision=terminated["revision"])
+    assert raised.value.code == "project_terminated"
+
+
 def test_settlement_issue_can_record_risk_before_amount_is_known(tmp_path: Path) -> None:
     ledger = service(tmp_path)
     revision, _snapshot = ledger.save(sample_snapshot(), 0)
@@ -317,6 +499,23 @@ def test_uncollectible_without_payment_nodes_removes_collectible_balance(tmp_pat
     assert result["snapshot"]["payments"] == []
     with pytest.raises(PaymentConfirmationError, match="已经没有未收金额"):
         confirm(ledger, revision=result["revision"], amount=1)
+
+
+def test_terminal_issue_must_write_off_the_full_remaining_balance(tmp_path: Path) -> None:
+    ledger = service(tmp_path)
+    revision, _snapshot = ledger.save(sample_snapshot(), 0)
+
+    with pytest.raises(SettlementIssueError) as raised:
+        record_issue(
+            ledger,
+            revision=revision,
+            issue_type="cooperation_terminated",
+            receivable_impact=0,
+            reason="双方确认终止合作",
+        )
+
+    assert raised.value.code == "terminal_issue_requires_full_writeoff"
+    assert "全部确认为无法收回" in str(raised.value)
 
 
 def test_full_pending_node_is_written_off_by_issue(tmp_path: Path) -> None:
