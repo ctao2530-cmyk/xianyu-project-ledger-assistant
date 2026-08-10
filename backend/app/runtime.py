@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .ai import AIProvider, DeepSeekProvider, build_ai_provider
+from .agents import SalesAgent
+from .ai import AIModelSelection, AIProvider, DeepSeekProvider, build_ai_provider
 from .adapters import XianyuAdapter
 from .channels.base import ChannelSender, ChannelSenderRegistry
 from .channels.wechat import WeChatAdapter, WechatMockProvider, WechatSender
@@ -57,6 +58,7 @@ class Runtime:
     automation: AutoReplyService
     requirements: RequirementAnalysisService
     requirement_exchange: RequirementExchangeService
+    sales_agent: SalesAgent
     api_limiter: SlidingWindowRateLimiter
     send_limiter: SlidingWindowRateLimiter
     ledger: LedgerService
@@ -95,11 +97,39 @@ def build_runtime(settings: Settings) -> Runtime:
         retention_days=settings.listener_log_retention_days,
     )
     event_hub = EventHub()
+    sales_provider = deepseek if settings.deepseek_configured else ai
+    sales_model_selection = (
+        AIModelSelection(model=settings.deepseek_lead_model)
+        if sales_provider.name == deepseek.name
+        else AIModelSelection(
+            model=settings.reply_balanced_model or settings.codex_model or None,
+            reasoning_effort=settings.reply_balanced_reasoning_effort or None,
+        )
+    )
+    sales_agent = SalesAgent(
+        database,
+        ledger,
+        sales_provider,
+        model_selection=sales_model_selection,
+        providers={ai.name: ai, deepseek.name: deepseek},
+        model_selections={
+            deepseek.name: AIModelSelection(model=settings.deepseek_lead_model),
+            ai.name: AIModelSelection(
+                model=settings.reply_balanced_model or settings.codex_model or None,
+                reasoning_effort=settings.reply_balanced_reasoning_effort or None,
+            ),
+        },
+        timeout_seconds=settings.sales_agent_timeout_seconds,
+        event_hub=event_hub,
+        history_limit=settings.sales_agent_history_limit,
+    )
     product_intelligence = ProductIntelligenceService(
         database,
         adapter,
         settings,
         event_hub,
+        notifier,
+        ledger=ledger,
     )
     send_limiter = SlidingWindowRateLimiter(settings.send_rate_limit_per_minute)
     actions = HumanActions(database, channel_senders, style_learning)
@@ -129,7 +159,7 @@ def build_runtime(settings: Settings) -> Runtime:
         notifier,
         event_hub=event_hub,
     )
-    requirement_exchange = RequirementExchangeService(database)
+    requirement_exchange = RequirementExchangeService(database, ledger)
     processor = MessageProcessor(
         database,
         adapter,
@@ -139,6 +169,11 @@ def build_runtime(settings: Settings) -> Runtime:
         context_hydration_timeout_seconds=settings.xianyu_context_hydration_timeout_seconds,
         item_cache_ttl_seconds=settings.xianyu_item_cache_ttl_seconds,
         reply_burst_coalesce_seconds=settings.reply_burst_coalesce_seconds,
+        sales_agent=(
+            sales_agent
+            if settings.sales_agent_enabled and settings.sales_agent_auto_analyze
+            else None
+        ),
     )
     wecom = WeComService(
         settings,
@@ -183,6 +218,7 @@ def build_runtime(settings: Settings) -> Runtime:
         automation=automation,
         requirements=requirements,
         requirement_exchange=requirement_exchange,
+        sales_agent=sales_agent,
         api_limiter=SlidingWindowRateLimiter(settings.api_rate_limit_per_minute),
         send_limiter=send_limiter,
         ledger=ledger,

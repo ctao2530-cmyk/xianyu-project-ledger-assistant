@@ -1,6 +1,7 @@
 import type {
   LedgerSnapshot,
   PaymentConfirmationValue,
+  ProjectChangeOrderValue,
   QuickAccountingFormValue,
   SettlementIssueValue,
 } from "../types";
@@ -29,6 +30,7 @@ export class LedgerBackendRequiredError extends Error {
 
 const initialSnapshot: LedgerSnapshot = {
   projects: [],
+  changeOrders: [],
   payments: [],
   settlementIssues: [],
   expenses: [],
@@ -62,6 +64,7 @@ const initialSnapshot: LedgerSnapshot = {
 
 const cloneSnapshot = (snapshot = initialSnapshot): LedgerSnapshot => {
   const cloned = JSON.parse(JSON.stringify(snapshot)) as LedgerSnapshot;
+  cloned.changeOrders = Array.isArray(cloned.changeOrders) ? cloned.changeOrders : [];
   cloned.settlementIssues = Array.isArray(cloned.settlementIssues) ? cloned.settlementIssues : [];
   cloned.projects = cloned.projects.map((project) => ({
     ...project,
@@ -145,6 +148,56 @@ export const mockLedgerService = {
       backendConnected = false;
       throw new LedgerBackendRequiredError("无法刷新本机经营数据，请确认 8877 服务已经连接");
     }
+  },
+
+  async createProjectChangeOrder(
+    _snapshot: LedgerSnapshot,
+    value: ProjectChangeOrderValue,
+  ): Promise<LedgerSnapshot> {
+    if (!backendConnected || backendRevision === null) {
+      throw new LedgerBackendRequiredError("新增追加订单需要连接本机经营服务，离线状态不会修改合同或收款数据");
+    }
+    let response: Response;
+    try {
+      response = await fetch("/api/ledger/change-orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_id: value.requestId,
+          expected_revision: backendRevision,
+          project_id: value.projectId,
+          title: value.title,
+          amount: value.amount,
+          confirmed_at: value.confirmedAt,
+          notes: value.notes || "",
+          payment_plan: value.paymentPlan.map((item) => ({
+            amount: item.amount,
+            type: item.type,
+            status: item.status,
+            paid_at: item.paidAt ? new Date(item.paidAt).toISOString() : null,
+            due_at: item.dueAt || null,
+            notes: item.notes || "",
+          })),
+        }),
+      });
+    } catch {
+      throw new LedgerBackendRequiredError("本机经营服务暂时无法连接，本次追加订单没有写入，请稍后重试");
+    }
+    if (response.status === 409) {
+      const detail = await responseMessage(response, "经营数据已在其他浏览器更新，请刷新后重新新增追加订单");
+      throw new LedgerRevisionConflictError(detail.message, detail.revision);
+    }
+    if (!response.ok) {
+      const detail = await responseMessage(response, `追加订单保存失败（${response.status}）`);
+      throw new Error(detail.message);
+    }
+    const payload = await response.json() as {
+      revision: number;
+      snapshot: LedgerSnapshot;
+    };
+    backendRevision = payload.revision;
+    backendConnected = true;
+    return cloneSnapshot(payload.snapshot);
   },
 
   async confirmPayment(
@@ -360,6 +413,10 @@ export function getLegacyLedgerSnapshot(): LedgerSnapshot | null {
 
 export function isLedgerBackendConnected() {
   return backendConnected;
+}
+
+export function getLedgerRevision() {
+  return backendRevision;
 }
 
 export function acceptMigratedLedger(revision: number) {

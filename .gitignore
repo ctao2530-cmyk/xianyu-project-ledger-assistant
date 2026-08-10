@@ -15,6 +15,7 @@ data/*.db-shm
 data/*.db-wal
 data/attachments/
 data/backups/
+data/private/
 qa/*.png
 qa/*.jpg
 qa/*.jpeg

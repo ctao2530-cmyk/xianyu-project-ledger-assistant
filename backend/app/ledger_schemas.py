@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +32,35 @@ class PaymentConfirmationRequest(BaseModel):
 class PaymentConfirmationResult(LedgerSnapshotEnvelope):
     payment_id: str
     remainder_payment_id: str | None = None
+    idempotent: bool = False
+
+
+class ProjectChangeOrderPaymentRequest(BaseModel):
+    amount: float = Field(gt=0, le=100_000_000)
+    type: Literal["deposit", "milestone", "final", "full"]
+    status: Literal["pending", "confirmed"]
+    paid_at: datetime | None = None
+    due_at: date | None = None
+    notes: str = Field(default="", max_length=1000)
+
+
+class ProjectChangeOrderRequest(BaseModel):
+    request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,128}$")
+    expected_revision: int = Field(ge=0)
+    project_id: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=2, max_length=300)
+    amount: float = Field(gt=0, le=100_000_000)
+    confirmed_at: date
+    notes: str = Field(default="", max_length=2000)
+    payment_plan: list[ProjectChangeOrderPaymentRequest] = Field(
+        min_length=1,
+        max_length=6,
+    )
+
+
+class ProjectChangeOrderResult(LedgerSnapshotEnvelope):
+    change_order_id: str
+    payment_ids: list[str]
     idempotent: bool = False
 
 
@@ -153,6 +182,9 @@ class RequirementImportPreviewView(BaseModel):
     token: str
     expires_at: datetime
     customer_id: str
+    item_id: int | None
+    item_external_id: str | None
+    item_title: str | None
     case_id: str | None
     case_title: str
     target_version: int
@@ -166,6 +198,29 @@ class RequirementImportPreviewView(BaseModel):
 class RequirementImportCommitRequest(BaseModel):
     token: str = Field(min_length=20, max_length=200)
     expected_version: int = Field(ge=0)
+
+
+class RequirementCaseEditRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    change_summary: str = Field(min_length=2, max_length=1000)
+    document: RequirementBlueprintV2
+
+
+class RequirementCaseTransferRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=128)
+    expected_customer_id: str = Field(min_length=1, max_length=128)
+    expected_version: int = Field(ge=1)
+    expected_revision: int = Field(ge=0)
+    target_customer_id: str | None = Field(default=None, max_length=128)
+    new_customer_name: str | None = Field(default=None, max_length=255)
+
+
+class RequirementCaseTransferResult(BaseModel):
+    revision: int
+    snapshot: dict[str, Any]
+    target_customer_id: str
+    case: "RequirementCaseDetailView"
+    idempotent: bool = False
 
 
 class RequirementVersionCaseSummary(BaseModel):
@@ -184,6 +239,9 @@ class RequirementVersionCaseSummary(BaseModel):
 class RequirementCaseSummaryView(BaseModel):
     id: str
     customer_id: str
+    item_id: int | None
+    item_external_id: str | None
+    item_title: str | None
     title: str
     status: str
     current_version: int

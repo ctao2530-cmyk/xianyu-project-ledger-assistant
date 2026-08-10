@@ -15,6 +15,7 @@ from .ledger_api import ledger_router
 from .logging_config import configure_logging
 from .product_api import product_router
 from .runtime import build_runtime
+from .sales_api import sales_router
 from .wechat_api import wechat_router
 
 
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI):
     await runtime.listener_supervisor.shutdown()
     await runtime.wecom.stop()
     await runtime.requirements.stop()
+    await runtime.sales_agent.stop()
     await runtime.ai_queue.stop()
     await runtime.product_intelligence.stop()
 
@@ -123,6 +125,7 @@ async def rate_limit(request: Request, call_next):
 app.include_router(router)
 app.include_router(ledger_router)
 app.include_router(product_router)
+app.include_router(sales_router)
 app.include_router(event_router)
 app.include_router(wechat_router)
 

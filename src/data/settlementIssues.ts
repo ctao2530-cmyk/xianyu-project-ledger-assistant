@@ -14,5 +14,18 @@ export const settlementIssueOptions = Object.entries(settlementIssueLabels) as A
   [SettlementIssueType, string]
 >;
 
+export const terminalSettlementIssueTypes = new Set<SettlementIssueType>([
+  "project_cancelled",
+  "cooperation_terminated",
+]);
+
 export const latestSettlementIssue = (issues: ProjectSettlementIssue[]) =>
   issues.slice().sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))[0];
+
+export const latestTerminalSettlementIssue = (issues: ProjectSettlementIssue[]) =>
+  issues
+    .filter((issue) => terminalSettlementIssueTypes.has(issue.type))
+    .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))[0];
+
+export const hasTerminalSettlementIssue = (issues: ProjectSettlementIssue[]) =>
+  Boolean(latestTerminalSettlementIssue(issues));

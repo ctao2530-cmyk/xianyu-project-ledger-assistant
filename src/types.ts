@@ -9,6 +9,8 @@ export type PaymentType = "deposit" | "milestone" | "final" | "full";
 
 export type PaymentStatus = "pending" | "confirmed" | "refunded" | "written_off";
 
+export type ProjectChangeOrderStatus = "confirmed" | "cancelled";
+
 export type SettlementIssueType =
   | "customer_dissatisfied"
   | "refund"
@@ -55,6 +57,7 @@ export interface Payment {
   id: string;
   projectId: string;
   customerId: string;
+  changeOrderId?: string;
   amount: number;
   type: PaymentType;
   status: PaymentStatus;
@@ -63,6 +66,38 @@ export interface Payment {
   notes?: string;
   confirmationRequestId?: string;
   remainderOfRequestId?: string;
+}
+
+export interface ProjectChangeOrder {
+  id: string;
+  projectId: string;
+  customerId: string;
+  title: string;
+  amount: number;
+  confirmedAt: string;
+  status: ProjectChangeOrderStatus;
+  notes?: string;
+  requestId: string;
+  createdAt: string;
+}
+
+export interface ProjectChangeOrderPaymentValue {
+  amount: number;
+  type: PaymentType;
+  status: "pending" | "confirmed";
+  paidAt?: string;
+  dueAt?: string;
+  notes?: string;
+}
+
+export interface ProjectChangeOrderValue {
+  requestId: string;
+  projectId: string;
+  title: string;
+  amount: number;
+  confirmedAt: string;
+  notes?: string;
+  paymentPlan: ProjectChangeOrderPaymentValue[];
 }
 
 export interface PaymentConfirmationValue {
@@ -154,7 +189,7 @@ export interface Expense {
   id: string;
   projectId?: string;
   name: string;
-  category: "software" | "outsourcing" | "server" | "office" | "refund" | "other";
+  category: "software" | "outsourcing" | "server" | "office" | "traffic" | "refund" | "other";
   amount: number;
   paidAt: string;
   notes?: string;
@@ -187,6 +222,7 @@ export interface OperationSettings {
 
 export interface LedgerSnapshot {
   projects: Project[];
+  changeOrders: ProjectChangeOrder[];
   payments: Payment[];
   settlementIssues: ProjectSettlementIssue[];
   expenses: Expense[];

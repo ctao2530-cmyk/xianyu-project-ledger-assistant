@@ -25,6 +25,7 @@ import {
   MagnifyingGlass,
   NotePencil,
   Paperclip,
+  PencilSimple,
   Plus,
   Robot,
   Sparkle,
@@ -49,7 +50,7 @@ import {
 } from "../data/businessMetrics";
 import { localPlatformService, type BusinessQuote, type BusinessRequirementAnalysis, type BusinessReview } from "../data/localPlatformService";
 import { projectKindOf } from "../data/projectKinds";
-import { latestSettlementIssue, settlementIssueLabels } from "../data/settlementIssues";
+import { hasTerminalSettlementIssue, latestSettlementIssue, settlementIssueLabels } from "../data/settlementIssues";
 import type {
   CustomerFollowUpStatus,
   LedgerSnapshot,
@@ -62,7 +63,9 @@ import type {
   TaskStatus,
 } from "../types";
 import { ImmersiveTaskFlow } from "./ImmersiveTaskFlow";
+import { ProjectTaskEditor } from "./ProjectTaskEditor";
 import "./business-assistant.css";
+import "./customer-classification.css";
 
 const money = new Intl.NumberFormat("zh-CN", {
   style: "currency",
@@ -70,8 +73,12 @@ const money = new Intl.NumberFormat("zh-CN", {
   maximumFractionDigits: 0,
 });
 
-const shortDate = (value: string) =>
-  new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date(value));
+const shortDate = (value: string) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "待联系"
+    : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date);
+};
 
 const paymentLabel: Record<PaymentType, string> = {
   deposit: "定金",
@@ -192,6 +199,7 @@ export function ProjectDetail({
   onBack,
   onTabChange,
   onCreatePaymentPlan,
+  onCreateChangeOrder,
   onConfirmPayment,
   onRecordSettlementIssue,
   onSnapshotChange,
@@ -202,6 +210,7 @@ export function ProjectDetail({
   onBack: () => void;
   onTabChange: (tab: ProjectDetailTab) => void;
   onCreatePaymentPlan: (projectId: string) => void;
+  onCreateChangeOrder: (projectId: string) => void;
   onConfirmPayment: (projectId: string, paymentId?: string) => void;
   onRecordSettlementIssue: (projectId: string) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
@@ -210,13 +219,38 @@ export function ProjectDetail({
   const customer = snapshot.customers.find((item) => item.id === project.customerId);
   const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!;
   const projectIssues = financial.settlementIssues.slice().sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
+  const projectTerminated = hasTerminalSettlementIssue(projectIssues);
   const latestIssue = latestSettlementIssue(projectIssues);
   const projectPayments = snapshot.payments.filter((item) => item.projectId === project.id);
+  const projectChangeOrders = snapshot.changeOrders
+    .filter((item) => item.projectId === project.id && item.status === "confirmed")
+    .sort((left, right) => left.confirmedAt.localeCompare(right.confirmedAt));
+  const changeOrderTotal = projectChangeOrders.reduce((sum, item) => sum + item.amount, 0);
+  const baseContractAmount = Math.max(0, project.totalAmount - changeOrderTotal);
+  const paymentGroups = [
+    {
+      id: "base-contract",
+      title: "原合同",
+      detail: `原合同金额 ${money.format(baseContractAmount)}`,
+      amount: baseContractAmount,
+      payments: projectPayments.filter((item) => !item.changeOrderId),
+    },
+    ...projectChangeOrders.map((order, index) => ({
+      id: order.id,
+      title: `追加订单 #${index + 1} · ${order.title}`,
+      detail: `${shortDate(order.confirmedAt)} 客户确认`,
+      amount: order.amount,
+      payments: projectPayments.filter((item) => item.changeOrderId === order.id),
+    })),
+  ].filter((group) => group.payments.length > 0);
   const pendingPayments = projectPayments.filter((item) => item.status === "pending");
   const tasks = snapshot.tasks.filter((item) => item.projectId === project.id);
   const logs = snapshot.logs.filter((item) => item.projectId === project.id);
   const files = snapshot.attachments.filter((item) => item.projectId === project.id);
   const [logText, setLogText] = useState("");
+  const [taskEditor, setTaskEditor] = useState<
+    { mode: "create" } | { mode: "edit"; task: ProjectTask } | null
+  >(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const duration = daysBetween(project.startDate, project.dueDate);
   const projectKind = projectKindOf(project);
@@ -226,21 +260,51 @@ export function ProjectDetail({
   const overdueTasks = tasks.filter((item) => item.status !== "done" && daysUntil(item.dueDate) < 0).length;
   const healthScore = Math.max(28, Math.min(98, 92 - overdueTasks * 14 - (project.status === "overdue" ? 18 : 0) - projectIssues.length * 18));
   const totalTimeline = Math.max(1, new Date(`${project.dueDate}T00:00:00`).getTime() - new Date(`${project.startDate}T00:00:00`).getTime());
+  const persistTasks = (nextTasks: ProjectTask[]) => {
+    const projectTasks = nextTasks.filter((item) => item.projectId === project.id);
+    const progress = projectTasks.length
+      ? Math.round(projectTasks.filter((item) => item.status === "done").length / projectTasks.length * 100)
+      : 0;
+    const dueAt = new Date(`${project.dueDate}T23:59:59`).getTime();
+    const nextStatus: Project["status"] = progress === 100
+      ? project.status === "completed" ? "completed" : "delivered"
+      : dueAt < Date.now()
+        ? "overdue"
+        : progress > 0
+          ? "in_progress"
+          : "pending";
+    onSnapshotChange({
+      ...snapshot,
+      tasks: nextTasks,
+      projects: snapshot.projects.map((item) => item.id === project.id
+        ? { ...item, progress, status: nextStatus }
+        : item),
+    });
+  };
   const updateTask = (taskId: string) => {
-    const nextTasks = snapshot.tasks.map((item) => {
+    const nextTasks: ProjectTask[] = snapshot.tasks.map((item) => {
       if (item.id !== taskId) return item;
       const status: TaskStatus = item.status === "todo" ? "in_progress" : item.status === "in_progress" ? "done" : "todo";
       return { ...item, status, actualHours: status === "done" && item.actualHours === 0 ? item.estimatedHours : item.actualHours };
     });
-    const projectTasks = nextTasks.filter((item) => item.projectId === project.id);
-    const progress = projectTasks.length ? Math.round(projectTasks.filter((item) => item.status === "done").length / projectTasks.length * 100) : project.progress;
-    const next = { ...snapshot, tasks: nextTasks, projects: snapshot.projects.map((item) => item.id === project.id ? { ...item, progress, status: progress === 100 ? "delivered" as const : progress > 0 ? "in_progress" as const : item.status } : item) };
-    onSnapshotChange(next);
+    persistTasks(nextTasks);
   };
-  const addTask = () => {
-    const index = tasks.length + 1;
-    const task: ProjectTask = { id: `task-${Date.now()}`, projectId: project.id, title: `交付检查任务 ${index}`, status: "todo", startDate: new Date().toISOString().slice(0, 10), dueDate: project.dueDate, estimatedHours: 4, actualHours: 0 };
-    onSnapshotChange({ ...snapshot, tasks: [...snapshot.tasks, task] });
+  const addTask = () => setTaskEditor({ mode: "create" });
+  const editTask = (taskId: string) => {
+    const task = tasks.find((item) => item.id === taskId);
+    if (task) setTaskEditor({ mode: "edit", task });
+  };
+  const saveTask = (task: ProjectTask) => {
+    const exists = snapshot.tasks.some((item) => item.id === task.id);
+    const nextTasks = exists
+      ? snapshot.tasks.map((item) => item.id === task.id ? task : item)
+      : [...snapshot.tasks, task];
+    persistTasks(nextTasks);
+    setTaskEditor(null);
+  };
+  const deleteTask = (taskId: string) => {
+    persistTasks(snapshot.tasks.filter((item) => item.id !== taskId));
+    setTaskEditor(null);
   };
   const addLog = (event: FormEvent) => {
     event.preventDefault();
@@ -278,6 +342,8 @@ export function ProjectDetail({
     if (isPersonal && (tab === "communication" || tab === "quote")) onTabChange("immersive");
   }, [isPersonal, onTabChange, tab]);
 
+  useEffect(() => setTaskEditor(null), [projectId]);
+
   return <div className="business-page project-detail-page">
     <section className="project-workspace-shell project-detail-workspace">
       <header className="project-detail-workspace-head">
@@ -295,7 +361,7 @@ export function ProjectDetail({
           <WorkspaceMetric icon={Clock} label="实际工时" value={`${financial.actualHours}h`} detail="来自任务记录" tone="green" />
           <WorkspaceMetric icon={WarningCircle} label="风险任务" value={`${overdueTasks}`} detail={overdueTasks ? "需要优先收敛" : "当前节奏可控"} tone="orange" />
         </> : <>
-          <WorkspaceMetric icon={Wallet} label="合同金额" value={money.format(project.totalAmount)} detail="项目总报价" tone="purple" />
+          <WorkspaceMetric icon={Wallet} label="合同金额" value={money.format(project.totalAmount)} detail={projectChangeOrders.length ? `原合同 ${money.format(baseContractAmount)} + ${projectChangeOrders.length} 次追加 ${money.format(changeOrderTotal)}` : "项目原合同金额"} tone="purple" action={<div className="workspace-financial-actions">{projectTerminated ? <span className="is-terminated"><WarningCircle size={14} weight="fill" />已终止，请新建项目</span> : <button type="button" onClick={() => onCreateChangeOrder(project.id)}><Plus size={14} />新增追加订单</button>}</div>} />
           <WorkspaceMetric icon={Coins} label="净到账 / 可收" value={`${money.format(financial.income)} / ${money.format(financial.outstanding)}`} detail={financial.issueCount ? `已退款 ${money.format(financial.refundedAmount)} · 已核销 ${money.format(financial.uncollectible)}` : `净回款率 ${financial.paymentProgress.toFixed(0)}%`} tone="blue" action={<div className="workspace-financial-actions">{financial.outstanding > 0 ? <button type="button" onClick={() => onConfirmPayment(project.id)}><Wallet size={14} weight="duotone" />确认到账</button> : <span><CheckCircle size={14} weight="fill" />可收余额已结清</span>}<button type="button" className="is-exception" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={14} weight="duotone" />记录异常</button></div>} />
           <WorkspaceMetric icon={TrendUp} label="实际利润" value={money.format(financial.profit)} detail={`已扣除成本 ${money.format(financial.expenses)}`} tone="green" />
           <WorkspaceMetric icon={Timer} label="平均小时收益" value={money.format(financial.hourlyIncome)} detail="按已投入工时计算" tone="orange" />
@@ -311,17 +377,23 @@ export function ProjectDetail({
       <Surface><SurfaceTitle eyebrow="MILESTONES" title="里程碑概览" /><div className="personal-milestone-list"><span><i><FolderSimple size={19} weight="duotone" /></i><b>{tasks.length} 项任务</b><small>{tasks.filter((item) => item.status === "in_progress").length} 项正在推进</small></span><span><i><CalendarBlank size={19} weight="duotone" /></i><b>{shortDate(project.dueDate)} 里程碑</b><small>还有 {remainingDays} 天</small></span><span><i><Clock size={19} weight="duotone" /></i><b>{financial.actualHours}h 已投入</b><small>计划 {project.estimatedHours || 0}h</small></span></div></Surface>
       <Surface className="project-next-action"><SurfaceTitle eyebrow="NEXT ACTION" title="本地规则建议" /><div><Sparkle size={25} weight="fill" /><span><b>{overdueTasks ? `先处理 ${overdueTasks} 项逾期任务` : "保持当前交付节奏"}</b><p>{overdueTasks ? "建议收敛功能边界，把最小可验收成果作为下一个里程碑。" : "当前任务、工时和日期未出现明显风险，完成后记录可复用的开发结论。"}</p></span></div><button onClick={() => onTabChange("tasks")}>查看任务安排 <ArrowRight size={15} /></button></Surface>
     </section> : <section className="project-detail-grid">
-      <Surface><SurfaceTitle eyebrow="PAYMENT PLAN" title="付款计划与回款进度" action={<div className="payment-plan-title-actions">{financial.outstanding > 0 && <button className="payment-plan-title-action" type="button" onClick={() => onConfirmPayment(project.id)}><Wallet size={14} />确认到账</button>}<button className="payment-plan-title-action is-exception" type="button" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={14} />记录异常</button></div>} />{projectPayments.length ? <div className="payment-node-list">{projectPayments.map((payment, index) => <article className={payment.status === "confirmed" ? "done" : payment.status === "written_off" ? "written-off" : payment.status === "refunded" ? "refunded" : ""} key={payment.id}><i>{payment.status === "confirmed" ? <CheckCircle size={19} weight="fill" /> : payment.status === "written_off" || payment.status === "refunded" ? <WarningCircle size={19} weight="fill" /> : index + 1}</i><span><b>{paymentLabel[payment.type]}</b><small>{payment.notes || (payment.status === "confirmed" ? "已确认到账" : payment.status === "written_off" ? "已因项目异常核销" : payment.status === "refunded" ? "已退款" : "等待收款")}</small></span><strong>{money.format(payment.amount)}</strong><time>{payment.status === "confirmed" ? `已到账 ${shortDate(payment.paidAt)}` : payment.status === "written_off" ? "已核销，不再催收" : payment.status === "refunded" ? "已退款" : `${shortDate(payment.dueAt)} 应收`}</time>{payment.status === "pending" && <button className="payment-node-confirm" type="button" onClick={() => onConfirmPayment(project.id, payment.id)}>到账</button>}</article>)}</div> : <div className="payment-plan-empty"><i><Wallet size={29} weight="duotone" /></i><span><b>合同余额尚未拆分为付款节点</b><small>{financial.outstanding > 0 ? `当前仍有 ${money.format(financial.outstanding)} 可收，可确认到账、记录异常或先建立收款计划。` : projectIssues.length ? "可收余额已完成结算，异常原因和金额保留在下方历史记录中。" : "当前项目已经结清，无需建立新的收款节点。"}</small></span><div>{financial.outstanding > 0 && <button className="business-primary" type="button" onClick={() => onConfirmPayment(project.id)}><CheckCircle size={15} />确认已到账</button>}{financial.outstanding > 0 && <button type="button" onClick={() => onCreatePaymentPlan(project.id)}><Plus size={15} />建立收款计划</button>}<button type="button" className="is-exception" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={15} />记录异常</button></div></div>}</Surface>
+      <Surface>
+        <SurfaceTitle eyebrow="PAYMENT PLAN" title="付款计划与回款进度" action={<div className="payment-plan-title-actions"><button className="payment-plan-title-action is-change-order" type="button" disabled={projectTerminated} title={projectTerminated ? "已取消或终止合作的项目需要新建项目" : undefined} onClick={() => onCreateChangeOrder(project.id)}><Plus size={14} />{projectTerminated ? "已终止，请新建项目" : "新增追加订单"}</button>{financial.outstanding > 0 && <button className="payment-plan-title-action" type="button" onClick={() => onConfirmPayment(project.id)}><Wallet size={14} />确认到账</button>}<button className="payment-plan-title-action is-exception" type="button" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={14} />记录异常</button></div>} />
+        {projectPayments.length ? <div className="payment-contract-groups">{paymentGroups.map((group) => <section className={`payment-contract-group ${group.id === "base-contract" ? "is-base" : "is-change-order"}`} key={group.id}>
+          <header><span><small>{group.id === "base-contract" ? "BASE CONTRACT" : "CHANGE ORDER"}</small><b>{group.title}</b><em>{group.detail}</em></span><strong>{money.format(group.amount)}</strong></header>
+          <div className="payment-node-list">{group.payments.map((payment, index) => <article className={payment.status === "confirmed" ? "done" : payment.status === "written_off" ? "written-off" : payment.status === "refunded" ? "refunded" : ""} key={payment.id}><i>{payment.status === "confirmed" ? <CheckCircle size={19} weight="fill" /> : payment.status === "written_off" || payment.status === "refunded" ? <WarningCircle size={19} weight="fill" /> : index + 1}</i><span><b>{payment.changeOrderId ? `追加款 · ${paymentLabel[payment.type]}` : paymentLabel[payment.type]}</b><small>{payment.notes || (payment.status === "confirmed" ? "已确认到账" : payment.status === "written_off" ? "已因项目异常核销" : payment.status === "refunded" ? "已退款" : "等待收款")}</small></span><strong>{money.format(payment.amount)}</strong><time>{payment.status === "confirmed" ? `已到账 ${shortDate(payment.paidAt)}` : payment.status === "written_off" ? "已核销，不再催收" : payment.status === "refunded" ? "已退款" : `${shortDate(payment.dueAt)} 应收`}</time>{payment.status === "pending" && <button className="payment-node-confirm" type="button" onClick={() => onConfirmPayment(project.id, payment.id)}>到账</button>}</article>)}</div>
+        </section>)}</div> : <div className="payment-plan-empty"><i><Wallet size={29} weight="duotone" /></i><span><b>{projectTerminated ? "原合作已经终止" : financial.outstanding > 0 ? "合同余额尚未拆分为付款节点" : "当前合同已结清"}</b><small>{projectTerminated ? "如客户重新提出付费需求，请新建项目，避免把新合作混入已完成核销的原合同。" : financial.outstanding > 0 ? `当前仍有 ${money.format(financial.outstanding)} 可收，可确认到账、记录异常或先建立收款计划。` : "客户再次付费追加修改时，请新增追加订单；原合同和收款历史会完整保留。"}</small></span><div>{!projectTerminated && <button className="business-primary" type="button" onClick={() => onCreateChangeOrder(project.id)}><Plus size={15} />新增追加订单</button>}{financial.outstanding > 0 && <button type="button" onClick={() => onConfirmPayment(project.id)}><CheckCircle size={15} />确认已到账</button>}{financial.outstanding > 0 && <button type="button" onClick={() => onCreatePaymentPlan(project.id)}><Plus size={15} />建立收款计划</button>}<button type="button" className="is-exception" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={15} />记录异常</button></div></div>}
+      </Surface>
       <Surface><SurfaceTitle eyebrow="PROJECT PULSE" title="项目执行脉搏" /><div className="project-pulse"><div><span>开发进度</span><b>{project.progress}%</b><BarProgress value={project.progress} tone="purple" /></div><div><span>任务完成</span><b>{taskCompletion}%</b><BarProgress value={taskCompletion} tone="green" /></div><div><span>工时消耗</span><b>{project.estimatedHours ? Math.round(financial.actualHours / project.estimatedHours * 100) : 0}%</b><BarProgress value={project.estimatedHours ? financial.actualHours / project.estimatedHours * 100 : 0} tone="orange" /></div></div><div className="project-customer-brief"><UserCircle size={38} weight="duotone" /><span><small>关联客户</small><b>{customer?.name}</b><em>{customer?.phone}</em></span><span><small>客户等级</small><b>{customer?.level} 级客户</b><em>{followLabel[customer?.followUpStatus || "new"]}</em></span></div></Surface>
       <Surface className="project-next-action"><SurfaceTitle eyebrow="NEXT ACTION" title="本地经营建议" /><div><Sparkle size={25} weight="fill" /><span><b>{latestIssue ? "先确认异常处理边界" : "优先检查临近交付任务"}</b><p>{latestIssue ? `已记录“${settlementIssueLabels[latestIssue.type]}”。建议保留沟通证据，明确退款、核销和仍可收金额后再继续催收。` : `当前工时已使用 ${project.estimatedHours ? Math.round(financial.actualHours / project.estimatedHours * 100) : 0}%，建议冻结新增需求，并在验收前主动发送阶段款提醒。`}</p></span></div><button onClick={() => latestIssue ? onRecordSettlementIssue(project.id) : onTabChange("tasks")}>{latestIssue ? "更新异常记录" : "查看任务安排"} <ArrowRight size={15} /></button></Surface>
       <Surface className="project-settlement-history"><SurfaceTitle eyebrow="EXCEPTION HISTORY" title={`项目异常记录 · ${projectIssues.length}`} action={<button type="button" onClick={() => onRecordSettlementIssue(project.id)}><Plus size={14} />记录异常</button>} />{projectIssues.length ? <div>{projectIssues.map((issue) => <article key={issue.id}><i><WarningCircle size={18} weight="duotone" /></i><span><small>{shortDate(issue.occurredAt)} · {settlementIssueLabels[issue.type]}</small><b>{issue.reason}</b>{issue.notes && <em>{issue.notes}</em>}</span><dl><div><dt>无法收回</dt><dd>{money.format(issue.receivableImpact)}</dd></div><div><dt>实际退款</dt><dd>{money.format(issue.refundAmount)}</dd></div></dl></article>)}</div> : <div className="project-settlement-empty"><CheckCircle size={23} weight="duotone" /><span><b>暂无客户或回款异常</b><small>客户不满意、退款、取消合作或拒付时，可从这里留下原因和金额影响。</small></span></div>}</Surface>
     </section>)}
 
-    {tab === "tasks" && <Surface className="project-module"><SurfaceTitle eyebrow="TASKS" title={`项目任务列表 · ${tasks.filter((item) => item.status === "done").length}/${tasks.length} 已完成`} action={<button className="business-primary" onClick={addTask}><Plus size={16} />新增任务</button>} /><div className="project-task-table"><div className="project-task-head"><span>任务</span><span>状态</span><span>计划日期</span><span>预计 / 实际</span><span>操作</span></div>{tasks.map((task) => <article key={task.id}><span><button className={`task-check task-${task.status}`} onClick={() => updateTask(task.id)} aria-label={`切换${task.title}状态`}>{task.status === "done" && <CheckCircle size={18} weight="fill" />}</button><b>{task.title}</b></span><em className={`task-status task-${task.status}`}>{taskLabel[task.status]}</em><time>{shortDate(task.startDate)} — {shortDate(task.dueDate)}</time><small>{task.estimatedHours}h / {task.actualHours}h</small><button onClick={() => updateTask(task.id)}>推进状态 <CaretRight size={13} /></button></article>)}</div></Surface>}
+    {tab === "tasks" && <Surface className="project-module"><SurfaceTitle eyebrow="TASKS" title={`项目任务列表 · ${tasks.filter((item) => item.status === "done").length}/${tasks.length} 已完成`} action={<button className="business-primary" onClick={addTask}><Plus size={16} />新增任务</button>} /><div className="project-task-table"><div className="project-task-head"><span>任务</span><span>状态</span><span>计划日期</span><span>预计 / 实际</span><span>操作</span></div>{tasks.map((task) => <article key={task.id}><span><button className={`task-check task-${task.status}`} onClick={() => updateTask(task.id)} aria-label={`切换${task.title}状态`}>{task.status === "done" && <CheckCircle size={18} weight="fill" />}</button><b>{task.title}</b></span><em className={`task-status task-${task.status}`}>{taskLabel[task.status]}</em><time>{shortDate(task.startDate)} — {shortDate(task.dueDate)}</time><small>{task.estimatedHours}h / {task.actualHours}h</small><span className="task-row-actions"><button type="button" onClick={() => editTask(task.id)} aria-label={`编辑任务 ${task.title}`}><PencilSimple size={13} />编辑</button><button type="button" onClick={() => updateTask(task.id)}>推进 <CaretRight size={13} /></button></span></article>)}</div></Surface>}
 
     {tab === "gantt" && <Surface className="project-module"><SurfaceTitle eyebrow="TIMELINE" title="项目甘特图" action={<span className="auto-duration"><Clock size={15} />工期自动计算：{duration} 天</span>} /><div className="gantt-calendar"><div className="gantt-scale"><span>任务</span>{Array.from({ length: duration }, (_, index) => <time key={index}>{index + 1}日</time>)}</div>{tasks.map((task, index) => { const left = Math.max(0, (new Date(`${task.startDate}T00:00:00`).getTime() - new Date(`${project.startDate}T00:00:00`).getTime()) / totalTimeline * 100); const width = Math.max(8, (new Date(`${task.dueDate}T00:00:00`).getTime() - new Date(`${task.startDate}T00:00:00`).getTime() + 86_400_000) / (totalTimeline + 86_400_000) * 100); return <article key={task.id}><b>{task.title}</b><div><i className={`gantt-tone-${index % 4}`} style={{ left: `${left}%`, width: `${Math.min(100 - left, width)}%` }}><span>{task.status === "done" ? "已完成" : task.status === "in_progress" ? `${Math.max(20, Math.round(task.actualHours / Math.max(task.estimatedHours, 1) * 100))}%` : "待开始"}</span></i></div></article>; })}</div></Surface>}
 
-    {tab === "immersive" && <ImmersiveTaskFlow project={project} tasks={tasks} onCreateTask={addTask} onAdvanceTask={updateTask} />}
+    {tab === "immersive" && <ImmersiveTaskFlow project={project} tasks={tasks} onCreateTask={addTask} onEditTask={editTask} onAdvanceTask={updateTask} />}
 
     {tab === "communication" && <section className="project-detail-grid"><Surface className="project-module"><SurfaceTitle eyebrow="CUSTOMER CONVERSATION" title="客户沟通记录" /><div className="project-link-panel"><i><ChatCircleDots size={34} weight="duotone" /></i><span><small>来源会话</small><b>{project.conversationId ? `会话 #${project.conversationId}` : "当前项目未关联客户会话"}</b><p>{project.conversationId ? "项目由客户消息工作台人工确认转化，可返回原会话继续跟进需求与交付。" : "从客户消息完成“人工确认并转项目”后，这里会保留原会话关联。"}</p></span></div>{project.conversationId && <button className="business-primary" onClick={() => { window.location.hash = encodeURIComponent("客户消息"); }}>返回客户消息</button>}</Surface><Surface><SurfaceTitle eyebrow="CUSTOMER" title="关联客户" /><div className="project-customer-brief"><UserCircle size={38} weight="duotone" /><span><small>客户名称</small><b>{customer?.name || "未关联"}</b><em>{customer?.source === "wechat" ? "微信客户" : customer?.source === "xianyu" ? "闲鱼客户" : "经营客户"}</em></span><span><small>最近联系</small><b>{customer?.lastContactAt ? shortDate(customer.lastContactAt) : "暂无"}</b><em>{customer ? followLabel[customer.followUpStatus] : "待补充"}</em></span></div></Surface></section>}
 
@@ -332,6 +404,7 @@ export function ProjectDetail({
     {tab === "files" && <Surface className="project-module"><input ref={fileInput} hidden type="file" multiple onChange={storeFiles} /><SurfaceTitle eyebrow="FILES" title={`项目附件 · ${files.length}`} action={<button className="business-primary" onClick={addFile}><UploadSimple size={16} />上传附件</button>} /><div className="attachment-grid">{files.map((file) => { const Icon = file.type === "archive" ? FileArchive : file.type === "design" ? FolderOpen : FileText; return <article key={file.id}><i><Icon size={27} weight="duotone" /></i><span><b>{file.name}</b><small>{file.size} · {shortDate(file.uploadedAt)} 上传</small></span>{file.dataUrl ? <a href={file.dataUrl} target="_blank" rel="noreferrer">查看</a> : <button disabled title="旧附件只保存了文件信息">仅信息</button>}</article>; })}<button className="attachment-drop" onClick={addFile}><UploadSimple size={28} /><b>上传项目文件</b><small>1.5 MB 内文件可在当前设备打开</small></button></div></Surface>}
       </div>
     </section>
+    {taskEditor && <ProjectTaskEditor project={project} task={taskEditor.mode === "edit" ? taskEditor.task : null} onClose={() => setTaskEditor(null)} onDelete={deleteTask} onSave={saveTask} />}
   </div>;
 }
 
@@ -346,7 +419,7 @@ function LegacyEnhancedProjectManagementPage({ snapshot, onCreateProject, onSnap
     return `${project.name} ${customer?.name || ""}`.toLowerCase().includes(query) && (status === "all" || project.status === status);
   }).sort((a, b) => sort === "amount" ? b.project.totalAmount - a.project.totalAmount : a.project.dueDate.localeCompare(b.project.dueDate));
   const selectedProject = projectRoute && snapshot.projects.some((item) => item.id === projectRoute.projectId) ? projectRoute.projectId : null;
-  if (selectedProject) return <ProjectDetail snapshot={snapshot} projectId={selectedProject} tab={projectRoute!.tab} onBack={() => onProjectRouteChange(null, "back")} onTabChange={(tab) => onProjectRouteChange({ projectId: selectedProject, tab }, "replace")} onCreatePaymentPlan={() => {}} onConfirmPayment={() => {}} onRecordSettlementIssue={() => {}} onSnapshotChange={onSnapshotChange} />;
+  if (selectedProject) return <ProjectDetail snapshot={snapshot} projectId={selectedProject} tab={projectRoute!.tab} onBack={() => onProjectRouteChange(null, "back")} onTabChange={(tab) => onProjectRouteChange({ projectId: selectedProject, tab }, "replace")} onCreatePaymentPlan={() => {}} onCreateChangeOrder={() => {}} onConfirmPayment={() => {}} onRecordSettlementIssue={() => {}} onSnapshotChange={onSnapshotChange} />;
   const active = snapshot.projects.filter((item) => item.status === "in_progress");
   const averageDuration = snapshot.projects.length
     ? snapshot.projects.reduce((sum, item) => sum + daysBetween(item.startDate, item.dueDate), 0) / snapshot.projects.length
@@ -399,20 +472,128 @@ export function EnhancedIncomeRecordsPage({ snapshot, onQuickAdd, onSnapshotChan
 export function ProfitAnalysisPage({ snapshot }: { snapshot: LedgerSnapshot }) {
   const summary = getBusinessSummary(snapshot);
   const ranking = summary.projectFinancials.slice().sort((a, b) => b.profit - a.profit);
-  const maxProfit = Math.max(...ranking.map((item) => item.profit), 1);
-  const hasProfitStructure = [summary.monthlyIncome, summary.monthlyExpenses, summary.yearlyIncome, summary.yearlyExpenses].some((value) => value !== 0);
-  return <div className="business-page profit-analysis-page"><section className="business-metrics-grid">
-    <BusinessMetric label="实际利润" value={money.format(summary.actualProfit)} detail={`${money.format(summary.totalIncome)} 收入 - ${money.format(summary.totalExpenses)} 支出`} tone="green" icon={TrendUp} />
-    <BusinessMetric label="本月利润" value={money.format(summary.monthlyProfit)} detail={`${money.format(summary.monthlyIncome)} 收入 - ${money.format(summary.monthlyExpenses)} 支出`} tone="purple" icon={CalendarBlank} />
-    <BusinessMetric label="年度利润" value={money.format(summary.yearlyProfit)} detail="按本年度已确认流水计算" tone="blue" icon={ChartLineUp} />
-    <BusinessMetric label="平均小时收益" value={`${money.format(summary.averageHourlyIncome)}/h`} detail={`累计有效投入 ${summary.actualHours} 小时`} tone="orange" icon={Timer} />
-  </section><section className="profit-layout"><main><Surface><SurfaceTitle eyebrow="PROJECT PROFIT" title="项目收益排行" action={<span className="profit-formula">收入 - 支出 = 实际利润</span>} /><div className="profit-ranking-chart">{ranking.length ? ranking.map((item, index) => <article key={item.project.id}><i>{index + 1}</i><span><b>{item.project.name}</b><small>收入 {money.format(item.income)} · 成本 {money.format(item.expenses)} · {item.actualHours}h</small><BarProgress value={item.profit / maxProfit * 100} tone={index === 0 ? "green" : "purple"} /></span><strong>{money.format(item.profit)}<small>{money.format(item.hourlyIncome)}/h</small></strong></article>) : <BusinessEmptyState icon={ChartLineUp} title="暂无收益排行" description="导入项目、收入和支出后，这里会自动计算真实利润。" />}</div></Surface><Surface><SurfaceTitle eyebrow="PROFIT STRUCTURE" title="月度与年度利润结构" />{hasProfitStructure ? <div className="profit-compare"><article><span>本月</span><b>{money.format(summary.monthlyIncome)}</b><i style={{ height: `${summary.monthlyIncome ? Math.max(28, summary.monthlyIncome / Math.max(summary.monthlyIncome, summary.yearlyIncome) * 150) : 0}px` }} /><small>收入</small></article><article className="expense"><span>本月</span><b>{money.format(summary.monthlyExpenses)}</b><i style={{ height: `${summary.monthlyExpenses ? Math.max(18, summary.monthlyExpenses / Math.max(summary.monthlyIncome, 1) * 150) : 0}px` }} /><small>支出</small></article><article><span>本年</span><b>{money.format(summary.yearlyIncome)}</b><i style={{ height: summary.yearlyIncome ? "150px" : "0px" }} /><small>收入</small></article><article className="expense"><span>本年</span><b>{money.format(summary.yearlyExpenses)}</b><i style={{ height: `${summary.yearlyExpenses ? Math.max(18, summary.yearlyExpenses / Math.max(summary.yearlyIncome, 1) * 150) : 0}px` }} /><small>支出</small></article></div> : <div className="profit-zero-state"><i><ChartLineUp size={28} weight="duotone" /></i><span><b>暂无利润结构数据</b><small>录入收入与支出后，将自动展示月度和年度对比。</small></span></div>}</Surface></main><aside><Surface className="profit-insight"><Sparkle size={28} weight="fill" /><SurfaceTitle eyebrow="SMART INSIGHT" title="经营洞察" /><h3>{ranking.length ? "高价值项目正在形成" : "等待真实经营数据"}</h3><p>{ranking.length ? `「${ranking[0].project.name}」当前贡献最高利润，小时收益为 ${money.format(ranking[0].hourlyIncome)}。建议把同类项目报价提高 12%–18%。` : "录入自己的项目、收入、支出与工时后，这里会生成针对你的利润洞察。"}</p><div><span>利润率</span><b>{summary.totalIncome ? Math.round(summary.actualProfit / summary.totalIncome * 100) : 0}%</b><BarProgress value={summary.totalIncome ? summary.actualProfit / summary.totalIncome * 100 : 0} tone="green" /></div></Surface><Surface><SurfaceTitle eyebrow="COST ALERT" title="成本结构" /><div className="cost-breakdown">{["outsourcing", "software", "server", "other"].map((category) => { const amount = snapshot.expenses.filter((item) => item.category === category).reduce((sum, item) => sum + item.amount, 0); return <p key={category}><span>{category === "outsourcing" ? "外包成本" : category === "software" ? "软件订阅" : category === "server" ? "服务器" : "其他成本"}</span><b>{money.format(amount)}</b></p>; })}</div></Surface></aside></section></div>;
+  const rankingPageSize = 5;
+  const [rankingPage, setRankingPage] = useState(0);
+  const rankingPageCount = Math.max(1, Math.ceil(ranking.length / rankingPageSize));
+  const safeRankingPage = Math.min(rankingPage, rankingPageCount - 1);
+  const visibleRanking = ranking.slice(
+    safeRankingPage * rankingPageSize,
+    (safeRankingPage + 1) * rankingPageSize,
+  );
+  const maxProfit = Math.max(...ranking.map((item) => Math.max(0, item.profit)), 1);
+  const profitMargin = summary.totalIncome
+    ? Math.round((summary.actualProfit / summary.totalIncome) * 100)
+    : 0;
+  const topProject = ranking[0];
+  const hasProfitStructure = [
+    summary.monthlyIncome,
+    summary.monthlyExpenses,
+    summary.yearlyIncome,
+    summary.yearlyExpenses,
+  ].some((value) => value !== 0);
+  const structureItems = [
+    { id: "month-income", period: "本月", label: "收入", value: summary.monthlyIncome, tone: "income" },
+    { id: "month-expense", period: "本月", label: "支出", value: summary.monthlyExpenses, tone: "expense" },
+    { id: "year-income", period: "本年", label: "收入", value: summary.yearlyIncome, tone: "income" },
+    { id: "year-expense", period: "本年", label: "支出", value: summary.yearlyExpenses, tone: "expense" },
+  ];
+  const structureMax = Math.max(...structureItems.map((item) => item.value), 1);
+  const costItems = [
+    { category: "outsourcing", label: "外包", icon: UsersThree, tone: "purple" },
+    { category: "software", label: "软件订阅", icon: Stack, tone: "blue" },
+    { category: "server", label: "服务器", icon: Gauge, tone: "green" },
+    { category: "other", label: "其他", icon: Coins, tone: "orange" },
+  ].map((item) => ({
+    ...item,
+    amount: snapshot.expenses
+      .filter((expense) => expense.category === item.category)
+      .reduce((sum, expense) => sum + expense.amount, 0),
+  }));
+
+  return <div className="business-page profit-analysis-page">
+    <section className="business-metrics-grid" aria-label="利润核心指标">
+      <BusinessMetric label="实际利润" value={money.format(summary.actualProfit)} detail={`${money.format(summary.totalIncome)} 收入 - ${money.format(summary.totalExpenses)} 支出`} tone="green" icon={TrendUp} />
+      <BusinessMetric label="本月利润" value={money.format(summary.monthlyProfit)} detail={`${money.format(summary.monthlyIncome)} 收入 - ${money.format(summary.monthlyExpenses)} 支出`} tone="purple" icon={CalendarBlank} />
+      <BusinessMetric label="年度利润" value={money.format(summary.yearlyProfit)} detail="按本年度已确认流水计算" tone="blue" icon={ChartLineUp} />
+      <BusinessMetric label="平均小时收益" value={`${money.format(summary.averageHourlyIncome)}/h`} detail={`累计有效投入 ${summary.actualHours} 小时`} tone="orange" icon={Timer} />
+    </section>
+
+    <Surface className="profit-command-strip">
+      <div className="profit-insight-summary">
+        <header><span>经营洞察</span><Sparkle size={22} weight="fill" aria-hidden="true" /></header>
+        <h2>{topProject?.profit > 0 ? "高价值项目正在形成" : "等待真实经营数据"}</h2>
+        <p>{topProject?.profit > 0
+          ? `「${topProject.project.name}」当前贡献最高利润，小时收益为 ${money.format(topProject.hourlyIncome)}。建议把同类项目报价提高 12%–18%。`
+          : "录入自己的项目、收入、支出与工时后，这里会生成针对你的利润洞察。"}</p>
+      </div>
+      <div className="profit-margin-summary" aria-label={`当前利润率 ${profitMargin}%`}>
+        <small>利润率</small>
+        <strong className={profitMargin < 0 ? "is-negative" : ""}>{profitMargin}%</strong>
+      </div>
+      <div className="profit-cost-summary">
+        <header><span>成本结构</span><small>按真实支出分类</small></header>
+        <div>{costItems.map((item) => { const Icon = item.icon; return <span key={item.category} className={`cost-summary-${item.tone}`}><i><Icon size={18} weight="duotone" aria-hidden="true" /></i><small>{item.label}</small><b>{money.format(item.amount)}</b></span>; })}</div>
+      </div>
+    </Surface>
+
+    <section className="profit-compact-grid">
+      <Surface className="profit-ranking-panel">
+        <SurfaceTitle eyebrow="PROJECT PROFIT" title="项目收益排行" action={<div className="profit-ranking-head-actions"><span className="profit-formula">收入 - 支出 = 实际利润</span><small>每页最多 5 项</small></div>} />
+        {ranking.length ? <div className="profit-ranking-table" role="table" aria-label="项目收益排行">
+          <div className="profit-ranking-table-head" role="row">
+            <span role="columnheader">排名</span><span role="columnheader">项目</span><span role="columnheader">收入</span><span role="columnheader">支出</span><span role="columnheader">耗时</span><span role="columnheader">利润</span><span role="columnheader">每小时收益</span>
+          </div>
+          {visibleRanking.map((item, index) => {
+            const rank = safeRankingPage * rankingPageSize + index;
+            const customer = snapshot.customers.find((entry) => entry.id === item.project.customerId);
+            return <article className="profit-ranking-row" role="row" key={item.project.id}>
+              <i className="profit-rank" role="cell">{rank + 1}</i>
+              <span className="profit-project-cell" role="cell"><b>{item.project.name}</b><small>{[item.project.type, customer?.name].filter(Boolean).join(" · ") || projectKindLabel[projectKindOf(item.project)]}</small><BarProgress value={item.profit > 0 ? item.profit / maxProfit * 100 : 0} tone={rank === 0 ? "green" : "purple"} /></span>
+              <span className="profit-value-cell profit-income-cell" role="cell"><small>收入</small><b>{money.format(item.income)}</b></span>
+              <span className="profit-value-cell profit-expense-cell" role="cell"><small>支出</small><b>{money.format(item.expenses)}</b></span>
+              <span className="profit-value-cell profit-hours-cell" role="cell"><small>耗时</small><b>{item.actualHours}h</b></span>
+              <span className={`profit-value-cell profit-profit-cell ${item.profit < 0 ? "is-negative" : ""}`} role="cell"><small>利润</small><b>{money.format(item.profit)}</b></span>
+              <span className={`profit-value-cell profit-hourly-cell ${item.hourlyIncome < 0 ? "is-negative" : ""}`} role="cell"><small>每小时收益</small><b>{money.format(item.hourlyIncome)}/h</b></span>
+            </article>;
+          })}
+        </div> : <div className="profit-ranking-empty"><i><ChartLineUp size={30} weight="duotone" /></i><span><b>暂无收益排行</b><small>导入项目、收入和支出后，这里会自动计算真实利润。</small></span></div>}
+        {ranking.length > 0 && <footer className="profit-ranking-pagination"><span>显示 {safeRankingPage * rankingPageSize + 1}–{Math.min((safeRankingPage + 1) * rankingPageSize, ranking.length)} / 共 {ranking.length} 个项目</span><nav aria-label="项目收益排行分页"><button type="button" aria-label="上一页" disabled={safeRankingPage === 0} onClick={() => setRankingPage((page) => Math.max(0, page - 1))}><ArrowLeft size={14} /></button><strong>{safeRankingPage + 1} / {rankingPageCount}</strong><button type="button" aria-label="下一页" disabled={safeRankingPage >= rankingPageCount - 1} onClick={() => setRankingPage((page) => Math.min(rankingPageCount - 1, page + 1))}><ArrowRight size={14} /></button></nav></footer>}
+      </Surface>
+
+      <Surface className="profit-structure-panel">
+        <SurfaceTitle eyebrow="PROFIT STRUCTURE" title="月度与年度利润结构" action={<div className="profit-structure-legend"><span><i className="income" />收入</span><span><i className="expense" />支出</span></div>} />
+        {hasProfitStructure ? <div className="profit-structure-chart" role="img" aria-label={`本月收入 ${money.format(summary.monthlyIncome)}，本月支出 ${money.format(summary.monthlyExpenses)}，本年收入 ${money.format(summary.yearlyIncome)}，本年支出 ${money.format(summary.yearlyExpenses)}`}>
+          {structureItems.map((item) => <article className={`profit-structure-${item.tone}`} key={item.id}><div><b>{money.format(item.value)}</b><i className={item.value ? undefined : "is-zero"} aria-hidden="true" style={{ height: `${item.value ? Math.max(34, item.value / structureMax * 288) : 4}px` }} /></div><span>{item.period}{item.label}</span></article>)}
+        </div> : <div className="profit-zero-state"><i><ChartLineUp size={28} weight="duotone" /></i><span><b>暂无利润结构数据</b><small>录入收入与支出后，将自动展示月度和年度对比。</small></span></div>}
+      </Surface>
+    </section>
+  </div>;
 }
 
 export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onSnapshotChange, globalSearch, onOpenRequirements }: { snapshot: LedgerSnapshot; onCreateCustomer: () => void; onSnapshotChange: (snapshot: LedgerSnapshot) => void; globalSearch: string; onOpenRequirements: (customerId: string) => void }) {
   const [selected, setSelected] = useState(snapshot.customers[0]?.id || "");
+  const [lifecycle, setLifecycle] = useState<"following" | "won" | "lost">("following");
+  const [channel, setChannel] = useState<"all" | "xianyu" | "wechat">("all");
   const [requirementCount, setRequirementCount] = useState(0);
-  const selectedId = snapshot.customers.some((item) => item.id === selected) ? selected : snapshot.customers[0]?.id || "";
+  const customerRows = useMemo(() => snapshot.customers.map((item) => {
+    const business = getCustomerBusiness(snapshot, item.id);
+    const lifecycleValue: "following" | "won" | "lost" = item.followUpStatus === "inactive"
+      ? "lost"
+      : business.orderCount > 0 || business.totalSpend > 0 || item.followUpStatus === "won"
+      ? "won"
+      : "following";
+    const channels = new Set([item.source, ...(item.channelIdentities || []).map((identity) => identity.channel)]);
+    return { item, business, lifecycle: lifecycleValue, channels };
+  }), [snapshot]);
+  const lifecycleCounts = {
+    following: customerRows.filter((row) => row.lifecycle === "following").length,
+    won: customerRows.filter((row) => row.lifecycle === "won").length,
+    lost: customerRows.filter((row) => row.lifecycle === "lost").length,
+  };
+  const visibleRows = customerRows.filter((row) => row.lifecycle === lifecycle)
+    .filter((row) => channel === "all" || row.channels.has(channel))
+    .filter((row) => `${row.item.name} ${row.item.phone} ${(row.item.tags || []).join(" ")}`.toLowerCase().includes(globalSearch.trim().toLowerCase()));
+  const selectedId = visibleRows.some((row) => row.item.id === selected) ? selected : visibleRows[0]?.item.id || "";
   const customer = snapshot.customers.find((item) => item.id === selectedId);
   useEffect(() => {
     if (!selectedId) { setRequirementCount(0); return; }
@@ -428,18 +609,24 @@ export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onS
     const flow: CustomerFollowUpStatus[] = ["new", "contacted", "proposal", "won"];
     const current = customer.followUpStatus;
     const index = flow.indexOf(current);
-    const followUpStatus = flow[Math.min(flow.length - 1, Math.max(0, index + 1))];
+    const followUpStatus = current === "inactive" ? "contacted" : flow[Math.min(flow.length - 1, Math.max(0, index + 1))];
     onSnapshotChange({ ...snapshot, customers: snapshot.customers.map((item) => item.id === customer.id ? { ...item, followUpStatus, lastContactAt: new Date().toISOString() } : item) });
   };
-  const visibleCustomers = snapshot.customers.filter((item) => `${item.name} ${item.phone} ${(item.tags || []).join(" ")}`.toLowerCase().includes(globalSearch.trim().toLowerCase()));
   const totalSpend = snapshot.customers.reduce((sum, item) => sum + getCustomerBusiness(snapshot, item.id).totalSpend, 0);
-  if (!customer) return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid"><BusinessMetric label="客户总数" value="0 位" detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} /><BusinessMetric label="累计消费" value={money.format(0)} detail="按退款后的净到账统计" tone="green" icon={Wallet} /><BusinessMetric label="A级客户" value="0 位" detail="高价值与高复购潜力" tone="orange" icon={Sparkle} /><BusinessMetric label="跟进中" value="0 位" detail="需要继续联系的客户" tone="blue" icon={BellRinging} /></section><BusinessEmptyState icon={UsersThree} title="还没有客户资料" description="客户示例数据已经清空，可以录入自己的第一位客户。" action={<button className="business-primary" onClick={onCreateCustomer}><Plus size={16} />新增客户</button>} /></div>;
+  if (!snapshot.customers.length) return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid"><BusinessMetric label="客户总数" value="0 位" detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} /><BusinessMetric label="累计消费" value={money.format(0)} detail="按退款后的净到账统计" tone="green" icon={Wallet} /><BusinessMetric label="A级客户" value="0 位" detail="高价值与高复购潜力" tone="orange" icon={Sparkle} /><BusinessMetric label="跟进中" value="0 位" detail="需要继续联系的客户" tone="blue" icon={BellRinging} /></section><BusinessEmptyState icon={UsersThree} title="还没有客户资料" description="客户示例数据已经清空，可以录入自己的第一位客户。" action={<button className="business-primary" onClick={onCreateCustomer}><Plus size={16} />新增客户</button>} /></div>;
   return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid">
     <BusinessMetric label="客户总数" value={`${snapshot.customers.length} 位`} detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} />
     <BusinessMetric label="累计消费" value={money.format(totalSpend)} detail="按退款后的净到账统计" tone="green" icon={Wallet} />
     <BusinessMetric label="A级客户" value={`${snapshot.customers.filter((item) => item.level === "A").length} 位`} detail="高价值与高复购潜力" tone="orange" icon={Sparkle} />
-    <BusinessMetric label="跟进中" value={`${snapshot.customers.filter((item) => ["new", "contacted", "proposal"].includes(item.followUpStatus)).length} 位`} detail="需要在 7 天内继续联系" tone="blue" icon={BellRinging} />
-  </section><section className="crm-layout"><main><Surface><SurfaceTitle eyebrow="CUSTOMER PIPELINE" title={globalSearch ? `客户搜索结果 · ${visibleCustomers.length}` : "客户经营列表"} action={<button className="business-primary" onClick={onCreateCustomer}><Plus size={16} />新增客户</button>} /><div className="crm-table"><div><span>客户</span><span>跟进状态</span><span>最近联系</span><span>历史订单</span><span>消费金额</span><span>客户等级</span></div>{visibleCustomers.map((item) => { const business = getCustomerBusiness(snapshot, item.id); const status = item.followUpStatus; return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelected(item.id)} key={item.id}><span><i>{item.name.slice(0, 1)}</i><b>{item.name}<small>{item.phone}</small></b></span><em className={`follow-${status}`}>{followLabel[status]}</em><time>{shortDate(item.lastContactAt)}</time><strong>{business.orderCount} 单</strong><strong>{money.format(business.totalSpend)}</strong><i className={`customer-level level-${item.level}`}>{item.level}</i></button>; })}</div></Surface></main><aside><Surface className="customer-profile"><div className="customer-profile-head"><i>{customer.name.slice(0, 1)}</i><span><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : customer.source === "referral" ? "转介绍" : "其他来源"}</small><h3>{customer.name}</h3><p>{customer.phone}</p></span><b className={`customer-level level-${customer.level}`}>{customer.level}</b></div><div className="customer-profile-stats"><span><small>历史订单</small><b>{selectedBusiness.orderCount}</b></span><span><small>累计消费</small><b>{money.format(selectedBusiness.totalSpend)}</b></span><span><small>最近联系</small><b>{shortDate(customer.lastContactAt)}</b></span></div><div className="customer-tags">{customer.tags?.map((tag) => <i key={tag}>{tag}</i>)}</div><button className="customer-blueprint-entry" onClick={() => onOpenRequirements(customer.id)}><FileText size={17} weight="duotone" /><span><b>需求蓝图</b><small>{requirementCount ? `${requirementCount} 个需求案例` : "查看或导入客户需求"}</small></span><ArrowRight size={15} /></button><button className="business-primary wide" onClick={nextStatus}><NotePencil size={16} />记录本次跟进</button></Surface><Surface><SurfaceTitle eyebrow="ORDER HISTORY" title="历史订单" /><div className="customer-order-list">{selectedBusiness.projects.map((project) => { const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!; return <article key={project.id}><i><Briefcase size={17} /></i><span><b>{project.name}</b><small>{shortDate(project.startDate)} · {project.status === "completed" ? "已完成" : "进行中"}</small></span><strong>{money.format(project.totalAmount)}<small>净到账 {money.format(financial.income)}</small></strong></article>; })}</div></Surface></aside></section></div>;
+    <BusinessMetric label="跟进中" value={`${lifecycleCounts.following} 位`} detail="尚未形成真实成交的客户" tone="blue" icon={BellRinging} />
+  </section><section className="crm-layout"><main><Surface>
+    <SurfaceTitle eyebrow="CUSTOMER PIPELINE" title={globalSearch ? `客户搜索结果 · ${visibleRows.length}` : "客户经营列表"} action={<button className="business-primary" onClick={onCreateCustomer}><Plus size={16} />新增客户</button>} />
+    <div className="crm-classification" aria-label="客户生命周期分类">
+      <div role="tablist">{([ ["following", "跟进中"], ["won", "已成交"], ["lost", "已流失"] ] as const).map(([value, label]) => <button type="button" role="tab" aria-selected={lifecycle === value} className={lifecycle === value ? "active" : ""} onClick={() => setLifecycle(value)} key={value}>{label}<b>{lifecycleCounts[value]}</b></button>)}</div>
+      <nav aria-label="客户渠道筛选">{([ ["all", "全部"], ["xianyu", "闲鱼"], ["wechat", "微信"] ] as const).map(([value, label]) => <button type="button" aria-pressed={channel === value} className={channel === value ? "active" : ""} onClick={() => setChannel(value)} key={value}>{label}</button>)}</nav>
+    </div>
+    {visibleRows.length ? <div className="crm-table"><div><span>客户</span><span>跟进状态</span><span>最近联系</span><span>历史订单</span><span>消费金额</span><span>客户等级</span></div>{visibleRows.map(({ item, business }) => { const status = item.followUpStatus; return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelected(item.id)} key={item.id}><span><i>{item.name.slice(0, 1)}</i><b>{item.name}<small>{item.phone || (item.source === "xianyu" ? "闲鱼客户" : "暂无联系方式")}</small></b></span><em className={`follow-${status}`}>{followLabel[status]}</em><time>{shortDate(item.lastContactAt)}</time><strong>{business.orderCount} 单</strong><strong>{money.format(business.totalSpend)}</strong><i className={`customer-level level-${item.level}`}>{item.level}</i></button>; })}</div> : <div className="crm-filter-empty"><MagnifyingGlass size={28} weight="duotone" /><b>当前分类没有客户</b><small>{globalSearch ? "尝试清除搜索词或切换分类、渠道。" : "切换生命周期或渠道查看其他客户。"}</small></div>}
+  </Surface></main>{customer ? <aside><Surface className="customer-profile"><div className="customer-profile-head"><i>{customer.name.slice(0, 1)}</i><span><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : customer.source === "referral" ? "转介绍" : "其他来源"}</small><h3>{customer.name}</h3><p>{customer.phone || "暂无联系方式"}</p></span><b className={`customer-level level-${customer.level}`}>{customer.level}</b></div><div className="customer-profile-stats"><span><small>历史订单</small><b>{selectedBusiness.orderCount}</b></span><span><small>累计消费</small><b>{money.format(selectedBusiness.totalSpend)}</b></span><span><small>最近联系</small><b>{shortDate(customer.lastContactAt)}</b></span></div><div className="customer-tags">{customer.tags?.map((tag) => <i key={tag}>{tag}</i>)}</div><button className="customer-blueprint-entry" onClick={() => onOpenRequirements(customer.id)}><FileText size={17} weight="duotone" /><span><b>需求蓝图</b><small>{requirementCount ? `${requirementCount} 个需求案例` : "查看或导入客户需求"}</small></span><ArrowRight size={15} /></button><button className="business-primary wide" onClick={nextStatus}><NotePencil size={16} />{customer.followUpStatus === "inactive" ? "重新开始跟进" : "记录本次跟进"}</button></Surface><Surface><SurfaceTitle eyebrow="ORDER HISTORY" title="历史订单" /><div className="customer-order-list">{selectedBusiness.projects.length ? selectedBusiness.projects.map((project) => { const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!; return <article key={project.id}><i><Briefcase size={17} /></i><span><b>{project.name}</b><small>{shortDate(project.startDate)} · {project.status === "completed" ? "已完成" : "进行中"}</small></span><strong>{money.format(project.totalAmount)}<small>净到账 {money.format(financial.income)}</small></strong></article>; }) : <div className="customer-order-empty">暂无成交项目，需求蓝图可在成交前独立存在。</div>}</div></Surface></aside> : null}</section></div>;
 }
 
 interface RequirementResult {
