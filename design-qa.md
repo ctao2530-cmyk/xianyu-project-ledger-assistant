@@ -1093,3 +1093,77 @@ final result: passed
 - 未提交、推送、合并或公开部署，没有启动第二端口或第二个真实后端。
 
 final result: passed
+
+---
+
+# Project cockpit design QA
+
+## Comparison target
+
+- Source visual truth: `/Users/chentao/.codex/generated_images/019feaab-cbe5-7c53-8ea3-e240d651b48b/exec-08c60802-ac5c-444b-b30b-acb6ac88d36d.png`
+- Source pixels: `1402 × 1122`. The source is a three-state interaction storyboard rather than one browser viewport: project-card extraction, desktop task centering, and narrow-screen task centering.
+- Combined comparison input: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/project-cockpit-final/qa-comparison-master-v2.png`
+- Focus comparisons:
+  - project extraction: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/project-cockpit-final/qa-compare-project-extraction.png`
+  - desktop centered task: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/project-cockpit-final/qa-compare-desktop-task-centered.png`
+  - narrow centered task: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/project-cockpit-final/qa-compare-mobile-task-centered.png`
+
+## Rendered implementation evidence
+
+- Project extraction: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/project-cockpit-final/02-project-card-extracted-final.png`, `3668 × 2174` PNG. The browser viewport override exposed `3668 × 2928` CSS pixels at reported DPR `0.5`; the visible page capture was kept at native PNG size and then focus-cropped for the combined comparison. The timer was extended only in a temporary verification build so the browser could save the transient frame; the final source and served build were restored to `220 ms`. A separate final-build DOM check confirmed the same extracted transform, placeholder slot, and one-click route transition.
+- Desktop centered task: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/project-cockpit-final/07-final-desktop-1250x1400-task2-raw.png`, `1280 × 1400` PNG from a `1280 × 1400` CSS viewport. The reported DPR was `0.5`, but this capture was already one PNG pixel per CSS pixel and required no resampling.
+- Narrow full render: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/project-cockpit-final/06-mobile-min-450x1840-task2-normalized.png`, normalized from the browser's duplicated `900 × 3680` raw capture to one `450 × 1840` CSS view.
+- Narrow task focus: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/project-cockpit-final/06-mobile-min-450x840-task-focus.png`, `450 × 840` focused crop.
+- The in-app Browser clamps its minimum visual viewport to `450 px`, so a literal `390 px` browser capture was unavailable. The `max-width: 560px` layout branch was active at `450 px`; its flat snap rail, controls, width containment, and centering behavior were verified. The same branch therefore covers `390 px`, and its presence is also enforced by the interaction contract test.
+
+## States and behavior checked
+
+- One project-card click enters `p-1786013284727/immersive`; the intermediate extracted state has `data-extracted="true"`, an origin-slot outline, full opacity, and the intended pull-forward transform.
+- Clicking either task face selects it, moves its center to the rail center with a measured `0 px` delta, and synchronizes the inspector title.
+- The middle previous/next controls are `46 × 46 px` and work in both directions.
+- `ArrowLeft`, `ArrowRight`, `Home`, and `End` select the expected task.
+- A large drag changes one spatial selection without opening an editor or project; a sub-threshold drag does not change selection.
+- Browser back/forward and refresh preserve the valid immersive hash; an invalid project ID returns to the project cockpit.
+- At the narrow breakpoint the task rail is `display:flex`, `overflow-x:auto`, `scroll-snap-type:x mandatory`; the selected card is flat, centered with a `0 px` delta, and the document has no horizontal overflow (`450 px` client and scroll widths).
+- Reduced-motion source paths use `0 ms` project-entry delay, `auto` rail scrolling, and reduced CSS transitions. The in-app Browser does not expose media-feature emulation, so this was verified through source and contract tests rather than a simulated screenshot.
+- Browser console after the tested flow: no page logs or errors.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the implementation keeps the product's existing system sans stack and the storyboard's compact hierarchy. Project/task names remain the strongest labels; metadata, status, and dates retain smaller optical weights without clipping in the compared states.
+- Spacing and layout rhythm: the extracted project card visibly separates from its slot without an extra scale jump; the center task is front-facing; side cards remain readable; the inspector and timeline keep the existing light workspace proportions. Narrow cards use a flat horizontal snap rail instead of collapsing to a vertical list.
+- Colors and visual tokens: white and soft lavender surfaces, restrained purple outlines, green completion states, and low-opacity shadows match the selected direction and the existing product tokens. No dark cockpit or opaque selected card was introduced.
+- Image quality and asset fidelity: the interaction states do not require new raster imagery. Existing product artwork remains untouched, and visible UI symbols use the installed Phosphor icon family rather than handcrafted SVG/CSS substitutes.
+- Copy and content: real project and task names are preserved. The source storyboard's fake third task slot is intentionally not inserted into the data rail; the existing explicit “新增任务” control remains the honest action for creating one.
+- Icons and controls: icon weight and rounded control treatment remain consistent with the current design system. Arrow hit targets meet the `46 px` measured size.
+- Accessibility: semantic buttons, current-state attributes, focus-visible styling, keyboard navigation, touch/drag fallbacks, and reduced-motion branches remain present.
+
+## Findings and iteration history
+
+### Iteration 1 — blocked
+
+- `[P2] Narrow task selection moved the whole document vertically.`
+  - Evidence: `selectedCard.scrollIntoView(...)` centered the rail but also changed the document scroll position during narrow-screen selection.
+  - Impact: a task selection could pull the page header and project context out of view, making the interaction feel like a page jump.
+  - Fix: replaced document-wide `scrollIntoView` with a centered `orbit.scrollTo({ left, behavior })` calculation scoped to the horizontal task container.
+
+### Iteration 2 — passed
+
+- Post-fix evidence: at the minimum supported `450 px` visual viewport, the selected task center delta is `0 px`, orbit scroll position changes to the selected card, document `scrollY` remains `0` under native clicks/arrows, and document client/scroll widths are both `450 px`.
+- The combined source/implementation input shows no remaining actionable P0, P1, or P2 mismatch. The selected visual's essential behaviors are present: a clear card extraction before entry, a centered front-facing task, readable neighboring cards, working directional controls, and a flat narrow-screen rail.
+
+## Open questions and follow-up polish
+
+- No blocking design questions remain.
+- P3: if a future project has three or more real tasks, re-check the far-side opacity cadence at the same desktop viewport. This is optional polish and does not block the current two-task acceptance state.
+
+## Implementation checklist
+
+- [x] Card extraction state matches the selected interaction direction.
+- [x] One click enters the correct immersive project.
+- [x] Task-card click and both middle arrows center the selected task.
+- [x] Keyboard, drag, history, invalid route, responsive, reduced-motion contract, and console checks completed.
+- [x] P2 narrow-screen page jump fixed and re-captured.
+- [x] No actionable P0/P1/P2 finding remains.
+
+final result: passed

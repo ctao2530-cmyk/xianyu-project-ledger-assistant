@@ -14,6 +14,7 @@
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
+    "test:interactions": "node --test tests/project-cockpit-interactions.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {

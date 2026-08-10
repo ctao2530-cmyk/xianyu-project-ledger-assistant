@@ -144,6 +144,8 @@ export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onEditTask, on
   const dragged = useRef(false);
   const wheelAmount = useRef(0);
   const railRef = useRef<HTMLDivElement>(null);
+  const orbitRef = useRef<HTMLDivElement>(null);
+  const taskCardRefs = useRef(new Map<string, HTMLButtonElement>());
 
   useEffect(() => {
     if (!viewTasks.some((task) => task.id === selectedTaskId)) {
@@ -160,6 +162,16 @@ export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onEditTask, on
     { status: "done" as const, label: "已完成", count: statusCount(viewTasks, "done") },
   ];
   const overdueCount = viewTasks.filter((task) => task.overdueDays > 0).length;
+
+  useEffect(() => {
+    if (!window.matchMedia("(max-width: 820px)").matches) return;
+    const orbit = orbitRef.current;
+    const selectedCard = taskCardRefs.current.get(selectedTaskId);
+    if (!orbit || !selectedCard) return;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const centeredLeft = selectedCard.offsetLeft - (orbit.clientWidth - selectedCard.offsetWidth) / 2;
+    orbit.scrollTo({ left: Math.max(0, centeredLeft), behavior: reducedMotion ? "auto" : "smooth" });
+  }, [selectedTaskId]);
 
   const timelineStart = Math.min(dateValue(project.startDate), ...viewTasks.map((task) => dateValue(task.startDate)));
   const timelineEnd = Math.max(dateValue(project.dueDate), ...viewTasks.map((task) => dateValue(task.dueDate)));
@@ -188,21 +200,37 @@ export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onEditTask, on
     }
   };
 
-  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+  const startPointerDrag = (event: PointerEvent<HTMLElement>) => {
     dragStartX.current = event.clientX;
     dragged.current = false;
     event.currentTarget.setPointerCapture(event.pointerId);
   };
-
-  const onPointerUp = (event: PointerEvent<HTMLDivElement>) => {
+  const finishPointerDrag = (clientX: number) => {
     if (dragStartX.current === null) return;
-    const distance = event.clientX - dragStartX.current;
+    const distance = clientX - dragStartX.current;
     dragStartX.current = null;
     if (Math.abs(distance) >= 42) {
       dragged.current = true;
       selectRelative(distance < 0 ? 1 : -1);
       window.setTimeout(() => { dragged.current = false; }, 0);
     }
+  };
+  const cancelPointerDrag = () => {
+    dragStartX.current = null;
+    dragged.current = false;
+  };
+  const onRailPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest("[data-immersive-action]")) return;
+    startPointerDrag(event);
+  };
+  const onRailPointerUp = (event: PointerEvent<HTMLDivElement>) => finishPointerDrag(event.clientX);
+  const onTaskCardPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    startPointerDrag(event);
+  };
+  const onTaskCardPointerUp = (event: PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    finishPointerDrag(event.clientX);
   };
 
   useEffect(() => {
@@ -271,12 +299,12 @@ export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onEditTask, on
       tabIndex={0}
       aria-label="空间任务轨道，使用左右方向键切换任务"
       onKeyDown={onRailKeyDown}
-      onPointerDown={onPointerDown}
-      onPointerUp={onPointerUp}
-      onPointerCancel={() => { dragStartX.current = null; }}
+      onPointerDown={onRailPointerDown}
+      onPointerUp={onRailPointerUp}
+      onPointerCancel={cancelPointerDrag}
     >
       <header><span>任务焦点</span><small>点击、滚轮或拖动切换</small></header>
-      <div className="immersive-orbit" aria-live="polite">
+      <div ref={orbitRef} className="immersive-orbit" aria-live="polite">
         {viewTasks.map((task, index) => {
           const distance = index - selectedIndex;
           const depth = Math.abs(distance);
@@ -284,11 +312,11 @@ export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onEditTask, on
           const active = distance === 0;
           const direction = Math.sign(distance);
           const style = {
-            "--task-x": active ? "0px" : `${direction * (92 + Math.max(0, depth - 1) * 72)}px`,
-            "--task-y": active ? "-5px" : `${Math.max(0, depth - 1) * 4}px`,
-            "--task-z": active ? "44px" : `${-38 - Math.max(0, depth - 1) * 34}px`,
-            "--task-rotate": active ? "2deg" : `${direction * -(9 + Math.max(0, depth - 1) * 3)}deg`,
-            "--task-scale": active ? 1.025 : Math.max(.72, .94 - Math.max(0, depth - 1) * .055),
+            "--task-x": active ? "0px" : `${direction * (118 + Math.max(0, depth - 1) * 82)}px`,
+            "--task-y": active ? "-7px" : `${Math.max(0, depth - 1) * 4}px`,
+            "--task-z": active ? "52px" : `${-38 - Math.max(0, depth - 1) * 34}px`,
+            "--task-rotate": active ? "0deg" : `${direction * -(8 + Math.max(0, depth - 1) * 3)}deg`,
+            "--task-scale": active ? 1.03 : Math.max(.72, .94 - Math.max(0, depth - 1) * .055),
             "--task-opacity": hidden ? 0 : Math.max(.2, 1 - depth * .13),
             "--task-order": 50 - depth,
           } as CSSProperties;
@@ -296,9 +324,18 @@ export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onEditTask, on
             className={`immersive-task-card task-${task.status} ${task.id === selectedTaskId ? "active" : ""}`}
             style={style}
             key={task.id}
+            ref={(node) => {
+              if (node) taskCardRefs.current.set(task.id, node);
+              else taskCardRefs.current.delete(task.id);
+            }}
             aria-current={task.id === selectedTaskId ? "true" : undefined}
             aria-label={`${task.title}，${taskStatusLabel[task.status]}，完成度 ${task.completion}%`}
             tabIndex={task.id === selectedTaskId ? 0 : -1}
+            data-task-id={task.id}
+            data-immersive-action
+            onPointerDown={onTaskCardPointerDown}
+            onPointerUp={onTaskCardPointerUp}
+            onPointerCancel={cancelPointerDrag}
             onClick={() => { if (!dragged.current) setSelectedTaskId(task.id); }}
             data-hidden={hidden ? "true" : undefined}
           >
@@ -312,9 +349,9 @@ export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onEditTask, on
         })}
       </div>
       <nav className="immersive-orbit-controls" aria-label="任务轨道控制">
-        <button onClick={() => selectRelative(-1)} disabled={selectedIndex === 0} aria-label="上一个任务"><ArrowLeft size={16} /></button>
-        <span>{selectedIndex + 1} / {viewTasks.length}</span>
-        <button onClick={() => selectRelative(1)} disabled={selectedIndex === viewTasks.length - 1} aria-label="下一个任务"><ArrowRight size={16} /></button>
+        <button type="button" data-immersive-action onClick={() => selectRelative(-1)} disabled={selectedIndex === 0} aria-label="上一个任务"><ArrowLeft size={19} /></button>
+        <span aria-live="polite">{selectedIndex + 1} / {viewTasks.length}</span>
+        <button type="button" data-immersive-action onClick={() => selectRelative(1)} disabled={selectedIndex === viewTasks.length - 1} aria-label="下一个任务"><ArrowRight size={19} /></button>
       </nav>
     </div>
 

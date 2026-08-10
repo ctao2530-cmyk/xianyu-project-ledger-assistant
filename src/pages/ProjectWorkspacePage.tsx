@@ -65,6 +65,7 @@ type ProjectOrbitEntry =
   | { kind: "placeholder"; id: string; slot: number };
 
 const projectOrbitWindowSize = 5;
+const projectEntryTransitionMs = 220;
 
 function projectOrbitGeometry(slotOffset: number) {
   const depth = Math.abs(slotOffset);
@@ -169,6 +170,8 @@ export function ProjectWorkspacePage({
   const dragged = useRef(false);
   const wheelAmount = useRef(0);
   const parallaxFrame = useRef<number | null>(null);
+  const projectEntryTimer = useRef<number | null>(null);
+  const openingProjectId = useRef("");
   const financials = useMemo(() => getProjectFinancials(snapshot), [snapshot]);
 
   useEffect(() => {
@@ -177,6 +180,7 @@ export function ProjectWorkspacePage({
 
   useEffect(() => () => {
     if (parallaxFrame.current !== null) window.cancelAnimationFrame(parallaxFrame.current);
+    if (projectEntryTimer.current !== null) window.clearTimeout(projectEntryTimer.current);
   }, []);
 
   const categoryFinancials = financials.filter(({ project }) => projectKindOf(project) === projectKind);
@@ -322,7 +326,24 @@ export function ProjectWorkspacePage({
     if (nextProject) selectProject(nextProject.id);
   };
   const openProject = (projectId: string) => onProjectRouteChange({ projectId, tab: "immersive" }, "push");
+  const enterProjectFromCard = (projectId: string) => {
+    if (openingProjectId.current) return;
+    openingProjectId.current = projectId;
+    selectProject(projectId, "extract");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    projectEntryTimer.current = window.setTimeout(() => {
+      projectEntryTimer.current = null;
+      openingProjectId.current = "";
+      openProject(projectId);
+    }, reducedMotion ? 0 : projectEntryTransitionMs);
+  };
+  const cancelPendingProjectEntry = () => {
+    if (projectEntryTimer.current !== null) window.clearTimeout(projectEntryTimer.current);
+    projectEntryTimer.current = null;
+    openingProjectId.current = "";
+  };
   const switchKind = (kind: ProjectKind) => {
+    cancelPendingProjectEntry();
     setExtractedByKind((current) => ({ ...current, [kind]: "" }));
     setProjectKind(kind);
     setStatus("current");
@@ -371,21 +392,38 @@ export function ProjectWorkspacePage({
       selectProject(visible[visible.length - 1].project.id);
     }
   };
-  const onScenePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("[data-project-action]")) return;
+  const startOrbitDrag = (event: PointerEvent<HTMLElement>) => {
     dragStartX.current = event.clientX;
     dragged.current = false;
     event.currentTarget.setPointerCapture(event.pointerId);
   };
-  const onScenePointerUp = (event: PointerEvent<HTMLDivElement>) => {
+  const finishOrbitDrag = (clientX: number) => {
     if (dragStartX.current === null) return;
-    const distance = event.clientX - dragStartX.current;
+    const distance = clientX - dragStartX.current;
     dragStartX.current = null;
     if (Math.abs(distance) >= 44) {
       dragged.current = true;
       selectRelative(distance < 0 ? 1 : -1);
       window.setTimeout(() => { dragged.current = false; }, 0);
     }
+  };
+  const cancelOrbitDrag = () => {
+    dragStartX.current = null;
+    dragged.current = false;
+  };
+  const onScenePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest("button, a, input, select, textarea")) return;
+    startOrbitDrag(event);
+  };
+  const onScenePointerUp = (event: PointerEvent<HTMLDivElement>) => finishOrbitDrag(event.clientX);
+  const onProjectCardPointerDown = (event: PointerEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest("[data-project-action]")) return;
+    event.stopPropagation();
+    startOrbitDrag(event);
+  };
+  const onProjectCardPointerUp = (event: PointerEvent<HTMLElement>) => {
+    event.stopPropagation();
+    finishOrbitDrag(event.clientX);
   };
 
   useEffect(() => {
@@ -467,23 +505,37 @@ export function ProjectWorkspacePage({
             ref={sceneRef}
             style={{ "--scene-active-x": `${extractedGeometry?.x || 0}px` } as CSSProperties}
             tabIndex={0}
-            aria-label="项目空间卡组，点击真实项目从原卡位抽出，空卡位可新建项目"
+            aria-label="项目空间卡组，点击真实项目从原卡位抽出并自动进入沉浸任务流，空卡位可新建项目"
             onKeyDown={onSceneKeyDown}
             onPointerMove={onScenePointerMove}
             onPointerLeave={onScenePointerLeave}
             onPointerDown={onScenePointerDown}
             onPointerUp={onScenePointerUp}
-            onPointerCancel={() => { dragStartX.current = null; resetScenePosition(); }}
+            onPointerCancel={() => { cancelOrbitDrag(); resetScenePosition(); }}
             data-extracted={extractedProjectId ? "true" : undefined}
           >
             <div className="project-scene-light" aria-hidden="true" />
-            <header className="project-orbit-label"><span><Sparkle size={14} weight="fill" />PROJECT ORBIT</span><small>{placeholderCount ? `${visible.length} 个真实项目 · ${placeholderCount} 个待启用卡位 · 点击项目原位抽出` : "点击项目原位抽出 · 拖动、滚轮或键盘选择"}</small></header>
+            <header className="project-orbit-label"><span><Sparkle size={14} weight="fill" />PROJECT ORBIT</span><small>{placeholderCount ? `${visible.length} 个真实项目 · ${placeholderCount} 个待启用卡位 · 点击抽出并进入` : "点击抽出并进入 · 拖动、滚轮或键盘选择"}</small></header>
             <div className="project-orbit-deck" key={projectKind} data-project-kind={projectKind} aria-live="polite">
-              {extractedGeometry && <span
-                className="project-extraction-shadow"
-                style={{ "--project-shadow-x": `${extractedGeometry.x}px` } as CSSProperties}
-                aria-hidden="true"
-              />}
+              {extractedGeometry && <>
+                <span
+                  className="project-extraction-slot"
+                  style={{
+                    "--project-slot-x": `${extractedGeometry.x}px`,
+                    "--project-slot-y": `${extractedGeometry.y}px`,
+                    "--project-slot-z": `${extractedGeometry.z}px`,
+                    "--project-slot-rotate-y": `${extractedGeometry.rotateY}deg`,
+                    "--project-slot-scale": extractedGeometry.scale,
+                    "--project-slot-order": extractedGeometry.order - 1,
+                  } as CSSProperties}
+                  aria-hidden="true"
+                />
+                <span
+                  className="project-extraction-shadow"
+                  style={{ "--project-shadow-x": `${extractedGeometry.x}px` } as CSSProperties}
+                  aria-hidden="true"
+                />
+              </>}
               {orbitEntries.map((entry, index) => {
                 const slotOffset = index - orbitWindowCenter;
                 const geometry = projectOrbitGeometry(slotOffset);
@@ -492,10 +544,10 @@ export function ProjectWorkspacePage({
                 const dimmedByExtraction = Boolean(extractedProjectId) && !extracted;
                 const style = {
                   "--project-x": `${geometry.x}px`,
-                  "--project-y": `${extracted ? geometry.y - 22 : geometry.y}px`,
-                  "--project-z": `${extracted ? geometry.z + 150 : geometry.z}px`,
-                  "--project-rotate-y": `${extracted ? geometry.rotateY * .28 : geometry.rotateY}deg`,
-                  "--project-scale": extracted ? 1.045 : geometry.scale,
+                  "--project-y": `${extracted ? geometry.y - 40 : geometry.y}px`,
+                  "--project-z": `${extracted ? geometry.z + 92 : geometry.z}px`,
+                  "--project-rotate-y": `${extracted ? geometry.rotateY * .15 : geometry.rotateY}deg`,
+                  "--project-scale": extracted ? 1 : geometry.scale,
                   "--project-opacity": hidden ? 0 : extracted ? 1 : dimmedByExtraction ? Math.max(.38, geometry.opacity * .7) : geometry.opacity,
                   "--project-order": extracted ? 108 : geometry.order,
                 } as CSSProperties;
@@ -545,16 +597,19 @@ export function ProjectWorkspacePage({
                   data-slot-offset={slotOffset.toFixed(2)}
                   data-extracted={extracted ? "true" : undefined}
                   data-hidden={hidden ? "true" : undefined}
+                  aria-busy={extracted || undefined}
+                  onPointerDown={onProjectCardPointerDown}
+                  onPointerUp={onProjectCardPointerUp}
+                  onPointerCancel={cancelOrbitDrag}
                   onClick={(event) => {
-                    if (!dragged.current && !(event.target as HTMLElement).closest("[data-project-action]")) selectProject(project.id, "extract");
+                    if (!dragged.current && !(event.target as HTMLElement).closest("[data-project-action]")) enterProjectFromCard(project.id);
                   }}
                 >
                   <button
                     type="button"
                     className="project-glass-select"
-                    aria-pressed={extracted}
                     aria-current={locked ? "true" : undefined}
-                    aria-label={`${extracted ? "已抽出" : "选择并抽出"}${project.name}，${statusLabel}，进度 ${project.progress}%`}
+                    aria-label={`打开${project.name}，卡片抽出后进入沉浸任务流，${statusLabel}，进度 ${project.progress}%`}
                     tabIndex={hidden ? -1 : 0}
                   >
                     <span className="project-glass-head"><i>{isPersonal ? <Code size={20} weight="duotone" /> : <Briefcase size={20} weight="duotone" />}</i><span><small>{project.type || (isPersonal ? "个人开发" : "定制开发")}{!isPersonal && customer ? ` · ${customer.name}` : ""}</small><b>{project.name}</b></span><em className={`portfolio-status ${terminalIssue ? "status-terminated" : `status-${project.status}`}`}>{statusLabel}</em></span>
@@ -567,11 +622,6 @@ export function ProjectWorkspacePage({
                     </span>
                     <span className="project-glass-foot"><small>{terminalIssue ? `${settlementIssueLabels[terminalIssue.type]} · 已移出当前合作` : item.issueCount ? `异常 ${item.issueCount} 条 · ${settlementIssueLabels[latestSettlementIssue(item.settlementIssues)!.type]}` : remaining < 0 ? `已超期 ${Math.abs(remaining)} 天` : project.status === "delivered" && due > 0 ? `已交付 · 待回款 ${money.format(due)}` : `剩余 ${remaining} 天`}</small>{!isPersonal && <b>利润 {money.format(profit)} · 净回款 {paymentProgress.toFixed(0)}%</b>}</span>
                   </button>
-                  <div className="project-glass-actions" aria-hidden={!extracted}>
-                    <button type="button" data-project-action tabIndex={extracted ? 0 : -1} onClick={() => openProject(project.id)}>进入项目 <ArrowRight size={14} /></button>
-                    {!isPersonal && !terminalIssue && due > 0 && <button type="button" data-project-action tabIndex={extracted ? 0 : -1} className={project.status === "delivered" ? "is-urgent" : ""} onClick={() => onConfirmPayment(project.id)}><Coins size={14} weight="duotone" />确认到账</button>}
-                    {!isPersonal && <button type="button" data-project-action tabIndex={extracted ? 0 : -1} className="is-exception" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={14} weight="duotone" />记录异常</button>}
-                  </div>
                 </article>;
               })}
             </div>
