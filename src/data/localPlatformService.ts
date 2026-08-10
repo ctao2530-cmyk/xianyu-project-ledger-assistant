@@ -44,8 +44,9 @@ export interface ConversationDetail {
   channel: string;
   external_id: string;
   customer_id: string;
+  linked_customer_id: string | null;
   customer_name: string;
-  item: { title: string; price?: string | null; description?: string | null } | null;
+  item: { external_id: string; title: string; price?: string | null; description?: string | null } | null;
   messages: ConversationMessage[];
   pending_message_id: number | null;
   drafts: ReplyDraft[];
@@ -220,6 +221,9 @@ export interface RequirementImportPreview {
   token: string;
   expires_at: string;
   customer_id: string;
+  item_id: number | null;
+  item_external_id: string | null;
+  item_title: string | null;
   case_id: string | null;
   case_title: string;
   target_version: number;
@@ -246,6 +250,9 @@ export interface RequirementVersionCaseSummary {
 export interface RequirementCaseSummary {
   id: string;
   customer_id: string;
+  item_id: number | null;
+  item_external_id: string | null;
+  item_title: string | null;
   title: string;
   status: string;
   current_version: number;
@@ -261,7 +268,7 @@ export interface RequirementCaseDetail extends RequirementCaseSummary {
   versions: RequirementVersionCaseSummary[];
   selected_version: RequirementVersionCaseSummary | null;
   document: RequirementBlueprint | Record<string, unknown> | null;
-  sources: Array<{ conversation_id: number; last_exported_message_id: number | null; channel: string; customer_name: string }>;
+  sources: Array<{ conversation_id: number; last_exported_message_id: number | null; channel: string; customer_name: string; item_external_id: string | null; item_title: string | null }>;
 }
 
 export interface QuoteView {
@@ -334,6 +341,8 @@ export interface ProductSnapshotView {
   date: string;
   source: string;
   browse_count: number;
+  raw_browse_count: number;
+  collection_views_excluded: number;
   collect_count: number;
   want_count: number;
   sold_count: number;
@@ -341,6 +350,16 @@ export interface ProductSnapshotView {
   converted_project_count: number;
   revenue_total: number;
   profit_total: number;
+}
+
+export interface ProductWindowMetricsView {
+  days: number;
+  observation_days: number;
+  snapshot_count: number;
+  browse_delta: number | null;
+  inquiry_delta: number | null;
+  want_delta: number | null;
+  daily_browse: number | null;
 }
 
 export interface ProductRecommendationView {
@@ -385,6 +404,8 @@ export interface ProductView {
   last_error_detail: string | null;
   last_collected_at: string | null;
   browse_count: number;
+  raw_browse_count: number;
+  collection_views_excluded: number;
   collect_count: number;
   want_count: number;
   sold_count: number;
@@ -396,9 +417,163 @@ export interface ProductView {
   profit_total: number;
   inquiry_rate: number | null;
   deal_rate: number | null;
+  snapshot_count: number;
+  freshness_days: number | null;
+  data_quality: "high" | "medium" | "low" | string;
+  data_gaps: string[];
+  traffic_cooldown_until: string | null;
+  modification_observation_until: string | null;
+  recent_windows: ProductWindowMetricsView[];
   history: ProductSnapshotView[];
   recommendation: ProductRecommendationView | null;
   actions: ProductActionView[];
+}
+
+export interface ProductPlanProductView {
+  external_id: string;
+  title: string;
+  role: string;
+  score: number;
+  data_quality: string;
+  reason: string;
+}
+
+export interface ProductOperatingPlanSlotView {
+  id: string;
+  date: string;
+  weekday: string;
+  scheduled_time: string;
+  action_type: string;
+  products: ProductPlanProductView[];
+  planned_cost: number;
+  reason: string;
+  change_reason: string;
+  evidence: string[];
+  warnings: string[];
+  confidence: string;
+  locked: boolean;
+  status: string;
+  batch_id: string | null;
+}
+
+export interface ProductOperatingPlanView {
+  id: string;
+  version: number;
+  start_date: string;
+  end_date: string;
+  generated_at: string;
+  weekly_budget: number;
+  spent_this_week: number;
+  planned_this_week: number;
+  remaining_this_week: number;
+  cadence: string;
+  change_summary: string;
+  data_quality: string;
+  rules_version: string;
+  analysis_stage: string;
+  effective_batch_count: number;
+  slots: ProductOperatingPlanSlotView[];
+}
+
+export interface ProductTrafficBatchItemView {
+  external_id: string;
+  title: string;
+  baseline_browse_count: number;
+  baseline_collect_count: number;
+  baseline_want_count: number;
+  baseline_inquiry_count: number;
+  baseline_captured_at: string | null;
+  latest_checkpoint: string | null;
+  latest_browse_count: number;
+  latest_collect_count: number;
+  latest_want_count: number;
+  latest_inquiry_count: number;
+  browse_delta: number;
+  collect_delta: number;
+  want_delta: number;
+  inquiry_delta: number;
+}
+
+export interface ProductTrafficCheckpointMetricsView {
+  checkpoint: "h1" | "h6" | "h24" | "h72" | string;
+  hours: number;
+  batch_count: number;
+  browse_delta: number;
+  collect_delta: number;
+  want_delta: number;
+  inquiry_delta: number;
+  inquiry_conversion_rate: number | null;
+  average_browse_delta: number;
+  average_inquiry_delta: number;
+}
+
+export interface ProductTrafficBatchView {
+  id: string;
+  plan_slot_id: string | null;
+  status: "planned" | "running" | "observing" | "closed" | "cancelled" | string;
+  planned_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  actual_cost: number;
+  total_exposure: number | null;
+  note: string;
+  products: ProductTrafficBatchItemView[];
+  completed_checkpoints: string[];
+  due_checkpoint: "h1" | "h6" | "h24" | "h72" | null;
+  due_at: string | null;
+  overlap_warning: string | null;
+  browse_delta: number;
+  collect_delta: number;
+  want_delta: number;
+  inquiry_delta: number;
+  inquiry_conversion_rate: number | null;
+  cost_per_browse: number | null;
+  cost_per_inquiry: number | null;
+  observation_checkpoint: "h1" | "h6" | "h24" | "h72" | null;
+  observation_hours: number;
+  time_bucket: string;
+  data_quality: string;
+  analysis_eligible: boolean;
+  checkpoint_metrics: ProductTrafficCheckpointMetricsView[];
+  created_at: string;
+}
+
+export interface ProductTrafficTimeBucketView {
+  bucket: string;
+  time_range: string;
+  batch_count: number;
+  total_cost: number;
+  browse_delta: number;
+  inquiry_delta: number;
+  average_browse_delta: number;
+  average_inquiry_delta: number;
+  inquiry_conversion_rate: number | null;
+  cost_per_browse: number | null;
+  cost_per_inquiry: number | null;
+  confidence: string;
+  recommended: boolean;
+}
+
+export interface ProductExposureAnalyticsView {
+  window_days: number;
+  total_spent: number;
+  observed_cost: number;
+  eligible_batch_count: number;
+  excluded_batch_count: number;
+  browse_delta: number;
+  collect_delta: number;
+  want_delta: number;
+  inquiry_delta: number;
+  average_browse_delta: number;
+  average_inquiry_delta: number;
+  inquiry_conversion_rate: number | null;
+  cost_per_browse: number | null;
+  cost_per_inquiry: number | null;
+  confidence: string;
+  best_time_bucket: string | null;
+  summary: string;
+  checkpoints: ProductTrafficCheckpointMetricsView[];
+  time_buckets: ProductTrafficTimeBucketView[];
 }
 
 export interface ProductCollectionRunView {
@@ -414,6 +589,176 @@ export interface ProductCollectionRunView {
   finished_at: string | null;
 }
 
+export interface ProductCollectionAttemptItemView {
+  external_id: string;
+  title: string;
+  status: "pending" | "success" | "failed" | "skipped" | string;
+  error_code: string | null;
+  detail: string;
+  finished_at: string | null;
+}
+
+export interface ProductCollectionAttemptView {
+  id: string;
+  run_date: string;
+  daily_run_id: string | null;
+  trigger: "scheduled" | "manual" | "manual_all" | "manual_single" | string;
+  requested_external_id: string | null;
+  requested_title: string | null;
+  status: string;
+  monitored_count: number;
+  collected_count: number;
+  failed_count: number;
+  skipped_count: number;
+  detail: string;
+  started_at: string;
+  finished_at: string | null;
+  items: ProductCollectionAttemptItemView[];
+}
+
+export interface ProductMarketKeywordCandidateView {
+  keyword: string;
+  theme: string;
+  score: number;
+  reason: string;
+  evidence: string[];
+  confidence: string;
+}
+
+export interface ProductMarketSampleResultView {
+  position: number;
+  title: string;
+  price: number | null;
+  tags: string[];
+}
+
+export interface ProductMarketSampleView {
+  id: string;
+  keyword: string;
+  sample_date: string;
+  source: "edge_codex" | string;
+  captured_at: string;
+  result_count: number;
+  note: string;
+  results: ProductMarketSampleResultView[];
+}
+
+export interface ProductMarketBenchmarkView {
+  keyword: string;
+  sample_days: number;
+  high_visibility_result_count: number;
+  priced_result_count: number;
+  repeated_result_count: number;
+  median_price: number | null;
+  price_low: number | null;
+  price_high: number | null;
+  common_title_terms: string[];
+  common_tags: string[];
+  median_title_length: number | null;
+  confidence: string;
+  evidence: string[];
+}
+
+export interface ProductMarketReferenceView {
+  date: string;
+  mode: "recommended" | "custom";
+  selected_keyword: string;
+  custom_keyword: string;
+  recommendations: ProductMarketKeywordCandidateView[];
+  common_keywords: string[];
+  current_sample: ProductMarketSampleView | null;
+  recent_samples: ProductMarketSampleView[];
+  stability: {
+    keyword: string;
+    sample_days: number;
+    visible_days: number;
+    average_best_position: number | null;
+    status: "insufficient" | "emerging" | "stable" | string;
+    label: string;
+  };
+  benchmark: ProductMarketBenchmarkView;
+  reminder: {
+    date: string;
+    status: "pending" | "sent" | "snoozed" | "skipped" | "completed" | string;
+    scheduled_for: string;
+    due: boolean;
+    snoozed_until: string | null;
+  };
+  update_completed: boolean;
+  last_updated_at: string | null;
+  rules_version: string;
+  safety_note: string;
+}
+
+export interface ProductLaunchRecommendationView {
+  keyword: string;
+  theme: string;
+  title: string;
+  recommended_window: string;
+  demand_conversations: number;
+  matching_product_count: number;
+  capacity_available: number;
+  confidence: string;
+  market_validation_required: boolean;
+  ready: boolean;
+  recommended_action: "launch" | "modify_existing" | "observe" | string;
+  suggested_product_type: string;
+  title_direction: string;
+  price_reference: string;
+  market_differentiation: string;
+  timing_basis: string;
+  benchmark: ProductMarketBenchmarkView;
+  rationale: string[];
+  evidence: string[];
+}
+
+export interface ProductLaunchPlanView {
+  id: string;
+  keyword: string;
+  theme: string;
+  title: string;
+  recommended_window: string;
+  rationale: string[];
+  evidence: string[];
+  confidence: string;
+  status: "proposed" | "planned" | "completed" | "cancelled" | string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductModificationSuggestionView {
+  external_id: string;
+  title: string;
+  variable: "title" | "cover" | "description" | "price" | null;
+  reason: string;
+  suggested_change: string;
+  confidence: string;
+  blocked_reason: string | null;
+  benchmark_keyword: string | null;
+  market_evidence: string[];
+  market_gap: string | null;
+  reference_price_range: string | null;
+  confidence_basis: string[];
+  evidence_sources: string[];
+}
+
+export interface ProductModificationExperimentView {
+  id: string;
+  item_external_id: string;
+  item_title: string;
+  variable: "title" | "cover" | "description" | "price";
+  before_value: string;
+  after_value: string;
+  baseline: Record<string, number | string | null>;
+  started_at: string;
+  observation_until: string;
+  status: "observing" | "completed" | "cancelled" | string;
+  result: Record<string, number | string | null>;
+  decision: "pending" | "keep" | "rollback" | "continue" | string;
+  evidence: string[];
+  can_evaluate: boolean;
+}
+
 export interface ProductIntelligenceView {
   collection: {
     configured: boolean;
@@ -422,6 +767,8 @@ export interface ProductIntelligenceView {
     can_collect_today: boolean;
     next_collection_at: string | null;
     last_run: ProductCollectionRunView | null;
+    latest_attempt: ProductCollectionAttemptView | null;
+    attempts: ProductCollectionAttemptView[];
     safety_note: string;
   };
   summary: {
@@ -452,6 +799,32 @@ export interface ProductIntelligenceView {
     posture: string;
     suggestion: string;
   }>;
+  operating_plan: ProductOperatingPlanView;
+  traffic_batches: ProductTrafficBatchView[];
+  traffic_summary: {
+    batch_count: number;
+    effective_batch_count: number;
+    active_batch_count: number;
+    due_checkpoint_count: number;
+    spent_this_week: number;
+    analysis_stage: string;
+    analysis_summary: string;
+  };
+  exposure_analytics: ProductExposureAnalyticsView;
+  market_reference: ProductMarketReferenceView;
+  launch_recommendation: ProductLaunchRecommendationView;
+  launch_plans: ProductLaunchPlanView[];
+  modification_suggestions: ProductModificationSuggestionView[];
+  modification_experiments: ProductModificationExperimentView[];
+}
+
+export interface OperationsSummary {
+  unread: number;
+  pending_replies: number;
+  first_pending_conversation_id: number | null;
+  open_leads: number;
+  quoted_leads: number;
+  converted_leads: number;
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -494,21 +867,40 @@ export const localPlatformService = {
   commitRequirementImport: (token: string, expectedVersion: number) => api<{ case: RequirementCaseDetail; version_id: number; version: number; idempotent: boolean }>("/api/requirements/import/commit", { method: "POST", body: JSON.stringify({ token, expected_version: expectedVersion }) }),
   customerRequirements: (customerId: string) => api<RequirementCaseSummary[]>(`/api/customers/${encodeURIComponent(customerId)}/requirements`),
   requirementCase: (caseId: string, version?: number) => api<RequirementCaseDetail>(`/api/requirement-cases/${encodeURIComponent(caseId)}${version ? `?version=${version}` : ""}`),
+  editRequirementCase: (caseId: string, payload: { expected_version: number; change_summary: string; document: RequirementBlueprint }) => api<{ case: RequirementCaseDetail; version_id: number; version: number; idempotent: boolean }>(`/api/requirement-cases/${encodeURIComponent(caseId)}/edit`, { method: "POST", body: JSON.stringify(payload) }),
+  transferRequirementCase: (caseId: string, payload: { request_id: string; expected_customer_id: string; expected_version: number; expected_revision: number; target_customer_id?: string | null; new_customer_name?: string | null }) => api<{ revision: number; snapshot: LedgerSnapshot; target_customer_id: string; case: RequirementCaseDetail; idempotent: boolean }>(`/api/requirement-cases/${encodeURIComponent(caseId)}/transfer`, { method: "POST", body: JSON.stringify(payload) }),
   quotes: (leadId: string) => api<QuoteView[]>(`/api/leads/${leadId}/quotes`),
   generateQuote: (leadId: string, hourlyRate?: number) => api<QuoteView>(`/api/leads/${leadId}/quote/generate`, { method: "POST", body: JSON.stringify({ hourly_rate: hourlyRate || null, risk_buffer: 0.15 }) }),
   convertLead: (leadId: string, quoteId: string, projectName?: string) => api<{ project_id: string; revision: number }>(`/api/leads/${leadId}/convert`, { method: "POST", body: JSON.stringify({ quote_id: quoteId, confirmed: true, project_name: projectName || null }) }),
   migrationPreview: (snapshot: LedgerSnapshot) => api<MigrationPreview>("/api/ledger/migrations/preview", { method: "POST", body: JSON.stringify({ snapshot }) }),
   migrationCommit: (snapshot: LedgerSnapshot, token: string, resolutions: Record<string, "sqlite" | "browser">) => api<{ revision: number; snapshot: LedgerSnapshot; backup_name: string; attachments_written: number }>("/api/ledger/migrations/commit", { method: "POST", body: JSON.stringify({ snapshot, token, resolutions }) }),
-  operationsSummary: () => api<{ unread: number; pending_replies: number; open_leads: number; quoted_leads: number; converted_leads: number }>("/api/operations/summary"),
+  operationsSummary: () => api<OperationsSummary>("/api/operations/summary"),
   analyzeBusinessRequirement: (content: string) => api<BusinessRequirementAnalysis>("/api/ai/business/analyze", { method: "POST", body: JSON.stringify({ content }) }),
   createBusinessQuote: (analysis: BusinessRequirementAnalysis, complexity: "standard" | "advanced" | "complex", riskBuffer = 0.15) => api<BusinessQuote>("/api/ai/business/quote", { method: "POST", body: JSON.stringify({ analysis, complexity, risk_buffer: riskBuffer }) }),
   reviewBusinessProject: (payload: Record<string, unknown>) => api<BusinessReview>("/api/ai/business/review", { method: "POST", body: JSON.stringify(payload) }),
   productIntelligence: () => api<ProductIntelligenceView>("/api/products/intelligence"),
   collectProducts: () => api<ProductCollectionRunView>("/api/products/collect", { method: "POST" }),
+  collectProductsManual: (externalId?: string) => api<ProductCollectionRunView>("/api/products/collect/manual", { method: "POST", body: JSON.stringify({ external_id: externalId || null }) }),
   registerProduct: (itemReference: string) => api<ProductView>("/api/products/register", { method: "POST", body: JSON.stringify({ item_reference: itemReference }) }),
   updateProductMonitor: (externalId: string, enabled: boolean) => api<ProductView>(`/api/products/${encodeURIComponent(externalId)}/monitor`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   recordProductAction: (externalId: string, payload: { action_type: string; status: "planned" | "completed" | "cancelled"; note: string; cost: number; recommendation_id?: string | null; observation_days: number }) => api<ProductActionView>(`/api/products/${encodeURIComponent(externalId)}/actions`, { method: "POST", body: JSON.stringify(payload) }),
   updateProductRecommendation: (recommendationId: string, status: "active" | "in_progress" | "completed" | "dismissed") => api<void>(`/api/products/recommendations/${encodeURIComponent(recommendationId)}`, { method: "PUT", body: JSON.stringify({ status }) }),
+  createTrafficBatch: (payload: { request_id: string; item_external_ids: string[]; planned_at: string; actual_cost: number; plan_slot_id?: string | null; note?: string }) => api<ProductTrafficBatchView>("/api/products/traffic-batches", { method: "POST", body: JSON.stringify(payload) }),
+  startTrafficBatch: (batchId: string) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/start`, { method: "POST" }),
+  completeTrafficBatch: (batchId: string, payload: { completed_at: string; actual_cost: number; total_exposure?: number | null; note?: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/complete`, { method: "POST", body: JSON.stringify(payload) }),
+  recordTrafficCheckpoint: (batchId: string, payload: { checkpoint: "h1" | "h6" | "h24" | "h72"; recorded_at: string; items: Array<{ external_id: string; browse_count: number; collect_count: number; want_count: number; inquiry_count: number }>; note?: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/checkpoints`, { method: "POST", body: JSON.stringify(payload) }),
+  cancelTrafficBatch: (batchId: string) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/cancel`, { method: "POST" }),
+  refreshOperatingPlan: () => api<ProductOperatingPlanView>("/api/products/operating-plan/refresh", { method: "POST" }),
+  updateOperatingPlanSlot: (slotId: string, locked: boolean) => api<ProductOperatingPlanView>(`/api/products/operating-plan/slots/${encodeURIComponent(slotId)}`, { method: "PUT", body: JSON.stringify({ locked }) }),
+  marketReference: () => api<ProductMarketReferenceView>("/api/products/market-reference"),
+  updateMarketKeyword: (payload: { mode: "recommended" | "custom"; keyword: string; save_as_common?: boolean }) => api<ProductMarketReferenceView>("/api/products/market-reference/keyword", { method: "PUT", body: JSON.stringify(payload) }),
+  importMarketReference: (payload: { keyword: string; captured_at: string; results: Array<{ position: number; title: string; price: number | null; tags: string[] }>; note?: string }) => api<ProductMarketReferenceView>("/api/products/market-reference/import", { method: "POST", body: JSON.stringify(payload) }),
+  snoozeMarketReminder: (hours = 2) => api<ProductMarketReferenceView>("/api/products/market-reference/reminder/snooze", { method: "POST", body: JSON.stringify({ hours }) }),
+  skipMarketReminder: () => api<ProductMarketReferenceView>("/api/products/market-reference/reminder/skip", { method: "POST" }),
+  createLaunchPlan: (payload: { keyword: string; title?: string | null }) => api<ProductLaunchPlanView>("/api/products/launch-plans", { method: "POST", body: JSON.stringify(payload) }),
+  updateLaunchPlan: (planId: string, status: "proposed" | "planned" | "completed" | "cancelled") => api<ProductLaunchPlanView>(`/api/products/launch-plans/${encodeURIComponent(planId)}`, { method: "PUT", body: JSON.stringify({ status }) }),
+  createModificationExperiment: (externalId: string, payload: { variable: "title" | "cover" | "description" | "price"; before_value: string; after_value: string; observation_days?: number }) => api<ProductModificationExperimentView>(`/api/products/${encodeURIComponent(externalId)}/modification-experiments`, { method: "POST", body: JSON.stringify(payload) }),
+  updateModificationExperiment: (experimentId: string, payload: { decision: "keep" | "rollback" | "continue"; note?: string }) => api<ProductModificationExperimentView>(`/api/products/modification-experiments/${encodeURIComponent(experimentId)}`, { method: "PUT", body: JSON.stringify(payload) }),
 };
 
 export function connectPlatformEvents(onEvent: (event: Record<string, unknown>) => void) {

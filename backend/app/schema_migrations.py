@@ -10,6 +10,202 @@ PROJECT_TABLE = "business_projects"
 TEMP_PROJECT_TABLE = "business_projects__personal_upgrade"
 
 
+def migrate_project_change_order_schema(connection: Connection) -> bool:
+    """Add append-only project change orders and link their payment nodes.
+
+    The migration is deliberately additive. Existing contracts and payment
+    nodes keep their original meaning, while future paid scope additions gain
+    an explicit audit source instead of being inferred from payment totals.
+    """
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    required = {"business_projects", "business_customers", "payment_nodes"}
+    if not required.issubset(tables):
+        return False
+
+    changed = False
+    if "project_change_orders" not in tables:
+        connection.exec_driver_sql(
+            "CREATE TABLE project_change_orders ("
+            "id VARCHAR(128) NOT NULL PRIMARY KEY, "
+            "project_id VARCHAR(128) NOT NULL REFERENCES business_projects(id), "
+            "customer_id VARCHAR(128) NOT NULL REFERENCES business_customers(id), "
+            "title VARCHAR(300) NOT NULL, "
+            "amount FLOAT NOT NULL, "
+            "confirmed_at VARCHAR(64) NOT NULL DEFAULT '', "
+            "status VARCHAR(32) NOT NULL DEFAULT 'confirmed', "
+            "notes TEXT NOT NULL DEFAULT '', "
+            "request_id VARCHAR(128) NOT NULL UNIQUE, "
+            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        changed = True
+
+    payment_columns = {
+        str(row[1])
+        for row in connection.exec_driver_sql("PRAGMA table_info(payment_nodes)")
+    }
+    if "change_order_id" not in payment_columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE payment_nodes ADD COLUMN change_order_id VARCHAR(128) "
+            "REFERENCES project_change_orders(id)"
+        )
+        changed = True
+
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_project_change_orders_project_id "
+        "ON project_change_orders(project_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_project_change_orders_customer_id "
+        "ON project_change_orders(customer_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_project_change_orders_status "
+        "ON project_change_orders(status)"
+    )
+    connection.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_change_orders_request_id "
+        "ON project_change_orders(request_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_project_change_orders_created_at "
+        "ON project_change_orders(created_at)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_payment_nodes_change_order_id "
+        "ON payment_nodes(change_order_id)"
+    )
+    return changed
+
+
+def migrate_product_browse_accounting_schema(connection: Connection) -> bool:
+    """Split platform browse totals from operating browse totals.
+
+    The historical ``browse_count`` value came directly from Xianyu. During the
+    one-time migration it becomes the raw audit value, while one successful
+    remote detail read per stored snapshot is excluded from the operating
+    count. The column-presence gate makes the backfill idempotent at startup.
+    """
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "product_daily_snapshots" not in tables:
+        return False
+    columns = {
+        str(row[1])
+        for row in connection.exec_driver_sql(
+            "PRAGMA table_info(product_daily_snapshots)"
+        )
+    }
+    had_raw = "raw_browse_count" in columns
+    had_excluded = "collection_views_excluded" in columns
+    if had_raw and had_excluded:
+        return False
+    if not had_raw:
+        connection.exec_driver_sql(
+            "ALTER TABLE product_daily_snapshots ADD COLUMN "
+            "raw_browse_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if not had_excluded:
+        connection.exec_driver_sql(
+            "ALTER TABLE product_daily_snapshots ADD COLUMN "
+            "collection_views_excluded INTEGER NOT NULL DEFAULT 0"
+        )
+
+    rows = list(
+        connection.exec_driver_sql(
+            "SELECT id, item_id, source, browse_count, raw_browse_count, "
+            "collection_views_excluded FROM product_daily_snapshots "
+            "ORDER BY item_id, snapshot_date, captured_at, id"
+        )
+    )
+    excluded_by_item: dict[int, int] = {}
+    for row in rows:
+        item_id = int(row[1])
+        prior_excluded = excluded_by_item.get(item_id, 0)
+        if str(row[2]) in {"remote_daily", "remote_manual"}:
+            prior_excluded += 1
+        if had_raw:
+            raw_browse = max(0, int(row[4] or 0))
+        elif had_excluded:
+            raw_browse = max(0, int(row[3] or 0) + int(row[5] or 0))
+        else:
+            raw_browse = max(0, int(row[3] or 0))
+        connection.exec_driver_sql(
+            "UPDATE product_daily_snapshots SET raw_browse_count = ?, "
+            "collection_views_excluded = ?, browse_count = ? WHERE id = ?",
+            (
+                raw_browse,
+                prior_excluded,
+                max(0, raw_browse - prior_excluded),
+                row[0],
+            ),
+        )
+        excluded_by_item[item_id] = prior_excluded
+    return True
+
+
+def backfill_product_collection_attempts(connection: Connection) -> int:
+    """Expose old daily runs in the append-only operation log.
+
+    Historical per-item outcomes were not stored, so this deliberately creates
+    only the attempt summary. It never invents child item results and is safe to
+    call repeatedly during local startup.
+    """
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if not {
+        "product_collection_runs",
+        "product_collection_attempts",
+    }.issubset(tables):
+        return 0
+    rows = list(
+        connection.exec_driver_sql(
+            "SELECT r.id, r.run_date, r.trigger, r.status, r.monitored_count, "
+            "r.collected_count, r.failed_count, r.detail, r.started_at, r.finished_at "
+            "FROM product_collection_runs r "
+            "LEFT JOIN product_collection_attempts a ON a.daily_run_id = r.id "
+            "WHERE a.id IS NULL ORDER BY r.run_date, r.started_at"
+        )
+    )
+    for row in rows:
+        connection.exec_driver_sql(
+            "INSERT INTO product_collection_attempts ("
+            "id, run_date, daily_run_id, trigger, requested_item_id, status, "
+            "monitored_count, collected_count, failed_count, skipped_count, detail, "
+            "started_at, finished_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?, ?)",
+            (
+                f"legacy-attempt-{row[0]}",
+                row[1],
+                row[0],
+                row[2],
+                row[3],
+                row[4],
+                row[5],
+                row[6],
+                row[7],
+                row[8],
+                row[9],
+            ),
+        )
+    return len(rows)
+
+
 def migrate_product_monitor_schema(connection: Connection) -> bool:
     """Add ownership and safe per-item collection diagnostics."""
 
@@ -192,6 +388,21 @@ def migrate_requirement_blueprint_schema(connection: Connection) -> bool:
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_requirement_case_version_partial "
         "ON requirement_document_versions(case_id, version) WHERE case_id IS NOT NULL"
     )
+    if "requirement_cases" in tables:
+        case_columns = {
+            str(row[1])
+            for row in connection.exec_driver_sql("PRAGMA table_info(requirement_cases)")
+        }
+        if "item_id" not in case_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE requirement_cases ADD COLUMN item_id INTEGER "
+                "REFERENCES items(id)"
+            )
+            changed = True
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_requirement_cases_item_id "
+            "ON requirement_cases(item_id)"
+        )
     if "ai_generation_tasks" in tables:
         task_columns = {
             str(row[1])
@@ -221,6 +432,8 @@ def backfill_requirement_cases(connection: Connection) -> int:
         "business_customers",
         "sales_leads",
         "customer_channel_identities",
+        "conversations",
+        "messages",
     }
     if not required.issubset(tables):
         return 0
@@ -259,14 +472,19 @@ def backfill_requirement_cases(connection: Connection) -> int:
             "SELECT id FROM sales_leads WHERE conversation_id = ? LIMIT 1",
             (conversation_id,),
         ).first()
+        item_id = connection.exec_driver_sql(
+            "SELECT item_id FROM conversations WHERE id = ? LIMIT 1",
+            (conversation_id,),
+        ).scalar()
         case_id = f"reqcase-{uuid4()}"
         connection.exec_driver_sql(
             "INSERT INTO requirement_cases "
-            "(id, customer_id, title, status, current_version, lead_id, project_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+            "(id, customer_id, item_id, title, status, current_version, lead_id, project_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
             (
                 case_id,
                 customer_id,
+                item_id,
                 str(latest[0] or "历史需求"),
                 str(latest[1] or "clarifying"),
                 int(latest[2] or 0),
@@ -301,4 +519,76 @@ def backfill_requirement_cases(connection: Connection) -> int:
             ),
         )
         created += 1
+
+    # Older customer-level cases did not persist their listing. Bind only when
+    # every known source conversation points to the same non-null item.
+    case_rows = list(
+        connection.exec_driver_sql(
+            "SELECT id, customer_id FROM requirement_cases WHERE item_id IS NULL"
+        )
+    )
+    for case_id, customer_id in case_rows:
+        source_count = int(
+            connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM requirement_case_sources WHERE case_id = ?",
+                (case_id,),
+            ).scalar()
+            or 0
+        )
+        item_rows = list(
+            connection.exec_driver_sql(
+                "SELECT DISTINCT c.item_id FROM requirement_case_sources s "
+                "JOIN conversations c ON c.id = s.conversation_id "
+                "WHERE s.case_id = ? AND c.item_id IS NOT NULL",
+                (case_id,),
+            )
+        )
+        item_ids = {int(row[0]) for row in item_rows}
+        item_source_count = int(
+            connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM requirement_case_sources s "
+                "JOIN conversations c ON c.id = s.conversation_id "
+                "WHERE s.case_id = ? AND c.item_id IS NOT NULL",
+                (case_id,),
+            ).scalar()
+            or 0
+        )
+        if source_count > 0 and item_source_count == source_count and len(item_ids) == 1:
+            connection.exec_driver_sql(
+                "UPDATE requirement_cases SET item_id = ? WHERE id = ?",
+                (next(iter(item_ids)), case_id),
+            )
+
+    if "customer_item_links" in tables:
+        linked_cases = list(
+            connection.exec_driver_sql(
+                "SELECT id, customer_id, item_id FROM requirement_cases "
+                "WHERE item_id IS NOT NULL"
+            )
+        )
+        for case_id, customer_id, item_id in linked_cases:
+            source_conversation_id = connection.exec_driver_sql(
+                "SELECT conversation_id FROM requirement_case_sources "
+                "WHERE case_id = ? ORDER BY created_at ASC LIMIT 1",
+                (case_id,),
+            ).scalar()
+            exists = connection.exec_driver_sql(
+                "SELECT 1 FROM customer_item_links "
+                "WHERE customer_id = ? AND item_id = ? LIMIT 1",
+                (customer_id, item_id),
+            ).first()
+            if not exists:
+                connection.exec_driver_sql(
+                    "INSERT INTO customer_item_links "
+                    "(id, customer_id, item_id, source_conversation_id, source_type, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'requirement_backfill', ?, ?)",
+                    (
+                        f"customer-item-{uuid4()}",
+                        customer_id,
+                        item_id,
+                        source_conversation_id,
+                        now,
+                        now,
+                    ),
+                )
     return created

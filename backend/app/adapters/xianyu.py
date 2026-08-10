@@ -5,12 +5,15 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import random
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from http.cookies import SimpleCookie
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -19,8 +22,9 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from ..channels.base import ChannelConversationInfo, ChannelMessage
-from ..config import Settings
+from ..config import PROJECT_ROOT, Settings
 from .base import (
+    AdapterAccessVerificationError,
     AdapterDisconnectedError,
     AdapterError,
     IncomingMessage,
@@ -37,10 +41,14 @@ LOGIN_TOKEN_API = "mtop.taobao.idlemessage.pc.login.token"
 LOGIN_USER_API = "mtop.taobao.idlemessage.pc.loginuser.get"
 ITEM_DETAIL_API = "mtop.taobao.idle.pc.detail"
 MTOP_BASE = "https://h5api.m.goofish.com/h5"
+ITEM_DETAIL_SPM = "a21ybx.item.0.0"
+IM_SPM = "a21ybx.im.0.0"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 )
+SESSION_COOKIE_NAMES = ("_m_h5_tk", "_m_h5_tk_enc")
+VERIFICATION_HOST_SUFFIXES = (".taobao.com", ".goofish.com", ".alibaba.com")
 
 
 def parse_cookie_string(raw: str) -> dict[str, str]:
@@ -69,6 +77,40 @@ def decode_sync_payload(payload: str) -> dict:
 
 def _lookup(mapping: dict, key: int | str, default=None):
     return mapping.get(key, mapping.get(str(key), default))
+
+
+def _verification_url(payload: object, *, depth: int = 0) -> str | None:
+    """Return only a platform-owned HTTPS verification URL from an RPC response."""
+    if depth > 8:
+        return None
+    if isinstance(payload, dict):
+        prioritized = [payload.get(key) for key in ("url", "redirectUrl", "punishUrl")]
+        prioritized.extend(
+            value
+            for key, value in payload.items()
+            if key not in {"url", "redirectUrl", "punishUrl"}
+        )
+        for value in prioritized:
+            candidate = _verification_url(value, depth=depth + 1)
+            if candidate:
+                return candidate
+        return None
+    if isinstance(payload, list):
+        for value in payload:
+            candidate = _verification_url(value, depth=depth + 1)
+            if candidate:
+                return candidate
+        return None
+    if not isinstance(payload, str):
+        return None
+    value = payload.strip()
+    if not value.startswith("https://"):
+        return None
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").lower()
+    if any(hostname.endswith(suffix) for suffix in VERIFICATION_HOST_SUFFIXES):
+        return value
+    return None
 
 
 def is_subscription_confirmation(frame: dict, registration_mid: str) -> bool:
@@ -289,6 +331,12 @@ class XianyuAdapter:
         self.settings = settings
         self.cookies = parse_cookie_string(settings.xianyu_cookie.get_secret_value())
         self.own_user_id = self.cookies.get("unb", "")
+        self._session_cache_path = self._resolve_session_cache_path(
+            settings.xianyu_session_cache_path
+        )
+        self._persisted_session_snapshot: tuple[str, str] | None = None
+        self._session_cache_warning_emitted = False
+        self._load_session_cache()
         self.device_id = f"{uuid.uuid4()}-{self.own_user_id}"
         self.http = httpx.AsyncClient(
             cookies=self.cookies,
@@ -299,6 +347,20 @@ class XianyuAdapter:
                 "Origin": "https://www.goofish.com",
                 "Referer": "https://www.goofish.com/",
                 "Accept": "application/json",
+                "Accept-Language": "en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6",
+                "Cache-Control": "no-cache",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Pragma": "no-cache",
+                "Priority": "u=1, i",
+                "Sec-CH-UA": (
+                    '"Chromium";v="146", "Not-A.Brand";v="24", '
+                    '"Google Chrome";v="146"'
+                ),
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"macOS"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
             },
         )
         self.ws: ClientConnection | None = None
@@ -314,6 +376,111 @@ class XianyuAdapter:
         self.decode_failures = 0
         self.parse_dropped = 0
         self.live_messages_received = 0
+
+    @staticmethod
+    def _resolve_session_cache_path(raw_path: str) -> Path | None:
+        value = raw_path.strip()
+        if not value:
+            return None
+        path = Path(value).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @staticmethod
+    def _token_expiry_ms(token_value: str) -> int | None:
+        suffix = token_value.rsplit("_", 1)[-1]
+        if not suffix.isdigit():
+            return None
+        try:
+            return int(suffix)
+        except ValueError:
+            return None
+
+    def _session_account_fingerprint(self) -> str:
+        if not self.own_user_id:
+            return ""
+        return hashlib.sha256(self.own_user_id.encode("utf-8")).hexdigest()
+
+    def _warn_session_cache_once(self, exc: Exception) -> None:
+        if self._session_cache_warning_emitted:
+            return
+        self._session_cache_warning_emitted = True
+        logger.warning(
+            "闲鱼短期会话缓存不可用 error=%s",
+            type(exc).__name__,
+        )
+
+    def _load_session_cache(self) -> None:
+        path = self._session_cache_path
+        account = self._session_account_fingerprint()
+        if path is None or not account or not path.exists():
+            return
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("invalid session cache file")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("version") != 1:
+                return
+            if payload.get("account_fingerprint") != account:
+                return
+            cached = payload.get("cookies")
+            if not isinstance(cached, dict):
+                return
+            token = str(cached.get("_m_h5_tk") or "")
+            expiry_ms = self._token_expiry_ms(token)
+            if not token or (expiry_ms is not None and expiry_ms <= int(time.time() * 1000)):
+                return
+            for name in SESSION_COOKIE_NAMES:
+                value = str(cached.get(name) or "")
+                if value:
+                    self.cookies[name] = value
+            os.chmod(path, 0o600)
+            self._persisted_session_snapshot = tuple(
+                self.cookies.get(name, "") for name in SESSION_COOKIE_NAMES
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._warn_session_cache_once(exc)
+
+    def _persist_refreshed_session_cookies(self) -> None:
+        path = self._session_cache_path
+        account = self._session_account_fingerprint()
+        if path is None or not account:
+            return
+        values = {name: self._cookie_value(name) for name in SESSION_COOKIE_NAMES}
+        token = values["_m_h5_tk"]
+        expiry_ms = self._token_expiry_ms(token)
+        if not token or (expiry_ms is not None and expiry_ms <= int(time.time() * 1000)):
+            return
+        snapshot = tuple(values[name] for name in SESSION_COOKIE_NAMES)
+        if snapshot == self._persisted_session_snapshot:
+            return
+        payload = {
+            "version": 1,
+            "account_fingerprint": account,
+            "cookies": values,
+            "token_expires_at_ms": expiry_ms,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        temporary_name = ""
+        try:
+            parent_existed = path.parent.exists()
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not parent_existed:
+                os.chmod(path.parent, 0o700)
+            fd, temporary_name = tempfile.mkstemp(
+                prefix=".xianyu-session-",
+                dir=path.parent,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.write("\n")
+            os.chmod(temporary_name, 0o600)
+            os.replace(temporary_name, path)
+            self._persisted_session_snapshot = snapshot
+        except OSError as exc:
+            self._warn_session_cache_once(exc)
+        finally:
+            if temporary_name and os.path.exists(temporary_name):
+                os.unlink(temporary_name)
 
     @staticmethod
     def _cookie_domain_matches(cookie_domain: str, host: str) -> bool:
@@ -358,7 +525,14 @@ class XianyuAdapter:
                 pairs.append(f"{name}={value}")
         return "; ".join(pairs)
 
-    async def _mtop(self, api: str, data: dict, *, retry: bool = True) -> dict:
+    async def _mtop(
+        self,
+        api: str,
+        data: dict,
+        *,
+        spm_cnt: str = IM_SPM,
+        retry: bool = True,
+    ) -> dict:
         token = self._cookie_token()
         if not token:
             raise LoginExpiredError("Cookie 中缺少 _m_h5_tk")
@@ -376,7 +550,7 @@ class XianyuAdapter:
             "timeout": "20000",
             "api": api,
             "sessionOption": "AutoLoginOnly",
-            "spm_cnt": "a21ybx.im.0.0",
+            "spm_cnt": spm_cnt,
         }
         url = f"{MTOP_BASE}/{api}/1.0/"
         # Always provide a single value per cookie name. After a MTop token
@@ -390,13 +564,22 @@ class XianyuAdapter:
             data={"data": data_json},
             headers={"Cookie": self._cookie_header()},
         )
+        self._persist_refreshed_session_cookies()
         response.raise_for_status()
         payload = response.json()
         ret = " ".join(payload.get("ret") or [])
         if any(marker in ret.upper() for marker in ("SESSION_EXPIRED", "SID_INVALID", "NEED_LOGIN")):
             raise LoginExpiredError("闲鱼登录已失效")
+        if any(
+            marker in ret.upper()
+            for marker in ("FAIL_SYS_USER_VALIDATE", "RGV587_ERROR")
+        ):
+            raise AdapterAccessVerificationError(
+                "闲鱼商品接口要求在浏览器中完成访问验证",
+                verification_url=_verification_url(payload),
+            )
         if "令牌过期" in ret and retry:
-            return await self._mtop(api, data, retry=False)
+            return await self._mtop(api, data, spm_cnt=spm_cnt, retry=False)
         return payload
 
     async def _access_token(self) -> str:
@@ -679,7 +862,11 @@ class XianyuAdapter:
         return sorted(unique.values(), key=lambda value: value.received_at)
 
     async def fetch_item(self, item_id: str) -> ItemInfo | None:
-        payload = await self._mtop(ITEM_DETAIL_API, {"itemId": item_id})
+        payload = await self._mtop(
+            ITEM_DETAIL_API,
+            {"itemId": item_id},
+            spm_cnt=ITEM_DETAIL_SPM,
+        )
         item = ((payload.get("data") or {}).get("itemDO") or {})
         if not isinstance(item, dict) or not item:
             return None

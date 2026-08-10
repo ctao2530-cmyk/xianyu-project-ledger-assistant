@@ -245,6 +245,14 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .requirement-section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 11px 0 4px; padding-top: 11px; border-top: 1px solid #ece9f3; }
 .requirement-section-title span { color: #454050; font-size: 11px; font-weight: 900; }
 .requirement-section-title small { color: #9a94a3; font-size: 8.5px; }
+.requirement-binding-card { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1.25fr); align-items: center; gap: 8px; margin: 9px 0; padding: 10px; border: 1px solid #e3def3; border-radius: 12px; background: linear-gradient(135deg,rgba(248,246,255,.96),rgba(244,249,255,.92)); }
+.requirement-binding-card > span { min-width: 0; display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 6px; }
+.requirement-binding-card > span svg { grid-row: 1 / 4; color: #6950df; }
+.requirement-binding-card small { color: #958ea2; font-size: 8px; font-weight: 800; }
+.requirement-binding-card b { overflow: hidden; color: #484152; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.requirement-binding-card em { overflow: hidden; color: #8d8796; font-size: 8px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.requirement-binding-card > svg { color: #a99fc5; }
+.requirement-binding-card.is-linked { border-color: #d7e9df; background: linear-gradient(135deg,rgba(246,253,249,.96),rgba(247,249,255,.94)); }
 .requirement-target-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 9px 0; }.requirement-target-fields label { display: grid; gap: 4px; color: #817b89; font-size: 9px; font-weight: 700; }.requirement-target-fields select,.requirement-target-fields input { width: 100%; min-width: 0; padding: 8px; border: 1px solid #e1deea; border-radius: 8px; background: #fff; color: #4d4855; font-size: 10px; outline: none; }.requirement-target-fields .case-title-field { grid-column: 1/-1; }
 .requirement-json-file { position: relative; display: flex; align-items: center; gap: 8px; margin-bottom: 7px; padding: 9px 10px; border: 1px dashed #cfc5f2; border-radius: 10px; background: #faf9ff; color: #6548e8; cursor: pointer; }
 .requirement-json-file > span { display: grid; gap: 2px; }
@@ -253,7 +261,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .requirement-json-file input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .requirement-json-file:focus-within { outline: 3px solid rgba(101, 68, 244, .16); outline-offset: 2px; }
 .requirements-panel .requirement-json-input { min-height: 145px; resize: vertical; background: #fbfaff; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 9px; }
-.requirement-preview-card { display: grid; gap: 9px; margin-top: 10px; padding: 11px; border: 1px solid #dcd4fa; border-radius: 12px; background: linear-gradient(145deg,#f3f0ff,#fbfaff); }.requirement-preview-card>header { display: flex; align-items: center; gap: 8px; }.requirement-preview-card>header>span { padding: 5px 6px; border-radius: 6px; background: #674bef; color: #fff; font-size: 9px; font-weight: 900; }.requirement-preview-card header div { display: grid; }.requirement-preview-card header b { color: #433b52; font-size: 11px; }.requirement-preview-card header small { color: #8d849a; font-size: 8.5px; }.requirement-preview-card>div { display: grid; gap: 4px; }.requirement-preview-card p { display: flex; align-items: center; gap: 5px; margin: 0; color: #55705f; font-size: 9px; }.requirement-preview-card p.warning { color: #b66c35; }.requirement-preview-card>button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 9px; border: 0; border-radius: 9px; background:#6548e8;color:#fff;font-size:10px;font-weight:900;cursor:pointer; }
+.requirement-preview-card { display: grid; gap: 9px; margin-top: 10px; padding: 11px; border: 1px solid #dcd4fa; border-radius: 12px; background: linear-gradient(145deg,#f3f0ff,#fbfaff); }.requirement-preview-card>header { display: flex; align-items: center; gap: 8px; }.requirement-preview-card>header>span { padding: 5px 6px; border-radius: 6px; background: #674bef; color: #fff; font-size: 9px; font-weight: 900; }.requirement-preview-card header div { display: grid; }.requirement-preview-card header b { color: #433b52; font-size: 11px; }.requirement-preview-card header small { color: #8d849a; font-size: 8.5px; }.requirement-preview-card header em { color: #6456a0; font-size: 8px; font-style: normal; font-weight: 750; }.requirement-preview-card>div { display: grid; gap: 4px; }.requirement-preview-card p { display: flex; align-items: center; gap: 5px; margin: 0; color: #55705f; font-size: 9px; }.requirement-preview-card p.warning { color: #b66c35; }.requirement-preview-card>button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 9px; border: 0; border-radius: 9px; background:#6548e8;color:#fff;font-size:10px;font-weight:900;cursor:pointer; }
 .legacy-requirement-link { display: grid; gap: 2px; margin-top: 10px; padding: 8px; border-radius: 9px; background: #f7f7fa; color: #6d6875; font-size: 9px; }.legacy-requirement-link small { color: #9b95a2; }
 .conversion-steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
 .conversion-steps li { display: flex; gap: 10px; align-items: center; padding: 10px; border: 1px solid #e8e8f1; border-radius: 12px; background: white; }
@@ -310,7 +318,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .thread-messages article > div { max-width: 90%; }
   .reply-panel, .requirements-panel, .conversion-panel { padding: 13px; }
   .sales-strategy-block { grid-template-columns: 1fr; }
-  .requirement-export-actions, .requirement-target-fields { grid-template-columns: 1fr; }.requirement-target-fields .case-title-field{grid-column:auto}.reply-provider-switch{grid-template-columns:1fr}
+  .requirement-export-actions, .requirement-target-fields { grid-template-columns: 1fr; }.requirement-binding-card{grid-template-columns:1fr}.requirement-binding-card>svg{transform:rotate(90deg);justify-self:center}.requirement-target-fields .case-title-field{grid-column:auto}.reply-provider-switch{grid-template-columns:1fr}
 }
 
 @media (prefers-reduced-motion: reduce) {

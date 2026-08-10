@@ -6,6 +6,7 @@ import {
   CircleNotch,
   Clock,
   Gauge,
+  PencilSimple,
   Plus,
   Sparkle,
   Timer,
@@ -43,6 +44,7 @@ interface ImmersiveTaskFlowProps {
   project: Project;
   tasks: ProjectTask[];
   onCreateTask: () => void;
+  onEditTask: (taskId: string) => void;
   onAdvanceTask: (taskId: string) => void;
 }
 
@@ -134,7 +136,7 @@ function statusCount(tasks: TaskViewModel[], status: TaskStatus) {
   return tasks.filter((task) => task.status === status).length;
 }
 
-export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onAdvanceTask }: ImmersiveTaskFlowProps) {
+export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onEditTask, onAdvanceTask }: ImmersiveTaskFlowProps) {
   const today = startOfToday();
   const viewTasks = useMemo(() => tasks.map((task) => deriveTask(task, today)), [tasks, today]);
   const [selectedTaskId, setSelectedTaskId] = useState(() => preferredTaskId(viewTasks));
@@ -340,6 +342,7 @@ export function ImmersiveTaskFlow({ project, tasks, onCreateTask, onAdvanceTask 
       </section>
       <div className="inspector-actions">
         <button onClick={() => selectRelative(-1)} disabled={selectedIndex === 0} aria-label="上一个任务"><ArrowLeft size={15} /></button>
+        <button className="immersive-edit" onClick={() => onEditTask(selectedTask.id)} aria-label={`编辑任务 ${selectedTask.title}`}><PencilSimple size={15} />编辑任务</button>
         <button className="immersive-primary" onClick={() => onAdvanceTask(selectedTask.id)}>{selectedTask.status === "done" ? "重新开始" : "推进状态"}<ArrowRight size={15} /></button>
         <button onClick={() => selectRelative(1)} disabled={selectedIndex === viewTasks.length - 1} aria-label="下一个任务"><ArrowRight size={15} /></button>
       </div>

@@ -20,6 +20,8 @@ import {
   FileText,
   Funnel,
   GearSix,
+  Heart,
+  Info,
   Lock,
   MagnifyingGlass,
   Palette,
@@ -51,6 +53,8 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Line,
+  LineChart,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -63,12 +67,11 @@ import type { CustomerLevel, LedgerSnapshot, ProjectKind } from "../types";
 import type { CustomerRequirementRoute } from "../App";
 import { getBusinessSummary } from "../data/businessMetrics";
 import { acceptMigratedLedger, getLegacyLedgerSnapshot, isLedgerBackendConnected } from "../data/mockService";
-import { localPlatformService, type AIProviderStatus, type MigrationPreview, type PlatformStatus, type ProductIntelligenceView } from "../data/localPlatformService";
+import { localPlatformService, type AIProviderStatus, type MigrationPreview, type PlatformStatus, type ProductIntelligenceView, type ProductSnapshotView, type ProductView } from "../data/localPlatformService";
 import { runPageTransition } from "../utils/pageTransition";
 import {
   AIWorkspacePage,
   EnhancedCustomerManagementPage,
-  ProfitAnalysisPage,
   type ProjectPageRoute,
   type ProjectRouteMode,
 } from "./BusinessAssistantPages";
@@ -112,6 +115,7 @@ interface OtherPagesProps {
   snapshot: LedgerSnapshot;
   onQuickAdd: () => void;
   onCreatePaymentPlan: (projectId: string) => void;
+  onCreateChangeOrder: (projectId: string) => void;
   onConfirmPayment: (projectId: string, paymentId?: string) => void;
   onRecordSettlementIssue: (projectId: string) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
@@ -276,6 +280,7 @@ function DonutLegend({ data }: { data: Array<{ name: string; value: number; colo
 interface CrudValue {
   name: string;
   amount: string;
+  paidAt: string;
   notes: string;
   customerName: string;
   durationDays: string;
@@ -286,11 +291,19 @@ interface CrudValue {
   projectKind: ProjectKind;
 }
 
+function localDateTimeInput(value?: string) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return "";
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 16);
+}
+
 function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "client", onClose, onCreated }: { kind: ActionKind; snapshot: LedgerSnapshot; editingExpenseId?: string | null; initialProjectKind?: ProjectKind; onClose: () => void; onCreated: (kind: ActionKind, value: CrudValue) => void }) {
   const editingExpense = snapshot.expenses.find((item) => item.id === editingExpenseId);
   const labels = kind === "project" ? { title: "新建项目", name: "项目名称", amount: "项目预算" } : kind === "expense" ? { title: editingExpenseId ? "编辑支出" : "记录支出", name: "支出项目", amount: "支出金额" } : { title: "新增客户", name: "客户名称", amount: "联系电话" };
   const [name, setName] = useState(editingExpense?.name || "");
   const [amount, setAmount] = useState(editingExpense ? String(editingExpense.amount) : "");
+  const [paidAt, setPaidAt] = useState(localDateTimeInput(editingExpense?.paidAt));
   const [notes, setNotes] = useState(editingExpense?.notes || "");
   const [customerName, setCustomerName] = useState(snapshot.customers[0]?.name || "");
   const [durationDays, setDurationDays] = useState(String(snapshot.settings.defaultDurationDays || 30));
@@ -305,9 +318,10 @@ function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "cli
     if (!name.trim()) { setError("请填写名称"); return; }
     if (kind === "customer" && !amount.trim()) { setError("请填写联系电话"); return; }
     if (kind === "expense" && (!amount.trim() || Number(amount) <= 0)) { setError("金额必须大于 0"); return; }
+    if (kind === "expense" && !paidAt) { setError("请选择支出时间"); return; }
     if (kind === "project" && projectKind === "client" && (!amount.trim() || Number(amount) <= 0)) { setError("请填写大于 0 的项目预算"); return; }
     if (kind === "project" && projectKind === "client" && !customerName.trim()) { setError("请填写关联客户"); return; }
-    onCreated(kind, { name: name.trim(), amount: kind === "project" && projectKind === "personal" ? "0" : amount.trim(), notes: notes.trim(), customerName: projectKind === "personal" ? "" : customerName.trim(), durationDays, projectId, category, source, level, projectKind });
+    onCreated(kind, { name: name.trim(), amount: kind === "project" && projectKind === "personal" ? "0" : amount.trim(), paidAt, notes: notes.trim(), customerName: projectKind === "personal" ? "" : customerName.trim(), durationDays, projectId, category, source, level, projectKind });
   };
   return <div className="page-modal-layer"><button className="page-modal-backdrop" aria-label="关闭弹窗" onClick={onClose} /><form className="page-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label={labels.title}>
     <div className="page-modal-head"><div><span>快速录入</span><h2>{labels.title}</h2></div><button type="button" aria-label="关闭" onClick={onClose}><X size={20} /></button></div>
@@ -315,16 +329,16 @@ function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "cli
     <label><span>{labels.name}</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder={`请输入${labels.name}`} autoFocus /></label>
     {(kind !== "project" || projectKind === "client") && <label><span>{labels.amount}</span><input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={`请输入${labels.amount}`} /></label>}
     {kind === "project" && <>{projectKind === "client" && <label><span>关联客户</span><input list="modal-customer-options" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="选择或输入客户名称" /><datalist id="modal-customer-options">{snapshot.customers.map((customer) => <option value={customer.name} key={customer.id} />)}</datalist></label>}<label><span>预计工期（天）</span><input type="number" min="1" value={durationDays} onChange={(event) => setDurationDays(event.target.value)} /></label></>}
-    {kind === "expense" && <><label><span>支出类别</span><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)}><option value="software">软件订阅</option><option value="outsourcing">外包服务</option><option value="server">服务器</option><option value="office">办公支出</option><option value="refund">退款</option><option value="other">其他</option></select></label><label><span>关联项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">不关联项目</option>{snapshot.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label></>}
+    {kind === "expense" && <><label><span>支出时间</span><input type="datetime-local" value={paidAt} onChange={(event) => setPaidAt(event.target.value)} /></label><label><span>支出类别</span><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)}><option value="software">软件订阅</option><option value="outsourcing">外包服务</option><option value="server">服务器</option><option value="office">办公支出</option><option value="traffic">流量曝光</option><option value="refund">退款</option><option value="other">其他</option></select></label><label><span>关联项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">不关联项目</option>{snapshot.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label></>}
     {kind === "customer" && <><label><span>客户来源</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="xianyu">闲鱼</option><option value="wechat">微信</option><option value="referral">转介绍</option><option value="other">其他</option></select></label><label><span>客户等级</span><select value={level} onChange={(event) => setLevel(event.target.value as CustomerLevel)}><option value="A">A 级</option><option value="B">B 级</option><option value="C">C 级</option></select></label></>}
     <label><span>备注</span><textarea rows={4} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="补充说明（可选）" /></label>
     {error && <p className="page-modal-error"><Warning size={15} />{error}</p>}
-    <button className="page-modal-submit" type="submit"><CheckCircle size={19} weight="fill" />保存记录</button>
+    <button className="page-modal-submit" type="submit"><CheckCircle size={19} weight="fill" />{kind === "expense" && editingExpenseId ? "保存支出修改" : "保存记录"}</button>
   </form></div>;
 }
 
 function TableActions({ onView, onEdit, onDelete }: { onView?: () => void; onEdit?: () => void; onDelete?: () => void } = {}) {
-  return <span className="table-actions"><button aria-label="查看" onClick={onView} disabled={!onView}><Eye size={15} /></button><button aria-label="编辑" onClick={onEdit} disabled={!onEdit}><PencilSimple size={15} /></button><button aria-label="删除" onClick={onDelete} disabled={!onDelete}>{onDelete ? <Trash size={15} /> : <DotsThreeVertical size={16} />}</button></span>;
+  return <span className="table-actions"><button type="button" aria-label="查看" title="查看详情" onClick={onView} disabled={!onView}><Eye size={15} /></button><button type="button" aria-label="编辑" title="编辑记录" onClick={onEdit} disabled={!onEdit}><PencilSimple size={15} /></button><button type="button" aria-label="删除" title="删除记录" onClick={onDelete} disabled={!onDelete}>{onDelete ? <Trash size={15} /> : <DotsThreeVertical size={16} />}</button></span>;
 }
 
 function ProjectManagementPage({ onAction, extraRows }: { onAction: (kind: ActionKind) => void; extraRows: string[][] }) {
@@ -390,7 +404,7 @@ function ExpenseRecordsPage({ snapshot, onAction, extraRows }: { snapshot: Ledge
 function CleanExpenseRecordsPage({ snapshot, onAction, extraRows, globalSearch, onViewExpense, onEditExpense, onDeleteExpense }: { snapshot: LedgerSnapshot; onAction: (kind: ActionKind) => void; extraRows: string[][]; globalSearch: string; onViewExpense: (id: string) => void; onEditExpense: (id: string) => void; onDeleteExpense: (id: string) => void }) {
   const [search, setSearch] = useState("");
   const formatMoney = (value: number) => value.toLocaleString("zh-CN", { style: "currency", currency: "CNY", minimumFractionDigits: 2 });
-  const categoryLabels: Record<string, string> = { software: "软件订阅", outsourcing: "外包服务", server: "服务器", office: "办公支出", refund: "退款", other: "其他" };
+  const categoryLabels: Record<string, string> = { software: "软件订阅", outsourcing: "外包服务", server: "服务器", office: "办公支出", traffic: "流量曝光", refund: "退款", other: "其他" };
   const projectNames = new Map(snapshot.projects.map((project) => [project.id, project.name]));
   const storedRows = snapshot.expenses.map((expense) => [
     expense.name,
@@ -423,7 +437,7 @@ function CleanExpenseRecordsPage({ snapshot, onAction, extraRows, globalSearch, 
     { title: "本月利润（元）", value: formatMoney(monthProfit), detail: <>收入 - 支出</>, tone: monthProfit < 0 ? "red" : "purple", image: "/assets/metrics-v2/profit-wallet-3d.png" },
     { title: "成本占收入比", value: `${costRatio}%`, detail: <>按本月真实数据计算</>, tone: "orange", icon: ChartBar },
   ];
-  const columns: Column[] = [{ key: "name", label: "支出项目", width: "1.5fr" }, { key: "category", label: "类别", width: ".75fr" }, { key: "amount", label: "金额（元）", width: ".82fr" }, { key: "date", label: "支出时间", width: "1.08fr" }, { key: "method", label: "记录方式", width: ".85fr" }, { key: "project", label: "关联项目", width: "1.24fr" }, { key: "status", label: "状态", width: ".72fr" }, { key: "note", label: "备注", width: ".9fr" }, { key: "actions", label: "", width: ".25fr" }];
+  const columns: Column[] = [{ key: "name", label: "支出项目", width: "1.5fr" }, { key: "category", label: "类别", width: ".75fr" }, { key: "amount", label: "金额（元）", width: ".82fr" }, { key: "date", label: "支出时间", width: "1.08fr" }, { key: "method", label: "记录方式", width: ".85fr" }, { key: "project", label: "关联项目", width: "1.24fr" }, { key: "status", label: "状态", width: ".72fr" }, { key: "note", label: "备注", width: ".9fr" }, { key: "actions", label: "操作", width: ".62fr" }];
   const tableRows = rows.map((row, index) => ({ id: String(row[8] || `${row[0]}-${index}`), name: <span className="table-name"><i className={`row-icon color-${index % 4}`}><Database size={15} /></i><b>{row[0]}</b></span>, category: <StatusPill tone={row[1] === "退款" ? "red" : "blue"}>{row[1]}</StatusPill>, amount: <b className={String(row[2]).startsWith("-") ? "danger-text" : "money-green"}>{row[2]}</b>, date: row[3], method: row[4], project: row[5], status: <StatusPill tone={row[6] === "已退款" ? "blue" : "green"}>{row[6]}</StatusPill>, note: row[7], actions: row[8] ? <TableActions onView={() => onViewExpense(String(row[8]))} onEdit={() => onEditExpense(String(row[8]))} onDelete={() => onDeleteExpense(String(row[8]))} /> : <TableActions /> }));
   return <div className="other-page"><MetricsRow metrics={metrics} />{snapshot.expenses.length ? <><FilterBar>{globalSearch ? <span className="range-field">顶部搜索：{globalSearch}</span> : <SearchField value={search} onChange={setSearch} placeholder="搜索支出项目或关联项目" />}<PrimaryButton onClick={() => onAction("expense")}>记录支出</PrimaryButton></FilterBar><SectionCard className="page-table-card"><PanelHeader title={query ? `支出搜索结果 · ${rows.length}` : "支出记录明细"} /><DataTable columns={columns} rows={tableRows} /><TableFooter total={rows.length} /></SectionCard></> : <EmptyLedgerNotice icon={Database} title="还没有支出记录" description="工具、外包、服务器和日常支出示例已经清空，可以录入自己的真实成本。" action={<button className="page-primary" onClick={() => onAction("expense")}><Plus size={18} />记录第一笔支出</button>} />}</div>;
 }
@@ -484,8 +498,217 @@ function DataStatisticsPage({ snapshot }: { snapshot: LedgerSnapshot }) {
   return <div className="other-page analytics-page"><MetricsRow metrics={metrics} /><section className="analytics-grid top"><SectionCard><PanelHeader title="收入趋势（元）" action={<SelectButton>近6个月</SelectButton>} /><div className="large-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={revenueTrend}><defs><linearGradient id="incomeArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6447f3" stopOpacity={0.24} /><stop offset="100%" stopColor="#6447f3" stopOpacity={0.02} /></linearGradient></defs><CartesianGrid vertical={false} stroke="#e9edf5" strokeDasharray="3 3" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip content={<ChartTooltip />} /><Area name="收入" type="monotone" dataKey="income" stroke="#6447f3" strokeWidth={3} fill="url(#incomeArea)" dot={{ fill: "#6447f3", r: 4 }} /></AreaChart></ResponsiveContainer></div></SectionCard><SectionCard><PanelHeader title="收入 vs 支出对比（元）" action={<SelectButton>近6个月</SelectButton>} /><div className="large-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={revenueTrend} barGap={8}><CartesianGrid vertical={false} stroke="#e9edf5" strokeDasharray="3 3" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip content={<ChartTooltip />} /><Bar name="收入" dataKey="income" fill="#4d88f5" radius={[5, 5, 0, 0]} /><Bar name="支出" dataKey="expense" fill="#ff744d" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div></SectionCard><SectionCard><PanelHeader title="项目状态分布" /><div className="donut-panel tall"><Donut data={status} center="28" sub="总项目" /><DonutLegend data={status} /></div><button className="panel-bottom-link">查看项目管理 <CaretRight size={14} /></button></SectionCard></section><section className="analytics-grid bottom"><SectionCard><PanelHeader title="客户来源分析" /><div className="donut-panel tall"><Donut data={sources} center="¥128,860" sub="总收入" /><DonutLegend data={sources} /></div></SectionCard><SectionCard><PanelHeader title="项目收入排行榜（TOP 5）" /><ol className="project-ranking">{["校园二手交易平台", "餐饮点餐小程序开发", "数据可视化后台系统", "个人博客系统开发", "电商后台管理系统"].map((name, index) => <li key={name}><i>{index + 1}</i><span>{name}</span><b>¥{[24800, 16800, 12000, 9600, 8800][index].toLocaleString()}</b><small>{[19.2, 13, 9.3, 7.4, 6.8][index]}%</small></li>)}</ol></SectionCard><SectionCard><PanelHeader title="环比数据对比" action={<SelectButton>近3个月</SelectButton>} /><div className="comparison-list"><p><span>收入（元）</span><b>28,600.00</b><small>上月 22,300.00</small><em>↑ 28.3%</em></p><p><span>支出（元）</span><b className="danger-text">12,320.00</b><small>上月 9,860.00</small><em>↑ 25.0%</em></p><p><span>净利润（元）</span><b className="money-green">16,280.00</b><small>上月 12,440.00</small><em>↑ 30.9%</em></p></div></SectionCard></section><SectionCard className="efficiency-card"><div className="efficiency-title"><span>运营效率指数</span><small>综合项目交付效率、客户满意度与财务健康度评估</small><strong>86<em>优秀</em></strong></div>{[["准时交付率", "92%"], ["客户满意度", "4.7 / 5"], ["收入增长率", "28.3%"], ["成本控制率", "78%"], ["应收回款率", "85%"]].map(([label, value], index) => <div className="efficiency-item" key={label}><i className={`eff-icon eff-${index}`}><TrendUp size={23} /></i><span>{label}<b>{value}</b><small>较上月 ↑{index + 3}%</small></span></div>)}<img src="/assets/pages/analytics-report.png" alt="运营数据报告插画" /></SectionCard></div>;
 }
 
+type GrowthPeriod = 7 | 14 | 30 | 90;
+
+interface ProductGrowthRow {
+  product: ProductView;
+  series: ProductSnapshotView[];
+  baseline: ProductSnapshotView | null;
+  latest: ProductSnapshotView | null;
+  browseDelta: number | null;
+  wantDelta: number | null;
+  inquiryDelta: number | null;
+  convertedDelta: number | null;
+  revenueDelta: number | null;
+}
+
+function growthDayStamp(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+function shortGrowthDate(value: string) {
+  const [, month, day] = value.split("-");
+  return `${month}-${day}`;
+}
+
+function signedCount(value: number) {
+  return `${value > 0 ? "+" : ""}${value.toLocaleString("zh-CN")}`;
+}
+
+function deriveProductGrowth(data: ProductIntelligenceView, period: GrowthPeriod) {
+  const allDates = Array.from(new Set(data.products.flatMap((product) => product.history.map((point) => point.date)))).sort();
+  const endDate = allDates[allDates.length - 1] || new Date().toISOString().slice(0, 10);
+  const endStamp = growthDayStamp(endDate);
+  const startStamp = endStamp - (period - 1) * 86_400_000;
+  const rows: ProductGrowthRow[] = data.products.map((product) => {
+    const series = product.history
+      .filter((point) => {
+        const stamp = growthDayStamp(point.date);
+        return stamp >= startStamp && stamp <= endStamp;
+      })
+      .slice()
+      .sort((left, right) => left.date.localeCompare(right.date));
+    const baseline = series[0] || null;
+    const latest = series[series.length - 1] || null;
+    const hasComparison = series.length >= 2 && baseline && latest;
+    return {
+      product,
+      series,
+      baseline,
+      latest,
+      browseDelta: hasComparison ? latest.browse_count - baseline.browse_count : null,
+      wantDelta: hasComparison ? latest.want_count - baseline.want_count : null,
+      inquiryDelta: hasComparison ? latest.inquiry_count - baseline.inquiry_count : null,
+      convertedDelta: hasComparison ? latest.converted_project_count - baseline.converted_project_count : null,
+      revenueDelta: hasComparison ? latest.revenue_total - baseline.revenue_total : null,
+    };
+  });
+  const periodDates = allDates.filter((date) => {
+    const stamp = growthDayStamp(date);
+    return stamp >= startStamp && stamp <= endStamp;
+  });
+  const trend = periodDates.map((date) => {
+    let browse = 0;
+    let want = 0;
+    let inquiry = 0;
+    let coverage = 0;
+    rows.forEach((row) => {
+      if (!row.baseline) return;
+      const current = row.series.filter((point) => point.date <= date).pop();
+      if (!current) return;
+      coverage += 1;
+      browse += current.browse_count - row.baseline.browse_count;
+      want += current.want_count - row.baseline.want_count;
+      inquiry += current.inquiry_count - row.baseline.inquiry_count;
+    });
+    return { date, label: shortGrowthDate(date), browse, want, inquiry, coverage };
+  });
+  const totalBrowse = rows.reduce((sum, row) => sum + (row.browseDelta || 0), 0);
+  const totalWant = rows.reduce((sum, row) => sum + (row.wantDelta || 0), 0);
+  const totalInquiry = rows.reduce((sum, row) => sum + (row.inquiryDelta || 0), 0);
+  const totalConverted = rows.reduce((sum, row) => sum + (row.convertedDelta || 0), 0);
+  const totalRevenue = rows.reduce((sum, row) => sum + (row.revenueDelta || 0), 0);
+  const comparableRows = rows.filter((row) => row.browseDelta !== null);
+  const latestCollectionBrowse = data.products.reduce((sum, product) => {
+    const history = product.history.slice().sort((left, right) => left.date.localeCompare(right.date));
+    const latest = history[history.length - 1];
+    const previous = history[history.length - 2];
+    return latest?.date === endDate && previous ? sum + latest.browse_count - previous.browse_count : sum;
+  }, 0);
+  const baselineFrequency = new Map<string, number>();
+  rows.forEach((row) => {
+    if (row.baseline) baselineFrequency.set(row.baseline.date, (baselineFrequency.get(row.baseline.date) || 0) + 1);
+  });
+  const baselineDate = Array.from(baselineFrequency.entries()).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] || endDate;
+  const rankedRows = rows.slice().sort((left, right) => (right.browseDelta ?? -1) - (left.browseDelta ?? -1));
+  return {
+    rows,
+    rankedRows,
+    trend,
+    totalBrowse,
+    totalWant,
+    totalInquiry,
+    totalConverted,
+    totalRevenue,
+    comparableCount: comparableRows.length,
+    growingCount: comparableRows.filter((row) => (row.browseDelta || 0) > 0).length,
+    latestCollectionBrowse,
+    baselineDate,
+    endDate,
+    sampleDays: periodDates.length,
+  };
+}
+
 function DataStatisticsHub({ snapshot }: { snapshot: LedgerSnapshot }) {
-  return <div className="statistics-hub"><ProfitAnalysisPage snapshot={snapshot} /></div>;
+  const [period, setPeriod] = useState<GrowthPeriod>(7);
+  const [data, setData] = useState<ProductIntelligenceView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reloadVersion, setReloadVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    void localPlatformService.productIntelligence()
+      .then((value) => {
+        if (!active) return;
+        setData(value);
+        setLoading(false);
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setData(null);
+        setError(reason instanceof Error ? reason.message : "暂时无法读取商品统计");
+        setLoading(false);
+      });
+    return () => { active = false; };
+  }, [reloadVersion]);
+
+  const analytics = useMemo(() => data ? deriveProductGrowth(data, period) : null, [data, period]);
+  const confirmedIncome = snapshot.payments.filter((payment) => payment.status === "confirmed").reduce((sum, payment) => sum + payment.amount, 0);
+  const attributedIncome = data?.products.reduce((sum, product) => sum + product.revenue_total, 0) || 0;
+  const pendingAttribution = Math.max(0, confirmedIncome - attributedIncome);
+  const formatCurrency = (value: number) => value.toLocaleString("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 0 });
+  const openProduct = (externalId: string) => {
+    window.location.hash = encodeURIComponent(`商品经营/overview/product/${externalId}`);
+  };
+
+  if (loading) return <div className="growth-statistics-state" role="status"><ArrowClockwise className="spin" size={34} /><h2>正在汇总商品增长证据</h2><p>读取浏览、想要、咨询与项目归因数据…</p></div>;
+  if (error || !data) return <div className="growth-statistics-state is-error"><Warning size={36} weight="duotone" /><h2>需要连接本机服务</h2><p>{error || "商品统计暂时不可用"}</p><button type="button" onClick={() => setReloadVersion((value) => value + 1)}><ArrowClockwise size={16} />重新连接</button></div>;
+  if (!data.products.length || !analytics) return <div className="growth-statistics-state"><Storefront size={38} weight="duotone" /><h2>还没有可复盘的本人商品</h2><p>商品统计只读取已确认归属、且已有真实采集快照的商品。</p></div>;
+
+  const topRows = analytics.rankedRows.slice(0, 5);
+  const maxGrowth = Math.max(1, ...topRows.map((row) => row.browseDelta || 0));
+  const sampleComplete = analytics.sampleDays >= period;
+  const metricCards = [
+    { icon: Eye, label: "最近采集新增浏览", value: signedCount(analytics.latestCollectionBrowse), detail: `${shortGrowthDate(analytics.endDate)} 最新一批真实采集`, tone: "purple" },
+    { icon: ChatCircleDots, label: `${period}日新增咨询`, value: signedCount(analytics.totalInquiry), detail: `来自 ${analytics.comparableCount} 个可比较商品`, tone: "green" },
+    { icon: Heart, label: `${period}日新增想要`, value: signedCount(analytics.totalWant), detail: `当前共有 ${analytics.sampleDays} 个有效样本日`, tone: "orange" },
+    { icon: TrendUp, label: "浏览增长商品", value: `${analytics.growingCount}`, detail: `${analytics.growingCount} / ${analytics.comparableCount || data.products.length}`, tone: "blue" },
+  ] as const;
+
+  return <div className="growth-statistics-page">
+    <section className="growth-statistics-toolbar" aria-label="统计周期与数据说明">
+      <div><span><Info size={14} weight="fill" />仅 {analytics.sampleDays} 天有效样本，14 / 30 / 90 天仍在积累</span><p>只读汇总增长、转化与归因，不在这里执行采集、修改或投流。</p></div>
+      <nav aria-label="统计周期">{([7, 14, 30, 90] as GrowthPeriod[]).map((value) => <button type="button" aria-pressed={period === value} className={period === value ? "active" : ""} onClick={() => setPeriod(value)} key={value}>{value}天</button>)}</nav>
+    </section>
+
+    <section className="growth-statistics-metrics" aria-label="商品增长核心指标">
+      {metricCards.map(({ icon: Icon, label, value, detail, tone }) => <article className={`growth-statistic-metric tone-${tone}`} key={label}><i><Icon size={25} weight="duotone" /></i><span><small>{label}</small><strong>{value}</strong><em>{detail}</em></span></article>)}
+    </section>
+
+    <section className="growth-statistics-overview">
+      <article className="growth-statistics-card growth-trend-card">
+        <header><span><h2>组合增长趋势</h2><small><Info size={13} />多数商品从 {shortGrowthDate(analytics.baselineDate)} 建立基线，只展示已采集证据</small></span><div className="growth-chart-legend"><i className="browse" />浏览增量<i className="inquiry" />咨询增量<i className="want" />想要增量</div></header>
+        {analytics.trend.length >= 2 ? <div className="growth-trend-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={analytics.trend} margin={{ top: 12, right: 8, left: -12, bottom: 2 }}><CartesianGrid vertical={false} stroke="#e8ebf4" strokeDasharray="3 4" /><XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "#7f89a2", fontSize: 10 }} /><YAxis yAxisId="browse" tickLine={false} axisLine={false} allowDecimals={false} tick={{ fill: "#7f89a2", fontSize: 10 }} /><YAxis yAxisId="signals" orientation="right" tickLine={false} axisLine={false} allowDecimals={false} tick={{ fill: "#7f89a2", fontSize: 10 }} /><Tooltip formatter={(value, name) => [signedCount(Number(value)), name === "browse" ? "浏览增量" : name === "want" ? "想要增量" : "咨询增量"]} labelFormatter={(label) => `采集日 ${label}`} /><Line yAxisId="browse" type="monotone" dataKey="browse" stroke="#6548f4" strokeWidth={2.7} dot={{ r: 3.5, fill: "#6548f4", strokeWidth: 0 }} activeDot={{ r: 5 }} /><Line yAxisId="signals" type="monotone" dataKey="want" stroke="#ff730e" strokeWidth={2.2} dot={{ r: 3, fill: "#ff730e", strokeWidth: 0 }} /><Line yAxisId="signals" type="monotone" dataKey="inquiry" stroke="#24b874" strokeWidth={2.2} dot={{ r: 3, fill: "#24b874", strokeWidth: 0 }} /></LineChart></ResponsiveContainer></div> : <div className="growth-chart-empty">至少需要两个采集日才能形成趋势</div>}
+        <footer><span>最新覆盖 {analytics.trend[analytics.trend.length - 1]?.coverage || 0} / {data.products.length} 个本人商品</span><b>{sampleComplete ? `${period}天窗口已覆盖` : `${period}天窗口仍在积累 · 当前 ${analytics.sampleDays} 个样本日`}</b></footer>
+      </article>
+
+      <article className="growth-statistics-card growth-contribution-card">
+        <header><span><h2>增长贡献结构</h2><small>按{period}日浏览增量排序</small></span></header>
+        <div>{topRows.map((row) => {
+          const delta = row.browseDelta || 0;
+          const contribution = analytics.totalBrowse > 0 ? delta / analytics.totalBrowse * 100 : 0;
+          return <button type="button" onClick={() => openProduct(row.product.external_id)} key={row.product.external_id}><span>{row.product.title}</span><i><em style={{ width: `${Math.max(4, delta / maxGrowth * 100)}%` }} /></i><b>{signedCount(delta)}</b><small>{contribution.toFixed(1)}%</small></button>;
+        })}</div>
+      </article>
+    </section>
+
+    <section className="growth-statistics-card growth-funnel-card">
+      <header><span><h2>组合转化漏斗</h2><small><Info size={13} />同一统计窗口内的真实增量与归因结果</small></span></header>
+      <div className="growth-funnel-flow">
+        <article className="tone-purple"><small>周期新增浏览</small><strong>{signedCount(analytics.totalBrowse)}</strong></article><CaretRight aria-hidden="true" size={25} />
+        <article className="tone-orange"><small>新增想要</small><strong>{signedCount(analytics.totalWant)}</strong></article><CaretRight aria-hidden="true" size={25} />
+        <article className="tone-green"><small>新增咨询</small><strong>{signedCount(analytics.totalInquiry)}</strong></article><CaretRight aria-hidden="true" size={25} />
+        <article className="tone-blue"><small>已归因项目</small><strong>{analytics.totalConverted}</strong></article>
+      </div>
+      <p>本周期已归因成交 <b>{formatCurrency(analytics.totalRevenue)}</b>{analytics.totalBrowse > 0 && <> · 咨询转化率 <b>{(analytics.totalInquiry / analytics.totalBrowse * 100).toFixed(2)}%</b></>}</p>
+    </section>
+
+    <section className="growth-statistics-card growth-comparison-card">
+      <header><span><h2>跨商品比较</h2><small>金额仅显示已完成商品来源归因的真实成交</small></span></header>
+      <div className="growth-comparison-table-wrap"><table><thead><tr><th>商品</th><th>浏览增量</th><th>想要增量</th><th>咨询增量</th><th>询盘率</th><th>已转项目</th><th>已归因成交</th><th>增长贡献</th><th aria-label="操作" /></tr></thead><tbody>{topRows.map((row) => {
+        const browse = row.browseDelta || 0;
+        const inquiry = row.inquiryDelta || 0;
+        const contribution = analytics.totalBrowse > 0 ? browse / analytics.totalBrowse * 100 : 0;
+        return <tr key={row.product.external_id}><th scope="row" data-label="商品">{row.product.title}</th><td data-label="浏览增量" className="is-purple">{signedCount(browse)}</td><td data-label="想要增量" className="is-orange">{signedCount(row.wantDelta || 0)}</td><td data-label="咨询增量" className="is-green">{signedCount(inquiry)}</td><td data-label="询盘率">{browse > 0 ? `${(inquiry / browse * 100).toFixed(1)}%` : "—"}</td><td data-label="已转项目">{row.convertedDelta ?? "—"}</td><td data-label="已归因成交">{formatCurrency(row.revenueDelta || 0)}</td><td data-label="增长贡献">{contribution.toFixed(1)}%</td><td><button type="button" onClick={() => openProduct(row.product.external_id)}>查看商品经营 <CaretRight size={13} /></button></td></tr>;
+      })}</tbody></table></div>
+    </section>
+
+    <aside className="growth-attribution-note"><Info size={18} weight="fill" /><span><b>待归因收入 {formatCurrency(pendingAttribution)}</b><small>{pendingAttribution > 0 ? "需要先把项目或会话关联到准确商品，之后才会计入商品成交贡献；系统不会猜测分摊。" : "当前已确认收入均已完成商品来源归因。"}</small></span></aside>
+  </div>;
 }
 
 function CleanGoalPlanPage({ snapshot, onEditGoal }: { snapshot: LedgerSnapshot; onEditGoal: () => void }) {
@@ -798,7 +1021,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
   </div></div>;
 }
 
-export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onNavigate, globalSearch, initialSettingsSection, projectRoute, onProjectRouteChange, customerRoute, onCustomerRouteChange }: OtherPagesProps) {
+export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, onCreateChangeOrder, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onNavigate, globalSearch, initialSettingsSection, projectRoute, onProjectRouteChange, customerRoute, onCustomerRouteChange }: OtherPagesProps) {
   const [modal, setModal] = useState<ActionKind | null>(null);
   const [createProjectKind, setCreateProjectKind] = useState<ProjectKind>("client");
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
@@ -818,7 +1041,7 @@ export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, on
       next.projects.unshift({ id: `p-${stamp}`, name: value.name, customerId: customer?.id || "", totalAmount: value.projectKind === "personal" ? 0 : Number(value.amount), startDate: today.toISOString().slice(0, 10), dueDate: due.toISOString().slice(0, 10), progress: 0, status: "pending", notes: value.notes || undefined, type: value.projectKind === "personal" ? "个人开发" : "定制开发", estimatedHours: Math.max(1, Number(value.durationDays) || 30) * 5, accent: value.projectKind === "personal" ? "purple" : "blue", projectKind: value.projectKind });
     }
     if (kind === "expense") {
-      const expense = { id: editingExpenseId || `e-${stamp}`, projectId: value.projectId || undefined, name: value.name, category: value.category as "software" | "outsourcing" | "server" | "office" | "refund" | "other", amount: Number(value.amount), paidAt: next.expenses.find((item) => item.id === editingExpenseId)?.paidAt || today.toISOString(), notes: value.notes || undefined };
+      const expense = { id: editingExpenseId || `e-${stamp}`, projectId: value.projectId || undefined, name: value.name, category: value.category as "software" | "outsourcing" | "server" | "office" | "traffic" | "refund" | "other", amount: Number(value.amount), paidAt: value.paidAt ? new Date(value.paidAt).toISOString() : today.toISOString(), notes: value.notes || undefined };
       next.expenses = editingExpenseId ? next.expenses.map((item) => item.id === editingExpenseId ? expense : item) : [expense, ...next.expenses];
     }
     if (kind === "customer") next.customers.unshift({ id: `c-${stamp}`, name: value.name, source: value.source as "xianyu" | "wechat" | "referral" | "other", phone: value.amount, followUpStatus: "new", lastContactAt: today.toISOString(), level: value.level, tags: value.notes ? value.notes.split(/[,，]/).map((item) => item.trim()).filter(Boolean) : ["新客户"] });
@@ -831,18 +1054,18 @@ export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, on
   const content = useMemo(() => {
     if (page === "客户消息") return <CustomerMessagesPage customers={snapshot.customers} onOpenRequirement={(customerId, caseId) => onCustomerRouteChange({ customerId, caseId }, "push")} onProjectCreated={(projectId) => { window.location.hash = encodeURIComponent(`项目管理/${projectId}/immersive`); window.location.reload(); }} />;
     if (page === "商品经营") return <ProductIntelligencePage globalSearch={globalSearch} />;
-    if (page === "项目管理") return <ProjectWorkspacePage snapshot={snapshot} onCreateProject={(projectKind = "client") => { setCreateProjectKind(projectKind); setModal("project"); }} onCreatePaymentPlan={onCreatePaymentPlan} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} projectRoute={projectRoute} onProjectRouteChange={onProjectRouteChange} />;
-    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} onCreatePaymentPlan={onCreatePaymentPlan} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
+    if (page === "项目管理") return <ProjectWorkspacePage snapshot={snapshot} onCreateProject={(projectKind = "client") => { setCreateProjectKind(projectKind); setModal("project"); }} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} projectRoute={projectRoute} onProjectRouteChange={onProjectRouteChange} />;
+    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
     if (page === "支出记录") return <CleanExpenseRecordsPage snapshot={snapshot} onAction={setModal} extraRows={[]} globalSearch={globalSearch} onViewExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense) { setToast(`${expense.name} · ¥${expense.amount.toLocaleString()} · ${expense.notes || "无备注"}`); window.setTimeout(() => setToast(""), 3200); } }} onEditExpense={(id) => { setEditingExpenseId(id); setModal("expense"); }} onDeleteExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense && window.confirm(`确认删除支出“${expense.name}”？此操作无法撤销。`)) { onSnapshotChange({ ...snapshot, expenses: snapshot.expenses.filter((item) => item.id !== id) }); setToast(`${expense.name} 已删除`); window.setTimeout(() => setToast(""), 2200); } }} />;
     if (page === "客户管理") {
       const customer = customerRoute ? snapshot.customers.find((item) => item.id === customerRoute.customerId) : null;
-      if (customerRoute && customer) return <CustomerRequirementBlueprintPage customer={customer} route={customerRoute} onRouteChange={onCustomerRouteChange} />;
+      if (customerRoute && customer) return <CustomerRequirementBlueprintPage customer={customer} route={customerRoute} onRouteChange={onCustomerRouteChange} onSnapshotChange={onSnapshotChange} />;
       return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setModal("customer")} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} onOpenRequirements={(customerId) => onCustomerRouteChange({ customerId, caseId: null }, "push")} />;
     }
     if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
     if (page === "目标计划") return <CleanGoalPlanPage snapshot={snapshot} onEditGoal={() => { onNavigate("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />;
     if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} />;
     return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} initialSection={initialSettingsSection} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
-  }, [customerRoute, globalSearch, initialSettingsSection, onConfirmPayment, onCreatePaymentPlan, onCustomerRouteChange, onNavigate, onProjectRouteChange, onQuickAdd, onRecordSettlementIssue, onSnapshotChange, page, projectRoute, snapshot]);
+  }, [customerRoute, globalSearch, initialSettingsSection, onConfirmPayment, onCreateChangeOrder, onCreatePaymentPlan, onCustomerRouteChange, onNavigate, onProjectRouteChange, onQuickAdd, onRecordSettlementIssue, onSnapshotChange, page, projectRoute, snapshot]);
   return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} initialProjectKind={createProjectKind} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
 }

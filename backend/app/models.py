@@ -330,6 +330,9 @@ class RequirementCase(Base):
     customer_id: Mapped[str] = mapped_column(
         ForeignKey("business_customers.id"), index=True
     )
+    item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("items.id"), nullable=True, index=True
+    )
     title: Mapped[str] = mapped_column(String(300), index=True)
     status: Mapped[str] = mapped_column(String(32), default="clarifying", index=True)
     current_version: Mapped[int] = mapped_column(Integer, default=0)
@@ -483,6 +486,30 @@ class CustomerChannelIdentity(Base):
     )
 
 
+class CustomerItemLink(Base):
+    """Human-confirmed relationship between a business customer and a listing."""
+
+    __tablename__ = "customer_item_links"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    customer_id: Mapped[str] = mapped_column(
+        ForeignKey("business_customers.id"), index=True
+    )
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    source_conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id"), nullable=True, index=True
+    )
+    source_type: Mapped[str] = mapped_column(
+        String(32), default="requirement_import"
+    )
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("customer_id", "item_id", name="uq_customer_item_link"),
+    )
+
+
 class SalesLead(Base):
     __tablename__ = "sales_leads"
 
@@ -554,6 +581,27 @@ class BusinessTask(Base):
     stage_payload_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class ProjectChangeOrderRecord(Base):
+    """A customer-confirmed paid scope addition within an existing project."""
+
+    __tablename__ = "project_change_orders"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("business_projects.id"), index=True
+    )
+    customer_id: Mapped[str] = mapped_column(
+        ForeignKey("business_customers.id"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(300))
+    amount: Mapped[float] = mapped_column(Float)
+    confirmed_at: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(32), default="confirmed", index=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    request_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+
 class PaymentNode(Base):
     __tablename__ = "payment_nodes"
 
@@ -563,6 +611,9 @@ class PaymentNode(Base):
     )
     customer_id: Mapped[str] = mapped_column(
         ForeignKey("business_customers.id"), index=True
+    )
+    change_order_id: Mapped[str | None] = mapped_column(
+        ForeignKey("project_change_orders.id"), nullable=True, index=True
     )
     amount: Mapped[float] = mapped_column(Float, default=0)
     type: Mapped[str] = mapped_column(String(32), default="milestone")
@@ -719,6 +770,15 @@ class ProductDailySnapshot(Base):
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(64), default="unknown")
     published_at: Mapped[str] = mapped_column(String(64), default="")
+    # Keep the platform counter for audit while exposing browse_count as the
+    # operating counter used by trends and recommendations. Successful remote
+    # detail reads are excluded conservatively one at a time.
+    raw_browse_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    collection_views_excluded: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
     browse_count: Mapped[int] = mapped_column(Integer, default=0)
     collect_count: Mapped[int] = mapped_column(Integer, default=0)
     want_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -757,6 +817,70 @@ class ProductCollectionRun(Base):
     detail: Mapped[str] = mapped_column(String(500), default="")
     started_at: Mapped[datetime] = mapped_column(default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class ProductCollectionAttempt(Base):
+    """Append-only record of every scheduled or explicit collection attempt.
+
+    ``ProductCollectionRun`` remains the once-per-Beijing-day scheduler gate.
+    Attempts are intentionally separate so a later manual recovery can become
+    the current visible state without deleting the earlier failed daily run.
+    """
+
+    __tablename__ = "product_collection_attempts"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_date: Mapped[str] = mapped_column(String(10), index=True)
+    daily_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("product_collection_runs.id"), nullable=True, unique=True, index=True
+    )
+    trigger: Mapped[str] = mapped_column(String(32), index=True)
+    requested_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("items.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    monitored_count: Mapped[int] = mapped_column(Integer, default=0)
+    collected_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    detail: Mapped[str] = mapped_column(String(500), default="")
+    started_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+
+    __table_args__ = (
+        Index("idx_product_collection_attempts_date_finished", "run_date", "finished_at"),
+    )
+
+
+class ProductCollectionAttemptItem(Base):
+    """Safe per-listing result for a collection attempt.
+
+    Only user-readable error codes/details are stored. Raw platform responses,
+    seller identifiers and credentials never enter this audit trail.
+    """
+
+    __tablename__ = "product_collection_attempt_items"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("product_collection_attempts.id"), index=True
+    )
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[str] = mapped_column(String(500), default="")
+    finished_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "attempt_id", "item_id", name="uq_product_collection_attempt_item"
+        ),
+        Index(
+            "idx_product_collection_attempt_items_item_finished",
+            "item_id",
+            "finished_at",
+        ),
+    )
 
 
 class ProductStrategyRecommendation(Base):
@@ -816,3 +940,297 @@ class ProductActionLog(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
     item: Mapped[Item] = relationship()
+
+
+class ProductOperatingPlan(Base):
+    """Versioned rolling plan produced by the local rules engine."""
+
+    __tablename__ = "product_operating_plans"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    plan_start_date: Mapped[str] = mapped_column(String(10), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="current", index=True)
+    input_signature: Mapped[str] = mapped_column(String(128), index=True)
+    weekly_budget: Mapped[float] = mapped_column(Float, default=24)
+    change_summary: Mapped[str] = mapped_column(Text, default="")
+    data_quality: Mapped[str] = mapped_column(String(32), default="low")
+    rules_version: Mapped[str] = mapped_column(String(32), default="v2")
+    generated_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_start_date", "version", name="uq_product_operating_plan_version"
+        ),
+        Index(
+            "idx_product_operating_plans_status_start",
+            "status",
+            "plan_start_date",
+        ),
+    )
+
+
+class ProductOperatingPlanSlot(Base):
+    __tablename__ = "product_operating_plan_slots"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("product_operating_plans.id"), index=True
+    )
+    slot_date: Mapped[str] = mapped_column(String(10), index=True)
+    scheduled_time: Mapped[str] = mapped_column(String(5), default="20:00")
+    action_type: Mapped[str] = mapped_column(String(32), default="observe", index=True)
+    item_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    planned_cost: Mapped[float] = mapped_column(Float, default=0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    change_reason: Mapped[str] = mapped_column(Text, default="")
+    evidence_json: Mapped[str] = mapped_column(Text, default="[]")
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    confidence: Mapped[str] = mapped_column(String(16), default="low")
+    locked: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="planned", index=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    plan: Mapped[ProductOperatingPlan] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("plan_id", "slot_date", name="uq_product_plan_slot_date"),
+        Index(
+            "idx_product_plan_slots_date_action",
+            "slot_date",
+            "action_type",
+        ),
+    )
+
+
+class ProductTrafficBatch(Base):
+    """A user-recorded Xianyu exposure purchase covering multiple products."""
+
+    __tablename__ = "product_traffic_batches"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    plan_slot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("product_operating_plan_slots.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="planned", index=True)
+    planned_at: Mapped[datetime] = mapped_column(index=True)
+    started_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    actual_cost: Mapped[float] = mapped_column(Float, default=5.9)
+    total_exposure: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        Index(
+            "idx_product_traffic_batches_status_planned",
+            "status",
+            "planned_at",
+        ),
+    )
+
+
+class ProductTrafficBatchItem(Base):
+    __tablename__ = "product_traffic_batch_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("product_traffic_batches.id"), index=True
+    )
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    baseline_browse_count: Mapped[int] = mapped_column(Integer, default=0)
+    baseline_collect_count: Mapped[int] = mapped_column(Integer, default=0)
+    baseline_want_count: Mapped[int] = mapped_column(Integer, default=0)
+    baseline_inquiry_count: Mapped[int] = mapped_column(Integer, default=0)
+    baseline_captured_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    item: Mapped[Item] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("batch_id", "item_id", name="uq_product_traffic_batch_item"),
+        Index("idx_product_traffic_batch_items_batch_position", "batch_id", "position"),
+    )
+
+
+class ProductTrafficCheckpoint(Base):
+    __tablename__ = "product_traffic_checkpoints"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("product_traffic_batches.id"), index=True
+    )
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    checkpoint: Mapped[str] = mapped_column(String(16), index=True)
+    browse_count: Mapped[int] = mapped_column(Integer, default=0)
+    collect_count: Mapped[int] = mapped_column(Integer, default=0)
+    want_count: Mapped[int] = mapped_column(Integer, default=0)
+    inquiry_count: Mapped[int] = mapped_column(Integer, default=0)
+    recorded_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    note: Mapped[str] = mapped_column(Text, default="")
+
+    item: Mapped[Item] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "item_id",
+            "checkpoint",
+            name="uq_product_traffic_checkpoint",
+        ),
+        Index(
+            "idx_product_traffic_checkpoints_batch_checkpoint",
+            "batch_id",
+            "checkpoint",
+        ),
+    )
+
+
+class ProductTrafficReminderLog(Base):
+    __tablename__ = "product_traffic_reminder_logs"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("product_traffic_batches.id"), index=True
+    )
+    reminder_type: Mapped[str] = mapped_column(String(32), index=True)
+    scheduled_for: Mapped[datetime] = mapped_column(index=True)
+    sent_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id", "reminder_type", name="uq_product_traffic_reminder"
+        ),
+        Index(
+            "idx_product_traffic_reminders_schedule",
+            "scheduled_for",
+            "sent_at",
+        ),
+    )
+
+
+class ProductMarketKeywordPlan(Base):
+    """One deterministic keyword decision for each Beijing calendar day."""
+
+    __tablename__ = "product_market_keyword_plans"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    plan_date: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    mode: Mapped[str] = mapped_column(String(32), default="recommended", index=True)
+    selected_keyword: Mapped[str] = mapped_column(String(120), default="")
+    custom_keyword: Mapped[str] = mapped_column(String(120), default="")
+    recommended_candidates_json: Mapped[str] = mapped_column(Text, default="[]")
+    evidence_json: Mapped[str] = mapped_column(Text, default="[]")
+    rules_version: Mapped[str] = mapped_column(String(32), default="market-v1")
+    save_as_common: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class ProductMarketSample(Base):
+    """Sanitized public search observations imported from the user's Edge tab."""
+
+    __tablename__ = "product_market_samples"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    keyword: Mapped[str] = mapped_column(String(120), index=True)
+    sample_date: Mapped[str] = mapped_column(String(10), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="edge_codex")
+    captured_at: Mapped[datetime] = mapped_column(index=True)
+    result_count: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("keyword", "sample_date", name="uq_product_market_sample_keyword_day"),
+        Index("idx_product_market_samples_keyword_date", "keyword", "sample_date"),
+    )
+
+
+class ProductMarketSampleResult(Base):
+    __tablename__ = "product_market_sample_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sample_id: Mapped[str] = mapped_column(
+        ForeignKey("product_market_samples.id"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(500))
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")
+
+    sample: Mapped[ProductMarketSample] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("sample_id", "position", name="uq_product_market_result_position"),
+        Index("idx_product_market_results_sample_position", "sample_id", "position"),
+    )
+
+
+class ProductMarketReminderLog(Base):
+    """Mutable, deduplicated reminder state for one Beijing day."""
+
+    __tablename__ = "product_market_reminder_logs"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    reminder_date: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="sent", index=True)
+    scheduled_for: Mapped[datetime] = mapped_column(index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class ProductLaunchPlan(Base):
+    """A trackable manual listing plan; it never publishes to Xianyu."""
+
+    __tablename__ = "product_launch_plans"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    keyword: Mapped[str] = mapped_column(String(120), index=True)
+    theme: Mapped[str] = mapped_column(String(120), default="")
+    title: Mapped[str] = mapped_column(String(500))
+    recommended_window: Mapped[str] = mapped_column(String(120), default="")
+    rationale_json: Mapped[str] = mapped_column(Text, default="[]")
+    evidence_json: Mapped[str] = mapped_column(Text, default="[]")
+    confidence: Mapped[str] = mapped_column(String(16), default="low")
+    status: Mapped[str] = mapped_column(String(32), default="proposed", index=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class ProductModificationExperiment(Base):
+    """One-variable manual listing experiment with a frozen baseline."""
+
+    __tablename__ = "product_modification_experiments"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    variable: Mapped[str] = mapped_column(String(32), index=True)
+    before_value: Mapped[str] = mapped_column(Text)
+    after_value: Mapped[str] = mapped_column(Text)
+    baseline_json: Mapped[str] = mapped_column(Text, default="{}")
+    started_at: Mapped[datetime] = mapped_column(index=True)
+    observation_until: Mapped[datetime] = mapped_column(index=True)
+    status: Mapped[str] = mapped_column(String(32), default="observing", index=True)
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    decision: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    evidence_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    item: Mapped[Item] = relationship()
+
+    __table_args__ = (
+        Index(
+            "idx_product_modification_item_status_until",
+            "item_id",
+            "status",
+            "observation_until",
+        ),
+    )

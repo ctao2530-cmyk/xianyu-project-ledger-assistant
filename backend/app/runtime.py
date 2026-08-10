@@ -128,6 +128,8 @@ def build_runtime(settings: Settings) -> Runtime:
         adapter,
         settings,
         event_hub,
+        notifier,
+        ledger=ledger,
     )
     send_limiter = SlidingWindowRateLimiter(settings.send_rate_limit_per_minute)
     actions = HumanActions(database, channel_senders, style_learning)
@@ -157,7 +159,7 @@ def build_runtime(settings: Settings) -> Runtime:
         notifier,
         event_hub=event_hub,
     )
-    requirement_exchange = RequirementExchangeService(database)
+    requirement_exchange = RequirementExchangeService(database, ledger)
     processor = MessageProcessor(
         database,
         adapter,

@@ -15,6 +15,14 @@ class LoginExpiredError(AdapterError):
     pass
 
 
+class AdapterAccessVerificationError(AdapterError):
+    """The platform accepted the request but required interactive validation."""
+
+    def __init__(self, message: str, *, verification_url: str | None = None) -> None:
+        super().__init__(message)
+        self.verification_url = verification_url
+
+
 class AdapterDisconnectedError(AdapterError):
     pass
 

@@ -1,5 +1,6 @@
 import {
   ArrowClockwise,
+  ArrowRight,
   Brain,
   ChatCircleDots,
   Check,
@@ -43,6 +44,21 @@ import "./customer-messages.css";
 
 type ChannelFilter = "all" | "xianyu" | "wechat";
 type WorkbenchTab = "reply" | "requirements" | "conversion";
+
+function readConversationRouteId() {
+  try {
+    const [page, kind, rawId] = decodeURIComponent(window.location.hash.replace(/^#/, "")).split("/");
+    if (page !== "客户消息" || kind !== "conversation") return null;
+    const value = Number(rawId);
+    return Number.isInteger(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function conversationRouteHash(conversationId: number) {
+  return `#${encodeURIComponent(`客户消息/conversation/${conversationId}`)}`;
+}
 
 const dateTime = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit",
@@ -179,7 +195,7 @@ function TargetIcon() {
 export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequirement }: { customers: Customer[]; onProjectCreated?: (projectId: string) => void; onOpenRequirement?: (customerId: string, caseId: string) => void }) {
   const [filter, setFilter] = useState<ChannelFilter>("all");
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(() => readConversationRouteId());
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [requirements, setRequirements] = useState<RequirementWorkspace | null>(null);
   const [lead, setLead] = useState<LeadView | null>(null);
@@ -201,7 +217,7 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
   const [exportBundle, setExportBundle] = useState<RequirementExport | null>(null);
   const [jsonInput, setJsonInput] = useState("");
   const [importPreview, setImportPreview] = useState<RequirementImportPreview | null>(null);
-  const [selectedCustomerId, setSelectedCustomerId] = useState(customers[0]?.id || "");
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState("");
   const [caseTitle, setCaseTitle] = useState("");
   const [customerCases, setCustomerCases] = useState<RequirementCaseSummary[]>([]);
@@ -228,6 +244,10 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
         ? preferredId
         : rows[0]?.id ?? null;
       setSelectedId(nextId);
+      if (preferredId && nextId !== preferredId) {
+        const nextHash = nextId === null ? `#${encodeURIComponent("客户消息")}` : conversationRouteHash(nextId);
+        window.history.replaceState(window.history.state, "", nextHash);
+      }
     } catch {
       setOffline(true);
       setConversations([]);
@@ -240,19 +260,23 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
 
   const loadConversation = async (conversationId: number) => {
     try {
-      const [nextDetail, nextRequirements, nextLead, nextSales, nextMemory, nextSalesHistory] = await Promise.all([
+      const [nextDetail, requirementResult, nextLead, nextSales, nextMemory, nextSalesHistory] = await Promise.all([
         localPlatformService.conversation(conversationId),
-        localPlatformService.requirements(conversationId),
+        localPlatformService.requirements(conversationId)
+          .then((value) => ({ value, failed: false as const }))
+          .catch(() => ({ value: null, failed: true as const })),
         localPlatformService.getLead(conversationId).catch(() => null),
         localPlatformService.salesAnalysis(conversationId).catch(() => null),
         localPlatformService.salesMemory(conversationId).catch(() => null),
         localPlatformService.salesHistory(conversationId).catch(() => []),
       ]);
       setDetail(nextDetail);
-      setRequirements(nextRequirements);
+      setRequirements(requirementResult.value);
       setDraftIndex(0);
       setDraftText(nextDetail.drafts[0]?.content || "");
       setLead(nextLead);
+      setSelectedCustomerId(nextDetail.linked_customer_id || nextLead?.customer_id || "");
+      setSelectedCaseId("");
       setSalesAnalysis(nextSales);
       setSalesMemory(nextMemory);
       setSalesHistory(nextSalesHistory);
@@ -263,12 +287,27 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
       setImportPreview(null);
       setCaseTitle(nextDetail.item?.title || `${nextDetail.customer_name}需求`);
       setConversations((rows) => rows.map((row) => row.id === conversationId ? { ...row, unread_count: 0 } : row));
+      if (requirementResult.failed) showNotice("会话已载入，但需求版本暂时无法读取");
     } catch (error) {
       showNotice(error instanceof Error ? error.message : "会话加载失败");
     }
   };
 
   useEffect(() => { void loadList(selectedId); }, [filter]);
+  useEffect(() => {
+    const syncRoute = () => {
+      const requestedId = readConversationRouteId();
+      if (requestedId !== null) setSelectedId(requestedId);
+    };
+    window.addEventListener("hashchange", syncRoute);
+    window.addEventListener("popstate", syncRoute);
+    window.addEventListener("xianyu:route-focus", syncRoute);
+    return () => {
+      window.removeEventListener("hashchange", syncRoute);
+      window.removeEventListener("popstate", syncRoute);
+      window.removeEventListener("xianyu:route-focus", syncRoute);
+    };
+  }, []);
   useEffect(() => {
     if (selectedId !== null) void loadConversation(selectedId);
   }, [selectedId]);
@@ -288,12 +327,16 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
     return () => { active = false; };
   }, [selectedCustomerId]);
   useEffect(() => {
-    if (!customers.some((item) => item.id === selectedCustomerId)) {
-      setSelectedCustomerId(customers[0]?.id || "");
+    if (selectedCustomerId && !customers.some((item) => item.id === selectedCustomerId)) {
+      setSelectedCustomerId("");
     }
   }, [customers, selectedCustomerId]);
 
   const selectedDraft = detail?.drafts[draftIndex];
+  const compatibleCustomerCases = useMemo(() => customerCases.filter((item) => (
+    !item.item_external_id || item.item_external_id === detail?.item?.external_id
+  )), [customerCases, detail?.item?.external_id]);
+  const selectedCustomer = customers.find((item) => item.id === selectedCustomerId) || null;
   const riskFlags = useMemo(() => Array.from(new Set([
     ...(selectedDraft?.risk_flags || []),
     ...(detail?.ai_task?.risk_reasons || []),
@@ -406,6 +449,10 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
       showNotice("请选择客户并粘贴 GPT 返回的 JSON");
       return;
     }
+    if (detail.channel === "xianyu" && !detail.item) {
+      showNotice("当前闲鱼会话没有关联商品，请先同步会话商品后再保存需求");
+      return;
+    }
     setWorking("preview");
     try {
       const preview = await localPlatformService.previewRequirementImport({
@@ -465,6 +512,7 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
     try {
       const confirmed = await localPlatformService.confirmSales(detail.id, salesAnalysis.id);
       setLead(confirmed.lead);
+      setSelectedCustomerId(confirmed.lead.customer_id || "");
       setSalesAnalysis(confirmed.analysis);
       setSalesMemory((current) => ({
         customer_id: confirmed.lead.customer_id,
@@ -492,7 +540,10 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
           type="button"
           className={selectedId === conversation.id ? "active" : ""}
           aria-current={selectedId === conversation.id ? "true" : undefined}
-          onClick={() => setSelectedId(conversation.id)}
+          onClick={() => {
+            setSelectedId(conversation.id);
+            window.history.replaceState(window.history.state, "", conversationRouteHash(conversation.id));
+          }}
           key={conversation.id}
         >
           <span className={`channel-avatar ${conversation.channel}`}><ChannelIcon channel={conversation.channel} /></span>
@@ -577,10 +628,15 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
           {exportBundle && <p className="redaction-note"><ShieldCheck size={15} weight="fill" />已隐藏 {exportBundle.redaction_count} 处手机号、邮箱或微信号；Cookie、消息 ID 与内部日志不会导出。</p>}
           <p className="gpt-upload-instruction"><Sparkle size={15} />上传文档后对 GPT 发送：<b>请严格按照附件中的固定提示词完成需求分析，只返回 JSON。</b></p>
           <div className="requirement-section-title"><span>导入 GPT 分析结果</span><small>支持选择 JSON 文件或直接粘贴</small></div>
-          <div className="requirement-target-fields"><label>保存到客户<select value={selectedCustomerId} onChange={(event) => { setSelectedCustomerId(event.target.value); setSelectedCaseId(""); setImportPreview(null); }}><option value="">请选择客户</option>{customers.map((customer) => <option value={customer.id} key={customer.id}>{customer.name}</option>)}</select></label><label>需求案例<select value={selectedCaseId} onChange={(event) => { setSelectedCaseId(event.target.value); setImportPreview(null); }}><option value="">新建独立案例</option>{customerCases.map((item) => <option value={item.id} key={item.id}>添加到：{item.title}</option>)}</select></label>{!selectedCaseId && <label className="case-title-field">案例名称<input value={caseTitle} onChange={(event) => setCaseTitle(event.target.value)} placeholder="例如：闲鱼经营助手升级" /></label>}</div>
+          <div className={`requirement-binding-card ${detail.linked_customer_id ? "is-linked" : "is-pending"}`}>
+            <span><UserCircle size={17} weight="duotone" /><small>需求客户</small><b>{selectedCustomer?.name || "请选择并确认客户"}</b><em>{detail.linked_customer_id ? "已由渠道身份确认" : "保存蓝图时建立客户关系"}</em></span>
+            <ArrowRight size={16} />
+            <span><Storefront size={17} weight="duotone" /><small>对应商品</small><b>{detail.item?.title || "当前会话未关联商品"}</b><em>{detail.item ? `闲鱼商品 ${detail.item.external_id}` : "不会按标题猜测商品"}</em></span>
+          </div>
+          <div className="requirement-target-fields"><label>保存到客户<select value={selectedCustomerId} disabled={Boolean(detail.linked_customer_id)} onChange={(event) => { setSelectedCustomerId(event.target.value); setSelectedCaseId(""); setImportPreview(null); }}><option value="">请选择客户</option>{customers.map((customer) => <option value={customer.id} key={customer.id}>{customer.name}</option>)}</select></label><label>需求案例<select value={selectedCaseId} onChange={(event) => { setSelectedCaseId(event.target.value); setImportPreview(null); }}><option value="">为当前商品新建案例</option>{compatibleCustomerCases.map((item) => <option value={item.id} key={item.id}>添加到：{item.title}{item.item_title ? ` · ${item.item_title}` : ""}</option>)}</select></label>{!selectedCaseId && <label className="case-title-field">案例名称<input value={caseTitle} onChange={(event) => setCaseTitle(event.target.value)} placeholder="例如：闲鱼经营助手升级" /></label>}</div>
           <label className="requirement-json-file"><UploadSimple size={15} /><span><b>选择 GPT 返回的 JSON 文件</b><small>文件只在当前页面读取，确认前不会保存</small></span><input type="file" accept=".json,application/json,text/plain" onChange={(event) => void loadRequirementJsonFile(event)} /></label>
           <textarea className="requirement-json-input" aria-label="粘贴 GPT 返回的 JSON" value={jsonInput} onChange={(event) => { setJsonInput(event.target.value); setImportPreview(null); }} rows={8} placeholder={'粘贴 GPT 返回的完整 JSON，例如：\n{"schema_version":"2.0", ...}'} />
-          {!importPreview ? <button className="panel-primary" disabled={Boolean(working) || !jsonInput.trim() || !selectedCustomerId} onClick={() => void previewRequirement()}><Sparkle size={16} />校验并生成可视化预览</button> : <article className="requirement-preview-card"><header><span>V{importPreview.target_version}</span><div><b>{importPreview.case_title}</b><small>{importPreview.estimated_hours} 小时 · {importPreview.document.stages.length} 个实施阶段</small></div></header><div>{importPreview.changes.map((item) => <p key={item}><CheckCircle size={14} />{item}</p>)}{importPreview.warnings.map((item) => <p className="warning" key={item}><WarningCircle size={14} />{item}</p>)}</div><button disabled={Boolean(working)} onClick={() => void commitRequirement()}><CheckCircle size={16} weight="fill" />人工确认保存并打开蓝图</button></article>}
+          {!importPreview ? <button className="panel-primary" disabled={Boolean(working) || !jsonInput.trim() || !selectedCustomerId || (detail.channel === "xianyu" && !detail.item)} onClick={() => void previewRequirement()}><Sparkle size={16} />校验并生成可视化预览</button> : <article className="requirement-preview-card"><header><span>V{importPreview.target_version}</span><div><b>{importPreview.case_title}</b><small>{importPreview.estimated_hours} 小时 · {importPreview.document.stages.length} 个实施阶段</small><em>{selectedCustomer?.name || "未选择客户"} · {importPreview.item_title || "未关联商品"}</em></div></header><div>{importPreview.changes.map((item) => <p key={item}><CheckCircle size={14} />{item}</p>)}{importPreview.warnings.map((item) => <p className="warning" key={item}><WarningCircle size={14} />{item}</p>)}</div><button disabled={Boolean(working)} onClick={() => void commitRequirement()}><CheckCircle size={16} weight="fill" />人工确认绑定客户、商品并保存蓝图</button></article>}
           {requirements?.latest && <div className="legacy-requirement-link"><span>当前会话已有 V{requirements.latest.version}</span><small>{requirements.latest.title} · 报价将采用最新确认版本</small></div>}
         </section>}
 

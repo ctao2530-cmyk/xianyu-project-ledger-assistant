@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import json
+import stat
+import time
 from datetime import timezone
+from pathlib import Path
 
 import httpx
 import msgpack
+import pytest
 from pydantic import SecretStr
 
+from backend.app.adapters import AdapterAccessVerificationError
 from backend.app.adapters.xianyu import (
     XianyuAdapter,
+    _verification_url,
     decode_sync_payload,
     is_subscription_confirmation,
     mtop_sign,
@@ -159,6 +167,108 @@ def test_refreshed_domain_cookie_wins_without_httpx_cookie_conflict() -> None:
         asyncio.run(adapter.close())
 
 
+def test_optional_session_cache_loads_only_for_matching_account(tmp_path: Path) -> None:
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cache_path = tmp_path / "private" / "xianyu-session.json"
+    cache_path.parent.mkdir()
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "account_fingerprint": hashlib.sha256(b"seller").hexdigest(),
+                "cookies": {
+                    "_m_h5_tk": f"fresh_{future_ms}",
+                    "_m_h5_tk_enc": "fresh-enc",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    cache_path.chmod(0o644)
+
+    adapter = XianyuAdapter(
+        Settings(
+            _env_file=None,
+            xianyu_cookie=SecretStr(
+                "unb=seller; _m_h5_tk=stale_suffix; _m_h5_tk_enc=stale-enc"
+            ),
+            xianyu_session_cache_path=str(cache_path),
+        )
+    )
+    try:
+        assert adapter._cookie_token() == "fresh"
+        assert stat.S_IMODE(cache_path.stat().st_mode) == 0o600
+    finally:
+        asyncio.run(adapter.close())
+
+    other_account = XianyuAdapter(
+        Settings(
+            _env_file=None,
+            xianyu_cookie=SecretStr(
+                "unb=other; _m_h5_tk=original_suffix; _m_h5_tk_enc=original-enc"
+            ),
+            xianyu_session_cache_path=str(cache_path),
+        )
+    )
+    try:
+        assert other_account._cookie_token() == "original"
+    finally:
+        asyncio.run(other_account.close())
+
+
+def test_mtop_refresh_persists_only_short_lived_session_cookies(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        future_ms = int(time.time() * 1000) + 3_600_000
+        cache_path = tmp_path / "private" / "xianyu-session.json"
+        adapter = XianyuAdapter(
+            Settings(
+                _env_file=None,
+                xianyu_cookie=SecretStr(
+                    "unb=seller; cookie2=session; _m_h5_tk=stale_suffix; "
+                    "_m_h5_tk_enc=stale-enc; unrelated=must-not-be-cached"
+                ),
+                xianyu_session_cache_path=str(cache_path),
+            )
+        )
+        await adapter.http.aclose()
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"ret": ["SUCCESS::调用成功"], "data": {}},
+                headers=[
+                    (
+                        "set-cookie",
+                        f"_m_h5_tk=fresh_{future_ms}; Domain=.goofish.com; Path=/",
+                    ),
+                    (
+                        "set-cookie",
+                        "_m_h5_tk_enc=fresh-enc; Domain=.goofish.com; Path=/",
+                    ),
+                ],
+            )
+
+        adapter.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            cookies=adapter.cookies,
+        )
+        try:
+            await adapter._mtop("test.api", {})
+        finally:
+            await adapter.close()
+
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert set(payload["cookies"]) == {"_m_h5_tk", "_m_h5_tk_enc"}
+        assert payload["cookies"]["_m_h5_tk"] == f"fresh_{future_ms}"
+        assert "seller" not in cache_path.read_text(encoding="utf-8")
+        assert "must-not-be-cached" not in cache_path.read_text(encoding="utf-8")
+        assert stat.S_IMODE(cache_path.stat().st_mode) == 0o600
+
+    asyncio.run(scenario())
+
+
 def test_mtop_retry_sends_only_the_refreshed_cookie() -> None:
     async def scenario() -> None:
         adapter = XianyuAdapter(
@@ -210,6 +320,99 @@ def test_mtop_retry_sends_only_the_refreshed_cookie() -> None:
         assert seen_cookie_headers[1].count("_m_h5_tk=") == 1
         assert "_m_h5_tk=fresh_suffix" in seen_cookie_headers[1]
         assert "_m_h5_tk=stale_suffix" not in seen_cookie_headers[1]
+
+    asyncio.run(scenario())
+
+
+def test_mtop_reports_interactive_access_verification() -> None:
+    async def scenario() -> None:
+        adapter = XianyuAdapter(
+            Settings(
+                _env_file=None,
+                xianyu_cookie=SecretStr("unb=seller; _m_h5_tk=token_suffix"),
+            )
+        )
+        await adapter.http.aclose()
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "ret": [
+                        "FAIL_SYS_USER_VALIDATE",
+                        "RGV587_ERROR::SM::请稍后重试",
+                    ],
+                    "data": {
+                        "url": "https://passport.taobao.com/punish?one_time=1"
+                    },
+                },
+            )
+
+        adapter.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            cookies=adapter.cookies,
+        )
+        try:
+            with pytest.raises(AdapterAccessVerificationError) as captured:
+                await adapter._mtop("test.api", {})
+            assert captured.value.verification_url == (
+                "https://passport.taobao.com/punish?one_time=1"
+            )
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+
+
+def test_verification_url_rejects_non_platform_or_non_https_targets() -> None:
+    assert _verification_url({"data": {"url": "https://evil.example/verify"}}) is None
+    assert _verification_url({"url": "http://passport.taobao.com/punish"}) is None
+
+
+def test_item_detail_uses_item_page_context_and_current_browser_headers() -> None:
+    async def scenario() -> None:
+        adapter = XianyuAdapter(
+            Settings(
+                _env_file=None,
+                xianyu_cookie=SecretStr(
+                    "unb=seller; _m_h5_tk=token_suffix; _m_h5_tk_enc=enc"
+                ),
+            )
+        )
+        await adapter.http.aclose()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.params["spm_cnt"] == "a21ybx.item.0.0"
+            assert request.headers["sec-fetch-site"] == "same-site"
+            assert request.headers["sec-ch-ua-platform"] == '"macOS"'
+            assert "Chrome/146.0.0.0" in request.headers["user-agent"]
+            return httpx.Response(
+                200,
+                json={
+                    "ret": ["SUCCESS::调用成功"],
+                    "data": {
+                        "itemDO": {
+                            "title": "测试商品",
+                            "soldPrice": "5.90",
+                            "trackParams": {"sellerId": "seller"},
+                        }
+                    },
+                },
+            )
+
+        adapter.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            cookies=adapter.cookies,
+            headers=adapter.http.headers,
+        )
+        try:
+            item = await adapter.fetch_item("item-1")
+        finally:
+            await adapter.close()
+
+        assert item is not None
+        assert item.title == "测试商品"
+        assert item.seller_id == "seller"
 
     asyncio.run(scenario())
 

@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # MTop HTTP client and the message WebSocket. Users who need a proxy can
     # opt back in explicitly.
     xianyu_use_system_proxy: bool = False
+    # Optional and disabled by default. When explicitly enabled, only the two
+    # short-lived MTop refresh cookies are cached in a mode-0600 local file so
+    # a service restart does not fall back to an older .env token.
+    xianyu_session_cache_path: str = ""
     xianyu_reconnect_min_seconds: float = 2
     xianyu_reconnect_max_seconds: float = 60
     xianyu_subscription_timeout_seconds: float = Field(default=15, ge=5, le=60)
@@ -45,8 +49,9 @@ class Settings(BaseSettings):
     xianyu_reconcile_conversation_limit: int = Field(default=50, ge=1, le=200)
     xianyu_reconcile_max_age_minutes: int = Field(default=60, ge=5, le=1440)
 
-    # Product intelligence is deliberately low frequency and read-only. One
-    # run row per local calendar day is the hard safety boundary.
+    # Product intelligence is read-only. The scheduled batch keeps one run row
+    # per local calendar day; explicit manual refreshes upsert that day's item
+    # snapshot and never create extra trend points.
     product_collection_enabled: bool = True
     product_collection_hour: int = Field(default=8, ge=0, le=23)
     product_collection_minute: int = Field(default=30, ge=0, le=59)
@@ -55,10 +60,23 @@ class Settings(BaseSettings):
         default=1800, ge=60, le=86_400
     )
     product_collection_request_delay_seconds: float = Field(
-        default=0.8, ge=0, le=30
+        default=2.5, ge=0, le=30
     )
     product_collection_max_items: int = Field(default=100, ge=1, le=500)
     product_delivery_capacity: int = Field(default=4, ge=1, le=100)
+    # Exposure planning is advisory only. These values shape the rolling local
+    # plan and never authorize a purchase or any automatic listing operation.
+    product_traffic_batch_cost: float = Field(default=5.9, ge=0, le=10_000)
+    product_traffic_weekly_budget: float = Field(default=24, ge=0, le=1_000_000)
+    product_traffic_batch_min_items: int = Field(default=3, ge=1, le=20)
+    product_traffic_batch_max_items: int = Field(default=5, ge=1, le=20)
+    product_traffic_cooldown_hours: int = Field(default=72, ge=1, le=720)
+    product_traffic_reminder_minutes: int = Field(default=30, ge=0, le=1_440)
+    # Market-reference collection is user-triggered. At the configured Beijing
+    # time the service only reminds; it never opens a browser or starts a crawl.
+    product_market_reminder_hour: int = Field(default=20, ge=0, le=23)
+    product_market_reminder_minute: int = Field(default=0, ge=0, le=59)
+    product_modification_observation_days: int = Field(default=7, ge=3, le=30)
 
     # Real WeChat messages are received through the official WeCom Customer
     # Service callback.  ``mock`` keeps the local webhook available for tests;

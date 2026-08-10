@@ -4,7 +4,6 @@ import {
   Brain,
   Briefcase,
   CalendarBlank,
-  CalendarCheck,
   CaretDown,
   CaretRight,
   ChartBar,
@@ -65,15 +64,28 @@ import {
 } from "react";
 import { mockLedgerService } from "./data/mockService";
 import { isClientProject } from "./data/projectKinds";
-import { localPlatformService, type ProductIntelligenceView } from "./data/localPlatformService";
+import {
+  connectPlatformEvents,
+  localPlatformService,
+  type OperationsSummary,
+  type ProductIntelligenceView,
+} from "./data/localPlatformService";
 import { getBusinessSummary, getProjectFinancials } from "./data/businessMetrics";
-import { latestSettlementIssue, settlementIssueLabels } from "./data/settlementIssues";
+import {
+  hasTerminalSettlementIssue,
+  latestSettlementIssue,
+  settlementIssueLabels,
+} from "./data/settlementIssues";
 import { OtherPages, type OtherPageName, type SettingsSectionName } from "./pages/OtherPages";
 import type { ProjectDetailTab, ProjectPageRoute, ProjectRouteMode } from "./pages/BusinessAssistantPages";
 import {
   PaymentConfirmationModal,
   type PaymentConfirmationTarget,
 } from "./pages/PaymentConfirmationModal";
+import {
+  ProjectChangeOrderModal,
+  type ProjectChangeOrderTarget,
+} from "./pages/ProjectChangeOrderModal";
 import {
   SettlementIssueModal,
   type SettlementIssueTarget,
@@ -86,6 +98,7 @@ import type {
   PaymentConfirmationValue,
   PaymentType,
   Project,
+  ProjectChangeOrderValue,
   QuickAccountingFormValue,
   SettlementIssueValue,
 } from "./types";
@@ -110,11 +123,46 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   hour12: false,
 });
 
+const reminderTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 const paymentLabels: Record<PaymentType, string> = {
   deposit: "定金",
   milestone: "阶段款",
   final: "尾款",
   full: "全款",
+};
+
+type HeaderReminderKind = "customer" | "collection" | "market" | "launch" | "traffic" | "experiment" | "strategy";
+
+interface HeaderReminder {
+  id: string;
+  kind: HeaderReminderKind;
+  label: string;
+  title: string;
+  description: string;
+  meta: string;
+  actionLabel: string;
+  targetPage: "客户消息" | "商品经营";
+  targetHash: string;
+}
+
+function reminderRouteHash(...segments: Array<string | number>) {
+  return `#${encodeURIComponent(segments.map(String).join("/"))}`;
+}
+
+const headerReminderIcons: Record<HeaderReminderKind, PhosphorIcon> = {
+  customer: ChatCircleDots,
+  collection: ShoppingBag,
+  market: MagnifyingGlass,
+  launch: RocketLaunch,
+  traffic: TrendUp,
+  experiment: ClipboardText,
+  strategy: Lightbulb,
 };
 
 const navItems: Array<{ label: string; icon: PhosphorIcon }> = [
@@ -139,7 +187,7 @@ const pageMeta: Record<string, { title: string; subtitle: string; placeholder: s
   收入记录: { title: "收入记录", subtitle: "管理到账记录、定金、尾款与项目收款，清晰每一笔进账", placeholder: "搜索项目、客户或订单..." },
   支出记录: { title: "支出记录", subtitle: "全面追踪工具成本、外包成本、退款与日常支出", placeholder: "搜索项目、客户或订单..." },
   客户管理: { title: "客户管理", subtitle: "管理客户资料、来源、成交记录与跟进状态", placeholder: "搜索客户名称、联系人、标签..." },
-  数据统计: { title: "数据统计", subtitle: "多维度分析收入、项目、客户来源与运营效率", placeholder: "搜索项目、客户或订单..." },
+  数据统计: { title: "数据统计", subtitle: "跨商品、跨周期判断哪些增长真正带来咨询与成交", placeholder: "当前页面无需搜索" },
   目标计划: { title: "目标计划", subtitle: "设定收入目标、交付计划与个人成长安排，让每一步都朝着目标前进", placeholder: "搜索项目、客户或订单..." },
   AI经营助手: { title: "AI 经营助手", subtitle: "分析需求、生成报价并复盘项目，让每次接单都更有把握", placeholder: "搜索项目，或粘贴客户需求..." },
   设置中心: { title: "设置中心", subtitle: "管理账号信息、界面风格、运营日期、提醒与数据同步", placeholder: "搜索项目、客户或订单..." },
@@ -241,11 +289,210 @@ function diffInDays(from: string, to = new Date()) {
   return Math.max(0, Math.ceil((end.getTime() - start.getTime()) / 86_400_000));
 }
 
-function remainingDays(dueDate: string) {
+function calendarDaysUntil(dueDate: string) {
   const due = new Date(`${dueDate}T00:00:00`);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  return Math.max(0, Math.ceil((due.getTime() - today.getTime()) / 86_400_000));
+  return Math.ceil((due.getTime() - today.getTime()) / 86_400_000);
+}
+
+function remainingDays(dueDate: string) {
+  return Math.max(0, calendarDaysUntil(dueDate));
+}
+
+function parsePlatformDateTime(value: string | null) {
+  if (!value) return null;
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value);
+  const date = new Date(hasTimezone ? value : `${value}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatReminderTime(value: string | null) {
+  const date = parsePlatformDateTime(value);
+  return date ? reminderTimeFormatter.format(date) : "当前";
+}
+
+function buildHeaderReminders(
+  operations: OperationsSummary | null,
+  intelligence: ProductIntelligenceView | null,
+): HeaderReminder[] {
+  const result: HeaderReminder[] = [];
+
+  if (operations && (operations.unread > 0 || operations.pending_replies > 0)) {
+    const title = operations.unread > 0
+      ? `${operations.unread} 条客户消息待查看`
+      : `${operations.pending_replies} 个会话等待回复`;
+    const description = operations.pending_replies > 0
+      ? `${operations.pending_replies} 个会话仍需人工确认回复`
+      : "查看新咨询并判断是否需要继续跟进";
+    result.push({
+      id: "customer-messages",
+      kind: "customer",
+      label: "客户消息",
+      title,
+      description,
+      meta: "当前",
+      actionLabel: "去回复",
+      targetPage: "客户消息",
+      targetHash: operations.first_pending_conversation_id
+        ? reminderRouteHash("客户消息", "conversation", operations.first_pending_conversation_id)
+        : reminderRouteHash("客户消息"),
+    });
+  }
+
+  if (!intelligence) return result;
+
+  const today = intelligence.market_reference.date;
+  const ownedProducts = intelligence.products.filter((product) => (
+    product.ownership_status === "owned" && product.monitoring_enabled
+  ));
+  const failedProducts = ownedProducts.filter((product) => product.last_collection_status === "failed");
+  const productsUpdatedToday = new Set(
+    ownedProducts
+      .filter((product) => product.history.some((snapshot) => snapshot.date === today))
+      .map((product) => product.external_id),
+  );
+  const missingToday = ownedProducts.filter((product) => !productsUpdatedToday.has(product.external_id));
+  const nextCollection = parsePlatformDateTime(intelligence.collection.next_collection_at);
+  const collectionIsDue = intelligence.collection.last_run?.run_date === today
+    || Boolean(nextCollection && nextCollection.getTime() <= Date.now());
+
+  if (failedProducts.length > 0) {
+    const first = failedProducts[0];
+    result.push({
+      id: "product-collection-failed",
+      kind: "collection",
+      label: "商品数据",
+      title: failedProducts.length === 1 ? `${first.title} 采集失败` : `${failedProducts.length} 个商品最新采集失败`,
+      description: failedProducts.length === 1
+        ? first.last_error_detail || "查看该商品的安全采集诊断"
+        : `${first.title} 等 · ${first.last_error_detail || "请查看逐商品采集诊断"}`,
+      meta: `最近 ${formatReminderTime(first.last_attempt_at)}`,
+      actionLabel: "看诊断",
+      targetPage: "商品经营",
+      targetHash: reminderRouteHash("商品经营", "overview", "product", first.external_id),
+    });
+  } else if (collectionIsDue && missingToday.length > 0) {
+    result.push({
+      id: "product-collection-missing",
+      kind: "collection",
+      label: "商品更新",
+      title: `${missingToday.length} 个本人商品今日尚未更新`,
+      description: "可在商品经营中手动采集；系统不会自动修改、发布或投流",
+      meta: "今日待更新",
+      actionLabel: "去更新",
+      targetPage: "商品经营",
+      targetHash: reminderRouteHash("商品经营", "overview", "collection"),
+    });
+  }
+
+  const dueBatches = intelligence.traffic_batches.filter((batch) => Boolean(batch.due_checkpoint));
+  if (intelligence.traffic_summary.due_checkpoint_count > 0 || dueBatches.length > 0) {
+    const batch = dueBatches[0];
+    const checkpoint = batch?.due_checkpoint ? `+${batch.due_checkpoint.slice(1)}h` : "到期";
+    result.push({
+      id: "traffic-checkpoint-due",
+      kind: "traffic",
+      label: "曝光复盘",
+      title: `${Math.max(intelligence.traffic_summary.due_checkpoint_count, dueBatches.length)} 个曝光观察节点待记录`,
+      description: batch
+        ? `${batch.products.length} 个商品的批次需要补充 ${checkpoint} 浏览与咨询数据`
+        : "补充到期检查点，才能判断曝光后的延迟浏览与咨询变化",
+      meta: batch?.due_at ? `${formatReminderTime(batch.due_at)} 到期` : "当前到期",
+      actionLabel: "去记录",
+      targetPage: "商品经营",
+      targetHash: batch
+        ? reminderRouteHash("商品经营", "exposure", "batch", batch.id)
+        : reminderRouteHash("商品经营", "exposure"),
+    });
+  }
+
+  const market = intelligence.market_reference;
+  if (
+    !market.update_completed
+    && market.reminder.due
+    && !["skipped", "completed"].includes(market.reminder.status)
+  ) {
+    result.push({
+      id: "market-reference-due",
+      kind: "market",
+      label: "市场更新",
+      title: "今日市场关键词尚未更新",
+      description: `在现有 Edge 中搜索“${market.selected_keyword}”并导入一份真实结果`,
+      meta: `${formatReminderTime(market.reminder.scheduled_for)} 到期`,
+      actionLabel: "去更新",
+      targetPage: "商品经营",
+      targetHash: reminderRouteHash("商品经营", "market", "update"),
+    });
+  }
+
+  const pendingLaunchPlans = intelligence.launch_plans.filter((plan) => ["proposed", "planned"].includes(plan.status));
+  if (pendingLaunchPlans.length > 0) {
+    const plan = pendingLaunchPlans[0];
+    result.push({
+      id: `launch-plan-${plan.id}`,
+      kind: "launch",
+      label: "上新计划",
+      title: pendingLaunchPlans.length === 1 ? plan.title : `${pendingLaunchPlans.length} 个上新方案等待确认`,
+      description: "方案只提供标题与时机建议，仍由你在闲鱼人工编辑和发布",
+      meta: plan.recommended_window || "待确认",
+      actionLabel: "看方案",
+      targetPage: "商品经营",
+      targetHash: reminderRouteHash("商品经营", "launch", "plan", plan.id),
+    });
+  } else if (intelligence.launch_recommendation.ready) {
+    const recommendation = intelligence.launch_recommendation;
+    result.push({
+      id: "launch-recommendation-ready",
+      kind: "launch",
+      label: "建议上新",
+      title: `“${recommendation.keyword}”已达到上新判断阈值`,
+      description: `${recommendation.suggested_product_type} · 发布前仍需人工确认`,
+      meta: recommendation.recommended_window,
+      actionLabel: "看建议",
+      targetPage: "商品经营",
+      targetHash: reminderRouteHash("商品经营", "launch", "recommendation"),
+    });
+  }
+
+  const dueExperiments = intelligence.modification_experiments.filter((experiment) => (
+    experiment.status === "observing" && experiment.can_evaluate
+  ));
+  if (dueExperiments.length > 0) {
+    const experiment = dueExperiments[0];
+    const variableLabels = { title: "标题", cover: "首图", description: "描述", price: "价格" } as const;
+    result.push({
+      id: `experiment-${experiment.id}`,
+      kind: "experiment",
+      label: "优化复盘",
+      title: `${experiment.item_title} 的修改实验待判断`,
+      description: `对照基线复核${variableLabels[experiment.variable]}变化，再决定保留、回滚或继续观察`,
+      meta: "观察已到期",
+      actionLabel: "去复盘",
+      targetPage: "商品经营",
+      targetHash: reminderRouteHash("商品经营", "launch", "experiment", experiment.id),
+    });
+  }
+
+  const activeStrategies = intelligence.recommendations
+    .filter((recommendation) => recommendation.status === "active" && ["high", "medium"].includes(recommendation.attention))
+    .sort((left, right) => right.priority_score - left.priority_score);
+  if (activeStrategies.length > 0) {
+    const recommendation = activeStrategies[0];
+    result.push({
+      id: "product-strategy-attention",
+      kind: "strategy",
+      label: "经营建议",
+      title: recommendation.item_title,
+      description: `${activeStrategies.length} 个商品值得复核 · ${recommendation.title}`,
+      meta: "今日建议",
+      actionLabel: "看建议",
+      targetPage: "商品经营",
+      targetHash: reminderRouteHash("商品经营", "overview", "product", recommendation.item_external_id),
+    });
+  }
+
+  return result;
 }
 
 function formatDateOnly(value: string) {
@@ -408,8 +655,10 @@ function TopHeader({
   onSearch,
   onMenu,
   activePage,
-  notificationCount,
-  onNavigate,
+  reminders,
+  onReminderAction,
+  onViewAllReminders,
+  onRefreshReminders,
   onOpenSettings,
   profileName,
   profilePlan,
@@ -418,16 +667,98 @@ function TopHeader({
   onSearch: (value: string) => void;
   onMenu: () => void;
   activePage: string;
-  notificationCount: number;
-  onNavigate: (page: string) => void;
+  reminders: HeaderReminder[];
+  onReminderAction: (reminder: HeaderReminder) => void;
+  onViewAllReminders: () => void;
+  onRefreshReminders: () => void;
   onOpenSettings: (section: SettingsSectionName) => void;
   profileName: string;
   profilePlan: string;
 }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const notificationAnchorRef = useRef<HTMLDivElement>(null);
+  const notificationButtonRef = useRef<HTMLButtonElement>(null);
+  const notificationPanelRef = useRef<HTMLElement>(null);
+  const profileAnchorRef = useRef<HTMLDivElement>(null);
+  const profileButtonRef = useRef<HTMLButtonElement>(null);
   const meta = pageMeta[activePage] || pageMeta["首页概览"];
   const searchable = ["首页概览", "项目管理", "收入记录", "支出记录", "客户管理"].includes(activePage);
+  const visibleReminders = reminders.slice(0, 4);
+
+  useEffect(() => {
+    if (!notificationsOpen && !profileOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (notificationsOpen && !notificationAnchorRef.current?.contains(target)) setNotificationsOpen(false);
+      if (profileOpen && !profileAnchorRef.current?.contains(target)) setProfileOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [notificationsOpen, profileOpen]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    const panel = notificationPanelRef.current;
+    const frame = window.requestAnimationFrame(() => panel?.focus());
+    const mobile = window.matchMedia("(max-width: 560px)").matches;
+    const previousOverflow = document.body.style.overflow;
+    if (mobile) document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setNotificationsOpen(false);
+        window.requestAnimationFrame(() => notificationButtonRef.current?.focus());
+        return;
+      }
+      if (event.key !== "Tab" || !panel) return;
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      )).filter((element) => element.getClientRects().length > 0);
+      if (!focusable.length) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (document.activeElement === panel) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (!panel.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [notificationsOpen]);
+
+  useEffect(() => {
+    if (!profileOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setProfileOpen(false);
+      window.requestAnimationFrame(() => profileButtonRef.current?.focus());
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [profileOpen]);
+
+  const closeNotifications = () => setNotificationsOpen(false);
 
   return (
     <header className="top-header">
@@ -435,7 +766,7 @@ function TopHeader({
         <List size={24} />
       </button>
       <div className="greeting">
-        <h1>{meta.title}{activePage === "首页概览" && <span aria-hidden="true"><HandWaving size={25} weight="duotone" /></span>}</h1>
+        <h1>{meta.title}{activePage === "数据统计" && <em className="page-context-tag">商品增长复盘</em>}{activePage === "首页概览" && <span aria-hidden="true"><HandWaving size={25} weight="duotone" /></span>}</h1>
         <p>{meta.subtitle}</p>
       </div>
       <img className="header-planet" src="/assets/chrome-v2/header-planet.png" alt="" aria-hidden="true" draggable={false} />
@@ -450,30 +781,104 @@ function TopHeader({
         />
       </label>
       <div className="header-actions">
-        <div className="popover-anchor">
+        <div className="popover-anchor" ref={notificationAnchorRef}>
           <button
+            ref={notificationButtonRef}
             className="round-button"
-            aria-label="查看通知"
+            aria-label={`查看智能提醒，${reminders.length} 项待处理`}
             aria-expanded={notificationsOpen}
-            onClick={() => setNotificationsOpen((value) => !value)}
+            aria-controls="smart-reminder-panel"
+            aria-haspopup="dialog"
+            onClick={() => {
+              setProfileOpen(false);
+              if (!notificationsOpen) onRefreshReminders();
+              setNotificationsOpen((value) => !value);
+            }}
           >
             <Bell size={23} />
-            {notificationCount > 0 && <b>{notificationCount}</b>}
+            {reminders.length > 0 && <b>{reminders.length}</b>}
           </button>
           {notificationsOpen && (
-            <div className="header-popover notification-popover">
-              <strong>智能提醒</strong>
-              {notificationCount > 0 ? <p>{notificationCount} 条经营事项待处理</p> : <p>暂无待处理提醒</p>}
-              {notificationCount > 0 && <button onClick={() => { onNavigate("收入记录"); setNotificationsOpen(false); }}>查看待处理事项</button>}
-            </div>
+            <>
+              <button className="notification-backdrop" aria-label="关闭智能提醒" onClick={closeNotifications} tabIndex={-1} />
+              <section
+                ref={notificationPanelRef}
+                id="smart-reminder-panel"
+                className="header-popover notification-popover"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="smart-reminder-title"
+                tabIndex={-1}
+              >
+                <span className="notification-drawer-handle" aria-hidden="true" />
+                <header className="notification-heading">
+                  <span className="notification-heading-icon"><Bell size={21} weight="duotone" /></span>
+                  <span className="notification-heading-copy">
+                    <strong id="smart-reminder-title">智能提醒</strong>
+                    <small>客户消息、商品更新与经营建议</small>
+                  </span>
+                  <span className="notification-status">{reminders.length > 0 ? `${reminders.length} 项待处理` : "当前已清空"}</span>
+                  <button className="notification-close" aria-label="关闭智能提醒" onClick={closeNotifications}><X size={19} /></button>
+                </header>
+
+                {visibleReminders.length > 0 ? (
+                  <ul className="notification-list" aria-label="待处理客户与商品经营事项">
+                    {visibleReminders.map((reminder) => {
+                      const ReminderIcon = headerReminderIcons[reminder.kind];
+                      return (
+                        <li key={reminder.id}>
+                          <button
+                            className={`notification-item is-${reminder.kind}`}
+                            onClick={() => {
+                              closeNotifications();
+                              onReminderAction(reminder);
+                            }}
+                          >
+                            <span className="notification-item-icon"><ReminderIcon size={21} weight="duotone" /></span>
+                            <span className="notification-item-copy">
+                              <small>{reminder.label}</small>
+                              <strong>{reminder.title}</strong>
+                              <span>{reminder.description}</span>
+                            </span>
+                            <span className="notification-item-side">
+                              <time>{reminder.meta}</time>
+                              <span>{reminder.actionLabel}<ArrowRight size={14} /></span>
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <div className="notification-empty">
+                    <span><CheckCircle size={25} weight="duotone" /></span>
+                    <strong>当前事项已处理完成</strong>
+                    <p>新的客户消息、商品更新或经营建议会显示在这里。</p>
+                  </div>
+                )}
+
+                <footer className="notification-footer">
+                  <button onClick={() => { closeNotifications(); onViewAllReminders(); }}>
+                    查看全部提醒 <ArrowRight size={15} />
+                  </button>
+                  <button onClick={() => { closeNotifications(); onOpenSettings("提醒通知"); }}>
+                    <GearSix size={16} />提醒设置
+                  </button>
+                </footer>
+              </section>
+            </>
           )}
         </div>
-        <div className="popover-anchor">
+        <div className="popover-anchor" ref={profileAnchorRef}>
           <button
+            ref={profileButtonRef}
             className="profile-button"
             aria-label="打开个人与账户设置"
             aria-expanded={profileOpen}
-            onClick={() => setProfileOpen((value) => !value)}
+            onClick={() => {
+              setNotificationsOpen(false);
+              setProfileOpen((value) => !value);
+            }}
           >
             <span className="avatar"><UserCircle size={33} weight="duotone" /></span>
             <span><strong>{profileName}</strong><small>{profilePlan}</small></span>
@@ -658,7 +1063,9 @@ function ActiveProjectsCard({
   };
   const active = projects
     .filter((project) => {
-      const outstanding = financialByProject.get(project.id)?.outstanding || 0;
+      const financial = financialByProject.get(project.id);
+      if (hasTerminalSettlementIssue(financial?.settlementIssues || [])) return false;
+      const outstanding = financial?.outstanding || 0;
       return project.status === "pending"
         || project.status === "in_progress"
         || project.status === "overdue"
@@ -699,7 +1106,7 @@ function ActiveProjectsCard({
               <span className={`days-pill ${project.status === "overdue" ? "is-overdue" : project.status === "delivered" && outstanding > 0 ? "is-receivable" : ""}`}>{statusCopy}</span>
             </button>
           );
-        }) : <div className="dashboard-empty"><Briefcase size={34} weight="duotone" /><strong>暂无当前项目</strong><span>待开始、进行中、逾期或待回款项目会显示在这里</span></div>}
+        }) : <div className="dashboard-empty"><Briefcase size={34} weight="duotone" /><strong>暂无当前项目</strong><span>待开始、进行中、逾期或待回款项目会显示在这里；已终止合作不会进入当前项目</span></div>}
       </div>
     </Card>
   );
@@ -816,7 +1223,7 @@ function OperatingInsightStrip({
     <div className="insight-item profit"><i><TrendUp size={22} weight="duotone" /></i><span><small>实际利润</small><b>{compactCurrency.format(summary.actualProfit)}</b><em>利润率 {summary.totalIncome ? Math.round(summary.actualProfit / summary.totalIncome * 100) : 0}%</em></span></div>
     <div className="insight-item collection"><i><Bell size={22} weight="duotone" /></i><span><small>回款风险</small><b>{compactCurrency.format(summary.outstanding)} 待收</b><em>{unsettledCount} 个项目未结清{dueSoon ? ` · ${dueSoon} 个节点临期` : ""}</em></span></div>
     <div className="insight-item value"><i><Lightbulb size={22} weight="duotone" /></i><span><small>定价建议</small><b>{bestProject?.project.name || "暂无项目"}</b><em>小时收益 {compactCurrency.format(bestProject?.hourlyIncome || 0)}</em></span></div>
-    <div className="insight-actions"><button onClick={() => onNavigate("数据统计")}>查看利润分析</button><button className="primary" onClick={() => onNavigate("AI经营助手")}><Brain size={15} />询问 AI 助手</button></div>
+    <div className="insight-actions"><button onClick={() => onNavigate("数据统计")}>查看增长统计</button><button className="primary" onClick={() => onNavigate("AI经营助手")}><Brain size={15} />询问 AI 助手</button></div>
   </Card>;
 }
 
@@ -857,28 +1264,20 @@ function ProductStrategyStrip({ onNavigate }: { onNavigate: (page: string) => vo
   </Card>;
 }
 
-function ReminderCard({ snapshot, onNavigate }: { snapshot: LedgerSnapshot; onNavigate: () => void }) {
-  const financials = getProjectFinancials(snapshot).filter(({ project }) => isClientProject(project));
-  const nearest = snapshot.projects
-    .filter((project) => project.status === "in_progress")
-    .sort((a, b) => remainingDays(a.dueDate) - remainingDays(b.dueDate));
-  const unsettled = financials
-    .filter((item) => item.outstanding > 0)
-    .sort((left, right) => Number(right.project.status === "delivered") - Number(left.project.status === "delivered") || left.project.dueDate.localeCompare(right.project.dueDate));
-  const latestIssue = financials
-    .flatMap((financial) => financial.settlementIssues.map((issue) => ({ issue, financial })))
-    .sort((left, right) => right.issue.occurredAt.localeCompare(left.issue.occurredAt))[0];
-  const reminderCount = Math.min(2, nearest.length) + (unsettled.length ? 1 : 0) + (latestIssue ? 1 : 0);
+function ReminderCard({ reminders, onOpen }: { reminders: HeaderReminder[]; onOpen: (reminder: HeaderReminder) => void }) {
   return (
-    <Card className="reminder-card">
-      <CardHeader title="智能提醒" action={<span className="reminder-badge">{reminderCount} 条待处理事项</span>} />
+    <Card id="smart-reminders" className="reminder-card">
+      <CardHeader title="智能提醒" action={<span className="reminder-badge">{reminders.length} 条经营提醒</span>} />
       <ul>
-        {nearest.slice(0, 2).map((project) => (
-          <li key={project.id}><i /><span>项目「{project.name}」{remainingDays(project.dueDate) === 1 ? "明日" : `${remainingDays(project.dueDate)}天后`}交付</span><time>{new Date(`${project.dueDate}T00:00:00`).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}</time></li>
+        {reminders.slice(0, 3).map((reminder) => (
+          <li key={reminder.id} className={`is-${reminder.kind}`}>
+            <i />
+            <span><b>{reminder.label}</b>{reminder.title}</span>
+            <time>{reminder.meta}</time>
+            <button onClick={() => onOpen(reminder)}>{reminder.actionLabel}</button>
+          </li>
         ))}
-        {unsettled[0] && <li><i /><span>{unsettled[0].project.status === "delivered" ? `「${unsettled[0].project.name}」已交付待回款` : `「${unsettled[0].project.name}」合同余额待收`}</span><strong>{compactCurrency.format(unsettled[0].outstanding)}</strong><button onClick={onNavigate}>去确认</button></li>}
-        {latestIssue && <li className="is-exception"><WarningCircle size={17} weight="fill" /><span>「{latestIssue.financial.project.name}」{settlementIssueLabels[latestIssue.issue.type]}</span><time>{dateTimeFormatter.format(new Date(latestIssue.issue.occurredAt))}</time><button onClick={onNavigate}>查看</button></li>}
-        {reminderCount === 0 && <li className="reminder-empty"><CheckCircle size={17} weight="fill" /><span>暂无待处理事项</span></li>}
+        {reminders.length === 0 && <li className="reminder-empty"><CheckCircle size={17} weight="fill" /><span>客户消息与商品经营暂无待处理事项</span></li>}
       </ul>
     </Card>
   );
@@ -1136,10 +1535,12 @@ function DashboardLayout({
   snapshot,
   onSnapshotChange,
   onPersistedSnapshot,
+  liveSignalVersion,
 }: {
   snapshot: LedgerSnapshot;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
   onPersistedSnapshot: (snapshot: LedgerSnapshot) => void;
+  liveSignalVersion: number;
 }) {
   const initialRoute = useRef(readAppRoute()).current;
   const [activeNav, setActiveNav] = useState(initialRoute.page);
@@ -1150,10 +1551,27 @@ function DashboardLayout({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerProjectId, setDrawerProjectId] = useState<string | null>(null);
   const [receiptTarget, setReceiptTarget] = useState<PaymentConfirmationTarget | null>(null);
+  const [changeOrderTarget, setChangeOrderTarget] = useState<ProjectChangeOrderTarget | null>(null);
   const [settlementIssueTarget, setSettlementIssueTarget] = useState<SettlementIssueTarget | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [success, setSuccess] = useState<{ amount: number; status: "pending" | "confirmed" } | null>(null);
+  const [success, setSuccess] = useState<{ amount: number; status: "pending" | "confirmed" | "change_order" } | null>(null);
+  const [reminderOperations, setReminderOperations] = useState<OperationsSummary | null>(null);
+  const [reminderIntelligence, setReminderIntelligence] = useState<ProductIntelligenceView | null>(null);
+  const [reminderRefreshVersion, setReminderRefreshVersion] = useState(0);
   const routeRef = useRef({ page: activeNav, settingsSection, projectRoute, customerRoute });
+
+  useEffect(() => {
+    let active = true;
+    void Promise.allSettled([
+      localPlatformService.operationsSummary(),
+      localPlatformService.productIntelligence(),
+    ]).then(([operations, intelligence]) => {
+      if (!active) return;
+      if (operations.status === "fulfilled") setReminderOperations(operations.value);
+      if (intelligence.status === "fulfilled") setReminderIntelligence(intelligence.value);
+    });
+    return () => { active = false; };
+  }, [liveSignalVersion, reminderRefreshVersion]);
 
   useLayoutEffect(() => {
     const scrollingElement = document.scrollingElement;
@@ -1288,18 +1706,10 @@ function DashboardLayout({
   const unsettledProjects = businessSummary.projectFinancials.filter(
     ({ project, outstanding }) => isClientProject(project) && outstanding > 0,
   );
-  const recentIssueCutoff = Date.now() - 30 * 86_400_000;
-  const actionableIssueProjects = businessSummary.projectFinancials.filter(({ project, outstanding, settlementIssues }) => (
-    isClientProject(project) && settlementIssues.some((issue) => outstanding > 0 || new Date(issue.occurredAt).getTime() >= recentIssueCutoff)
-  ));
-  const notificationProjectIds = new Set([
-    ...snapshot.projects
-      .filter((project) => project.status === "in_progress" && remainingDays(project.dueDate) <= (snapshot.settings.reminderDays || 3))
-      .map((project) => project.id),
-    ...(snapshot.settings.paymentRemindersEnabled === false ? [] : unsettledProjects.map(({ project }) => project.id)),
-    ...actionableIssueProjects.map(({ project }) => project.id),
-  ]);
-  const notificationCount = snapshot.settings.notificationsEnabled === false ? 0 : notificationProjectIds.size;
+  const headerReminders = useMemo<HeaderReminder[]>(() => {
+    if (snapshot.settings.notificationsEnabled === false) return [];
+    return buildHeaderReminders(reminderOperations, reminderIntelligence);
+  }, [reminderIntelligence, reminderOperations, snapshot.settings.notificationsEnabled]);
 
   const normalizedSearch = search.trim().toLowerCase();
   const filteredProjects = normalizedSearch
@@ -1316,6 +1726,38 @@ function DashboardLayout({
       })
     : confirmedPayments;
 
+  const openHeaderReminder = (reminder: HeaderReminder) => {
+    const nextState = {
+      ...(window.history.state || {}),
+      xianyuReminderTarget: reminder.id,
+    };
+    routeRef.current = {
+      page: reminder.targetPage,
+      settingsSection,
+      projectRoute: null,
+      customerRoute: null,
+    };
+    runPageTransition(() => {
+      setActiveNav(reminder.targetPage);
+      setProjectRoute(null);
+      setCustomerRoute(null);
+      setSearch("");
+      const historyMode = window.location.hash === reminder.targetHash ? "replaceState" : "pushState";
+      window.history[historyMode](nextState, "", reminder.targetHash);
+      window.dispatchEvent(new CustomEvent("xianyu:route-focus"));
+    });
+  };
+
+  const viewAllReminders = () => {
+    changePage("首页概览");
+    window.setTimeout(() => {
+      document.getElementById("smart-reminders")?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "center",
+      });
+    }, 260);
+  };
+
   const addPayment = async (value: QuickAccountingFormValue) => {
     const next = await mockLedgerService.addConfirmedPayment(snapshot, value);
     onPersistedSnapshot(next);
@@ -1330,6 +1772,14 @@ function DashboardLayout({
     onPersistedSnapshot(next);
     setReceiptTarget(null);
     setSuccess({ amount: value.amount, status: "confirmed" });
+    window.setTimeout(() => setSuccess(null), 2700);
+  };
+
+  const createProjectChangeOrder = async (value: ProjectChangeOrderValue) => {
+    const next = await mockLedgerService.createProjectChangeOrder(snapshot, value);
+    onPersistedSnapshot(next);
+    setChangeOrderTarget(null);
+    setSuccess({ amount: value.amount, status: "change_order" });
     window.setTimeout(() => setSuccess(null), 2700);
   };
 
@@ -1410,7 +1860,7 @@ function DashboardLayout({
         projects={snapshot.projects}
       />
       <main className="dashboard-main">
-        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} notificationCount={notificationCount} onNavigate={changePage} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "张同学"} profilePlan={snapshot.settings.accountPlan || "高级版"} />
+        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} reminders={headerReminders} onReminderAction={openHeaderReminder} onViewAllReminders={viewAllReminders} onRefreshReminders={() => setReminderRefreshVersion((value) => value + 1)} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "张同学"} profilePlan={snapshot.settings.accountPlan || "高级版"} />
         <div className="page-route-view" key={`${activeNav}-${settingsSection}-${projectRoute?.projectId || ""}-${customerRoute?.caseId || customerRoute?.customerId || ""}`}>
           {activeNav === "首页概览" && normalizedSearch && (
             <div className="search-status">
@@ -1434,7 +1884,7 @@ function DashboardLayout({
               <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("收入记录")} />
               <div className="bottom-stack center-stack">
                 <DailyBalanceCard todayIncome={todayIncome} todayExpense={todayExpense} />
-                <ReminderCard snapshot={snapshot} onNavigate={() => changePage("收入记录")} />
+                <ReminderCard reminders={headerReminders} onOpen={openHeaderReminder} />
               </div>
               <div className="bottom-stack right-stack">
                 <MonthlyGoalCard current={monthlyIncome} goal={snapshot.settings.monthlyIncomeGoal} onEdit={() => openSettings("记账设置")} />
@@ -1444,7 +1894,7 @@ function DashboardLayout({
                 </div>
               </div>
             </section>
-          </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => openQuickAccounting()} onCreatePaymentPlan={(projectId) => openQuickAccounting(projectId)} onConfirmPayment={(projectId, paymentId) => setReceiptTarget({ projectId, paymentId })} onRecordSettlementIssue={(projectId) => setSettlementIssueTarget({ projectId })} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} projectRoute={projectRoute} onProjectRouteChange={changeProjectRoute} customerRoute={customerRoute} onCustomerRouteChange={changeCustomerRoute} />}
+          </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => openQuickAccounting()} onCreatePaymentPlan={(projectId) => openQuickAccounting(projectId)} onCreateChangeOrder={(projectId) => setChangeOrderTarget({ projectId })} onConfirmPayment={(projectId, paymentId) => setReceiptTarget({ projectId, paymentId })} onRecordSettlementIssue={(projectId) => setSettlementIssueTarget({ projectId })} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} projectRoute={projectRoute} onProjectRouteChange={changeProjectRoute} customerRoute={customerRoute} onCustomerRouteChange={changeCustomerRoute} />}
         </div>
       </main>
 
@@ -1470,6 +1920,14 @@ function DashboardLayout({
         onRefresh={refreshReceiptData}
       />}
 
+      {changeOrderTarget && <ProjectChangeOrderModal
+        snapshot={snapshot}
+        target={changeOrderTarget}
+        onClose={() => setChangeOrderTarget(null)}
+        onSubmit={createProjectChangeOrder}
+        onRefresh={refreshReceiptData}
+      />}
+
       {settlementIssueTarget && <SettlementIssueModal
         snapshot={snapshot}
         target={settlementIssueTarget}
@@ -1481,7 +1939,7 @@ function DashboardLayout({
       {success !== null && (
         <div className="success-toast" role="status">
           <CheckCircle size={28} weight="fill" />
-          <span><strong>{compactCurrency.format(success.amount)} {success.status === "confirmed" ? "已确认到账" : "已加入待收计划"}</strong><small>{success.status === "confirmed" ? "核心指标与收款记录已同步更新" : "回款提醒与项目进度已同步更新"}</small></span>
+          <span><strong>{compactCurrency.format(success.amount)} {success.status === "change_order" ? "追加订单已保存" : success.status === "confirmed" ? "已确认到账" : "已加入待收计划"}</strong><small>{success.status === "change_order" ? "合同总额与对应收款安排已同步更新" : success.status === "confirmed" ? "核心指标与收款记录已同步更新" : "回款提醒与项目进度已同步更新"}</small></span>
           {[0, 1, 2, 3, 4].map((item) => <Sparkle key={item} className={`success-spark s${item}`} size={14 + item} weight="fill" />)}
         </div>
       )}
@@ -1492,6 +1950,7 @@ function DashboardLayout({
 export function App() {
   const [snapshot, setSnapshot] = useState<LedgerSnapshot | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [liveSignalVersion, setLiveSignalVersion] = useState(0);
 
   const loadDashboard = async () => {
     setLoadError(false);
@@ -1513,6 +1972,16 @@ export function App() {
 
   useEffect(() => {
     void loadDashboard();
+    let disconnect = () => {};
+    try {
+      disconnect = connectPlatformEvents((event) => {
+        if (event.type === "ledger_updated") void loadDashboard();
+        setLiveSignalVersion((value) => value + 1);
+      });
+    } catch {
+      // The static Sites build intentionally has no local event service.
+    }
+    return disconnect;
   }, []);
 
   if (loadError) {
@@ -1536,5 +2005,6 @@ export function App() {
     snapshot={snapshot}
     onSnapshotChange={(next) => { void saveSnapshot(next); }}
     onPersistedSnapshot={setSnapshot}
+    liveSignalVersion={liveSignalVersion}
   />;
 }

@@ -10,7 +10,7 @@ import {
 import { type ReactNode, useState } from "react";
 import { daysUntil, getBusinessSummary } from "../data/businessMetrics";
 import { projectKindOf } from "../data/projectKinds";
-import { latestSettlementIssue, settlementIssueLabels } from "../data/settlementIssues";
+import { hasTerminalSettlementIssue, latestSettlementIssue, settlementIssueLabels } from "../data/settlementIssues";
 import type { LedgerSnapshot, PaymentStatus, PaymentType, Project } from "../types";
 
 const money = new Intl.NumberFormat("zh-CN", {
@@ -66,6 +66,7 @@ export function EnhancedIncomeRecordsPage({
   snapshot,
   onQuickAdd,
   onCreatePaymentPlan,
+  onCreateChangeOrder,
   onConfirmPayment,
   onRecordSettlementIssue,
   onSnapshotChange,
@@ -74,6 +75,7 @@ export function EnhancedIncomeRecordsPage({
   snapshot: LedgerSnapshot;
   onQuickAdd: () => void;
   onCreatePaymentPlan: (projectId: string) => void;
+  onCreateChangeOrder: (projectId: string) => void;
   onConfirmPayment: (projectId: string, paymentId?: string) => void;
   onRecordSettlementIssue: (projectId: string) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
@@ -87,7 +89,10 @@ export function EnhancedIncomeRecordsPage({
   const selectedId = clientProjects.some((item) => item.id === selected) ? selected : clientProjects[0]?.id || "";
   const selectedProject = clientProjects.find((item) => item.id === selectedId);
   const selectedFinancial = clientFinancials.find((item) => item.project.id === selectedId);
+  const selectedChangeOrders = snapshot.changeOrders.filter((item) => item.projectId === selectedId && item.status === "confirmed");
+  const selectedChangeOrderTotal = selectedChangeOrders.reduce((sum, item) => sum + item.amount, 0);
   const selectedIssues = selectedFinancial?.settlementIssues.slice().sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)) || [];
+  const selectedProjectTerminated = hasTerminalSettlementIssue(selectedIssues);
   const latestSelectedIssue = latestSettlementIssue(selectedIssues);
   const projectPayments = snapshot.payments
     .filter((item) => item.projectId === selectedId)
@@ -203,17 +208,17 @@ export function EnhancedIncomeRecordsPage({
     <section className="income-workspace">
       <main>
         <Surface>
-          <SurfaceTitle eyebrow="PROJECT PAYMENT" title="项目回款与结算" action={<div className="income-actions"><select value={selectedId} onChange={(event) => setSelected(event.target.value)}>{clientProjects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>{selectedFinancial.outstanding > 0 && <button className="business-primary" onClick={() => onConfirmPayment(selectedProject.id)}><CheckCircle size={16} />确认到账</button>}<button className="business-secondary is-exception" type="button" onClick={() => onRecordSettlementIssue(selectedProject.id)}><WarningCircle size={16} />记录异常</button></div>} />
+          <SurfaceTitle eyebrow="PROJECT PAYMENT" title="项目回款与结算" action={<div className="income-actions"><select value={selectedId} onChange={(event) => setSelected(event.target.value)}>{clientProjects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><button className="business-primary change-order-action" type="button" disabled={selectedProjectTerminated} title={selectedProjectTerminated ? "原合作已经终止，新需求请新建项目" : undefined} onClick={() => onCreateChangeOrder(selectedProject.id)}><Plus size={16} />{selectedProjectTerminated ? "已终止，请新建项目" : "追加订单"}</button>{selectedFinancial.outstanding > 0 && <button className="business-primary" onClick={() => onConfirmPayment(selectedProject.id)}><CheckCircle size={16} />确认到账</button>}<button className="business-secondary is-exception" type="button" onClick={() => onRecordSettlementIssue(selectedProject.id)}><WarningCircle size={16} />记录异常</button></div>} />
           {selectedProject.status === "delivered" && selectedFinancial.outstanding > 0 && <div className="income-delivered-alert"><WarningCircle size={17} weight="fill" /><span><b>已交付待回款 {money.format(selectedFinancial.outstanding)}</b><small>请在核对实际入账后确认，不会自动改变项目状态。</small></span></div>}
           {latestSelectedIssue && <div className="income-settlement-alert"><WarningCircle size={17} weight="fill" /><span><b>{settlementIssueLabels[latestSelectedIssue.type]} · 共 {selectedIssues.length} 条异常</b><small>{latestSelectedIssue.reason}</small></span><button type="button" onClick={() => onRecordSettlementIssue(selectedProject.id)}>继续记录</button></div>}
-          <div className="collection-overview"><div><small>{selectedProject.name}</small><strong>{money.format(selectedFinancial.income)} <span>/ {money.format(selectedProject.totalAmount)}</span></strong><Progress value={selectedFinancial.paymentProgress} /><p><span>净回款率 {selectedFinancial.paymentProgress.toFixed(0)}%</span><b>可收 {money.format(selectedFinancial.outstanding)}</b></p></div><i><Wallet size={43} weight="duotone" /></i></div>
+          <div className="collection-overview"><div><small>{selectedProject.name}{selectedChangeOrders.length ? ` · 原合同 ${money.format(Math.max(0, selectedProject.totalAmount - selectedChangeOrderTotal))} + ${selectedChangeOrders.length} 次追加 ${money.format(selectedChangeOrderTotal)}` : ""}</small><strong>{money.format(selectedFinancial.income)} <span>/ {money.format(selectedProject.totalAmount)}</span></strong><Progress value={selectedFinancial.paymentProgress} /><p><span>净回款率 {selectedFinancial.paymentProgress.toFixed(0)}%</span><b>可收 {money.format(selectedFinancial.outstanding)}</b></p></div><i><Wallet size={43} weight="duotone" /></i></div>
           <div className="collection-financial-breakdown">
             <span><small>累计入账</small><b>{money.format(selectedFinancial.grossIncome)}</b></span>
             <span><small>实际退款</small><b className={selectedFinancial.refundedAmount ? "negative" : ""}>{money.format(selectedFinancial.refundedAmount)}</b></span>
             <span><small>确认核销</small><b className={selectedFinancial.uncollectible ? "warning" : ""}>{money.format(selectedFinancial.uncollectible)}</b></span>
             <span><small>结算完成度</small><b>{selectedFinancial.settlementProgress.toFixed(0)}%</b></span>
           </div>
-          {projectPayments.length ? <div className="payment-timeline">{projectPayments.map((payment, index) => <article className={payment.status === "confirmed" ? "paid" : payment.status === "refunded" ? "refunded" : payment.status === "written_off" ? "written-off" : ""} key={payment.id}><div><i>{payment.status === "confirmed" ? <CheckCircle size={18} weight="fill" /> : payment.status === "refunded" || payment.status === "written_off" ? <WarningCircle size={18} weight="fill" /> : index + 1}</i><span /></div><small>{paymentLabel[payment.type]}</small><strong>{money.format(payment.amount)}</strong><time>{shortDate(payment.dueAt)}</time><em>{payment.status === "pending" ? daysUntil(payment.dueAt) <= 1 ? "即将到期" : "待收款" : paymentStatusLabel[payment.status]}</em>{payment.status === "pending" && <button type="button" onClick={() => onConfirmPayment(selectedProject.id, payment.id)}>确认到账</button>}</article>)}</div> : <div className="payment-plan-inline-empty"><span><b>{selectedFinancial.outstanding > 0 ? "尚未建立付款节点" : "项目没有独立付款节点"}</b><small>{selectedFinancial.outstanding > 0 ? "可以直接确认已到账，系统会按合同余额创建收款记录；也可以先记录拒付或取消合作。" : "可收余额已完成结算，后续退款或客户争议仍可继续记录。"}</small></span><div>{selectedFinancial.outstanding > 0 && <button type="button" className="business-primary" onClick={() => onConfirmPayment(selectedProject.id)}>确认已到账</button>}{selectedFinancial.outstanding > 0 && <button type="button" onClick={() => onCreatePaymentPlan(selectedProject.id)}>建立收款计划</button>}<button type="button" className="is-exception" onClick={() => onRecordSettlementIssue(selectedProject.id)}>记录异常</button></div></div>}
+          {projectPayments.length ? <div className="payment-timeline">{projectPayments.map((payment, index) => <article className={payment.status === "confirmed" ? "paid" : payment.status === "refunded" ? "refunded" : payment.status === "written_off" ? "written-off" : ""} key={payment.id}><div><i>{payment.status === "confirmed" ? <CheckCircle size={18} weight="fill" /> : payment.status === "refunded" || payment.status === "written_off" ? <WarningCircle size={18} weight="fill" /> : index + 1}</i><span /></div><small>{payment.changeOrderId ? `追加款 · ${paymentLabel[payment.type]}` : paymentLabel[payment.type]}</small><strong>{money.format(payment.amount)}</strong><time>{shortDate(payment.dueAt)}</time><em>{payment.status === "pending" ? daysUntil(payment.dueAt) <= 1 ? "即将到期" : "待收款" : paymentStatusLabel[payment.status]}</em>{payment.status === "pending" && <button type="button" onClick={() => onConfirmPayment(selectedProject.id, payment.id)}>确认到账</button>}</article>)}</div> : <div className="payment-plan-inline-empty"><span><b>{selectedProjectTerminated ? "原合作已经终止" : selectedFinancial.outstanding > 0 ? "尚未建立付款节点" : "当前合同已结清"}</b><small>{selectedProjectTerminated ? "新需求请新建项目；原合同、回款和异常记录会继续保留。" : selectedFinancial.outstanding > 0 ? "可以直接确认已到账，系统会按合同余额创建收款记录；也可以先记录拒付或取消合作。" : "客户再次付费追加修改时，请新增追加订单；原合同和收款历史不会被覆盖。"}</small></span><div>{!selectedProjectTerminated && <button type="button" className="business-primary" onClick={() => onCreateChangeOrder(selectedProject.id)}>新增追加订单</button>}{selectedFinancial.outstanding > 0 && <button type="button" onClick={() => onConfirmPayment(selectedProject.id)}>确认已到账</button>}{selectedFinancial.outstanding > 0 && <button type="button" onClick={() => onCreatePaymentPlan(selectedProject.id)}>建立收款计划</button>}<button type="button" className="is-exception" onClick={() => onRecordSettlementIssue(selectedProject.id)}>记录异常</button></div></div>}
         </Surface>
 
         <Surface className="income-settlement-history">

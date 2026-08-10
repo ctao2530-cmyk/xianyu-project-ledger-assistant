@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .ai.requirements import RequirementAnalysisResult
+from .requirement_blueprints import RequirementBlueprintV2
 
 
 class ItemView(BaseModel):
@@ -93,6 +94,7 @@ class ConversationDetail(BaseModel):
     channel: str
     external_id: str
     customer_id: str
+    linked_customer_id: str | None
     customer_name: str
     unread_count: int
     item: ItemView | None
@@ -215,7 +217,7 @@ class RequirementVersionSummaryView(BaseModel):
 
 
 class RequirementVersionView(RequirementVersionSummaryView):
-    document: RequirementAnalysisResult
+    document: RequirementAnalysisResult | RequirementBlueprintV2
     content_markdown: str
     stage_progress: dict[str, str]
 

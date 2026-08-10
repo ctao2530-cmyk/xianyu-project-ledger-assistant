@@ -9,7 +9,10 @@ import {
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { getProjectFinancials } from "../data/businessMetrics";
 import { LedgerRevisionConflictError } from "../data/mockService";
-import { settlementIssueOptions } from "../data/settlementIssues";
+import {
+  settlementIssueOptions,
+  terminalSettlementIssueTypes,
+} from "../data/settlementIssues";
 import type {
   LedgerSnapshot,
   SettlementIssueType,
@@ -67,6 +70,7 @@ export function SettlementIssueModal({
   const reasonInput = useRef<HTMLTextAreaElement>(null);
   const impact = Number(receivableImpact) || 0;
   const refund = Number(refundAmount) || 0;
+  const terminalIssue = terminalSettlementIssueTypes.has(type);
 
   useEffect(() => {
     const timer = window.setTimeout(() => reasonInput.current?.focus({ preventScroll: true }), 80);
@@ -156,10 +160,16 @@ export function SettlementIssueModal({
         <p className="settlement-issue-guidance" id="settlement-issue-description"><WarningCircle size={17} weight="fill" />异常记录不会自动改变项目交付状态。“无法收回”会减少可收余额，“实际退款”会减少净到账与利润。</p>
 
         <form onSubmit={submit} noValidate>
-          <label><span>异常类型</span><select value={type} onChange={(event) => setType(event.target.value as SettlementIssueType)}>{settlementIssueOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          <label><span>异常类型</span><select value={type} onChange={(event) => {
+            const nextType = event.target.value as SettlementIssueType;
+            setType(nextType);
+            if (terminalSettlementIssueTypes.has(nextType)) {
+              setReceivableImpact(String(financial.outstanding));
+            }
+          }}>{settlementIssueOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>{terminalIssue && <small>项目取消或终止合作后，当前全部可收余额会核销，不再显示为待回款。</small>}</label>
 
           <div className="payment-form-row settlement-money-row">
-            <label><span>确认无法收回 <em>可为 0</em></span><div className="payment-money-input"><b>¥</b><input type="number" min="0" max={financial.outstanding} step="0.01" value={receivableImpact} onChange={(event) => setReceivableImpact(event.target.value)} /></div><small>当前最多 {money.format(financial.outstanding)} <button type="button" onClick={() => setReceivableImpact(String(financial.outstanding))} disabled={financial.outstanding <= 0}>填入全部</button></small></label>
+            <label><span>确认无法收回 <em>{terminalIssue ? "自动核销全部" : "可为 0"}</em></span><div className="payment-money-input"><b>¥</b><input type="number" min="0" max={financial.outstanding} step="0.01" value={receivableImpact} readOnly={terminalIssue} onChange={(event) => setReceivableImpact(event.target.value)} /></div><small>{terminalIssue ? `终止类异常固定核销 ${money.format(financial.outstanding)}` : <>当前最多 {money.format(financial.outstanding)} <button type="button" onClick={() => setReceivableImpact(String(financial.outstanding))} disabled={financial.outstanding <= 0}>填入全部</button></>}</small></label>
             <label><span>实际退款 <em>可为 0</em></span><div className="payment-money-input"><b>¥</b><input type="number" min="0" max={financial.availableRefund} step="0.01" value={refundAmount} onChange={(event) => setRefundAmount(event.target.value)} /></div><small>当前最多 {money.format(financial.availableRefund)} <button type="button" onClick={() => setRefundAmount(String(financial.availableRefund))} disabled={financial.availableRefund <= 0}>填入全部</button></small></label>
           </div>
 
