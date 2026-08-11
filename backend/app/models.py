@@ -800,6 +800,7 @@ class BusinessAnalysisRecommendationRecord(Base):
     data_sources_json: Mapped[str] = mapped_column(Text, default="[]")
     evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
     target_page: Mapped[str] = mapped_column(String(500), default="")
+    target_scope: Mapped[str] = mapped_column(String(32), default="domain")
     execution_mode: Mapped[str] = mapped_column(String(32), default="manual")
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
@@ -807,6 +808,18 @@ class BusinessAnalysisRecommendationRecord(Base):
         String(128), nullable=True, unique=True, index=True
     )
     user_note: Mapped[str] = mapped_column(Text, default="")
+    accepted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    observe_until: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    baseline_metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    actual_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_conclusion: Mapped[str] = mapped_column(Text, default="")
+    execution_ref_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_ref_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
@@ -820,6 +833,38 @@ class BusinessAnalysisRecommendationRecord(Base):
             "idx_business_analysis_recommendation_order",
             "analysis_id",
             "position",
+        ),
+        Index(
+            "idx_business_analysis_recommendation_lifecycle",
+            "status",
+            "observe_until",
+        ),
+    )
+
+
+class BusinessAnalysisRecommendationEvent(Base):
+    """Immutable, idempotent audit event for one recommendation transition."""
+
+    __tablename__ = "business_analysis_recommendation_events"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    recommendation_id: Mapped[str] = mapped_column(
+        ForeignKey("business_analysis_recommendations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    from_status: Mapped[str] = mapped_column(String(32))
+    to_status: Mapped[str] = mapped_column(String(32))
+    request_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    result_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+    __table_args__ = (
+        Index(
+            "idx_business_analysis_recommendation_event_timeline",
+            "recommendation_id",
+            "created_at",
         ),
     )
 

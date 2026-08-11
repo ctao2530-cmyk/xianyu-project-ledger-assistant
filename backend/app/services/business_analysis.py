@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from ..ai.base import AIModelSelection, AIProvider, AIProviderError
 from ..business_analysis_repository import (
     BusinessAnalysisRepository,
+    RecommendationTransitionError,
     StoredBusinessAnalysis,
 )
 from ..business_analysis_schemas import (
@@ -467,7 +468,14 @@ class BusinessAnalysisService:
         request_id: str,
         note: str,
     ) -> BusinessAnalysisRecommendation:
-        return self.repository.update_recommendation(
+        # Compatibility entrypoint for callers that have not yet switched to
+        # Runtime.business_recommendations. Completing a recommendation is no
+        # longer accepted here because it requires an observed result/outcome.
+        if status not in {"pending", "accepted", "ignored"}:
+            raise RecommendationTransitionError
+        from .business_recommendations import BusinessRecommendationService
+
+        return BusinessRecommendationService(self.database, self).update(
             recommendation_id,
             status=status,
             expected_version=expected_version,
@@ -1286,7 +1294,7 @@ class BusinessAnalysisService:
             ),
             BusinessAnalysisFutureField(
                 domain="recommendations",
-                field="outcome",
-                reason="商品实验已有局部反馈，但跨客户、项目和财务建议尚无统一结果字段。",
+                field="validated_rule_id",
+                reason="本阶段只保存建议结果，不会把单次结果自动晋升为长期经营规则。",
             ),
         ]

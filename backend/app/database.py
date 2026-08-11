@@ -57,7 +57,11 @@ class Database:
             self._backup_before_browse_accounting_upgrade()
             self._backup_before_settlement_issue_upgrade()
             self._backup_before_project_change_order_upgrade()
+            self._backup_before_business_recommendation_feedback_upgrade()
             self._migrate_channel_columns()
+            # Existing analysis tables must gain the additive feedback columns
+            # before SQLAlchemy creates indexes declared by the current model.
+            self._migrate_business_recommendation_feedback_schema()
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             self._migrate_personal_project_schema()
@@ -226,6 +230,49 @@ class Database:
 
         with self.engine.begin() as connection:
             migrate_project_change_order_schema(connection)
+
+    def _migrate_business_recommendation_feedback_schema(self) -> None:
+        from .schema_migrations import migrate_business_recommendation_feedback_schema
+
+        with self.engine.begin() as connection:
+            migrate_business_recommendation_feedback_schema(connection)
+
+    def _backup_before_business_recommendation_feedback_upgrade(self) -> None:
+        database_path = self.engine.url.database
+        if not database_path or database_path == ":memory:":
+            return
+        path = Path(database_path)
+        if not path.is_file():
+            return
+        with self.engine.connect() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "business_analysis_recommendations" not in tables:
+                return
+            columns = {
+                str(row[1])
+                for row in connection.exec_driver_sql(
+                    "PRAGMA table_info(business_analysis_recommendations)"
+                )
+            }
+        if "target_scope" in columns:
+            return
+        backup_dir = path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / f"{path.stem}-before-recommendation-feedback-{stamp}{path.suffix}"
+        with sqlite3.connect(path) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+            result = destination.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError(
+                    "recommendation feedback backup failed SQLite integrity check"
+                )
+        target.chmod(0o600)
 
     def _backup_before_collection_attempt_upgrade(self) -> None:
         """Create one WAL-safe backup before append-only attempt logs appear."""

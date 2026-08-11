@@ -6,7 +6,10 @@ export type BusinessAnalysisDomain =
   | "finance"
   | "data";
 
-export type RecommendationStatus = "pending" | "accepted" | "ignored" | "completed";
+export type RecommendationStatus = "pending" | "accepted" | "observing" | "ignored" | "completed";
+export type RecommendationUpdateStatus = "pending" | "accepted" | "ignored";
+export type RecommendationLifecycleStatus = RecommendationStatus | "review_due";
+export type RecommendationOutcome = "positive" | "negative" | "inconclusive";
 export type BusinessAnalysisProvider = "codex_cli" | "deepseek";
 
 export interface BusinessAnalysisModelOption {
@@ -108,8 +111,14 @@ export interface BusinessAnalysisInsight {
 
 export interface BusinessAnalysisRecommendation {
   id: string;
+  analysis_id: string | null;
+  analysis_snapshot_time: string | null;
   source_key: string | null;
   domain: BusinessAnalysisDomain;
+  entity_type: string | null;
+  entity_id: string | null;
+  entity_label: string | null;
+  target_scope: "portfolio" | "domain" | "entity";
   priority: "low" | "medium" | "high";
   title: string;
   problem: string;
@@ -118,12 +127,61 @@ export interface BusinessAnalysisRecommendation {
   data_source: string[];
   confidence: "low" | "medium" | "high";
   observe_period: string;
+  observe_days: number | null;
   status: RecommendationStatus;
+  lifecycle_status: RecommendationLifecycleStatus;
   version: number;
   user_note: string;
   target_page: string;
   execution_mode: "manual";
   evidence_refs: string[];
+  accepted_at: string | null;
+  started_at: string | null;
+  observe_until: string | null;
+  completed_at: string | null;
+  baseline_metrics: BusinessRecommendationMetricSnapshot | null;
+  result_metrics: BusinessRecommendationMetricSnapshot | null;
+  outcome: RecommendationOutcome | null;
+  actual_cost: number | null;
+  actual_hours: number | null;
+  user_conclusion: string;
+  execution_ref_type: "product_modification_experiment" | null;
+  execution_ref_id: string | null;
+  stale: boolean;
+  can_accept: boolean;
+  can_ignore: boolean;
+  can_start: boolean;
+  can_complete: boolean;
+}
+
+export interface BusinessRecommendationMetricValue {
+  key: string;
+  label: string;
+  value: number;
+  unit: string;
+  evidence_ref: string;
+}
+
+export interface BusinessRecommendationMetricSnapshot {
+  captured_at: string;
+  source_snapshot_hash: string;
+  values: BusinessRecommendationMetricValue[];
+}
+
+export interface BusinessAnalysisRecommendationQueueCounts {
+  total: number;
+  pending: number;
+  accepted: number;
+  observing: number;
+  review_due: number;
+  completed: number;
+  ignored: number;
+}
+
+export interface BusinessAnalysisRecommendationQueueResponse {
+  items: BusinessAnalysisRecommendation[];
+  counts: BusinessAnalysisRecommendationQueueCounts;
+  generated_at: string;
 }
 
 export interface BusinessAnalysisDataSource {
@@ -242,7 +300,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function businessAnalysisRequestId(scope: "analysis-run" | "recommendation-update") {
+export function businessAnalysisRequestId(
+  scope: "analysis-run" | "recommendation-update" | "recommendation-start" | "recommendation-complete",
+) {
   const unique = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -276,10 +336,13 @@ export const businessAnalysisService = {
   historyDetail: (analysisId: string) => request<BusinessAnalysisOverview>(
     `/api/business-analysis/history/${encodeURIComponent(analysisId)}`,
   ),
+  recommendations: () => request<BusinessAnalysisRecommendationQueueResponse>(
+    "/api/business-analysis/recommendations",
+  ),
   updateRecommendation: (
     recommendationId: string,
     payload: {
-      status: RecommendationStatus;
+      status: RecommendationUpdateStatus;
       expected_version: number;
       request_id: string;
       note?: string;
@@ -289,6 +352,47 @@ export const businessAnalysisService = {
     {
       method: "PATCH",
       body: JSON.stringify({ ...payload, note: payload.note || "" }),
+    },
+  ),
+  startRecommendation: (
+    recommendationId: string,
+    payload: {
+      expected_version: number;
+      request_id: string;
+      execution_ref_type?: "product_modification_experiment" | null;
+      execution_ref_id?: string | null;
+    },
+  ) => request<BusinessAnalysisRecommendation>(
+    `/api/business-analysis/recommendations/${encodeURIComponent(recommendationId)}/start`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ...payload,
+        execution_ref_type: payload.execution_ref_type || null,
+        execution_ref_id: payload.execution_ref_id || null,
+      }),
+    },
+  ),
+  completeRecommendation: (
+    recommendationId: string,
+    payload: {
+      expected_version: number;
+      request_id: string;
+      outcome: RecommendationOutcome;
+      actual_cost?: number | null;
+      actual_hours?: number | null;
+      user_conclusion?: string;
+    },
+  ) => request<BusinessAnalysisRecommendation>(
+    `/api/business-analysis/recommendations/${encodeURIComponent(recommendationId)}/complete`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ...payload,
+        actual_cost: payload.actual_cost ?? null,
+        actual_hours: payload.actual_hours ?? null,
+        user_conclusion: payload.user_conclusion || "",
+      }),
     },
   ),
 };
