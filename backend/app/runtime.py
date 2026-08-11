@@ -17,6 +17,7 @@ from .services.actions import HumanActions
 from .services.ai_queue import AIJobQueue
 from .services.ai_models import AIModelSettingsService
 from .services.automation import AutoReplyService
+from .services.business_analysis import BusinessAnalysisService
 from .services.event_hub import EventHub
 from .services.listener import ListenerService
 from .services.listener_state import ListenerStateTracker
@@ -63,6 +64,7 @@ class Runtime:
     send_limiter: SlidingWindowRateLimiter
     ledger: LedgerService
     product_intelligence: ProductIntelligenceService
+    business_analysis: BusinessAnalysisService
 
 
 def build_runtime(settings: Settings) -> Runtime:
@@ -131,6 +133,7 @@ def build_runtime(settings: Settings) -> Runtime:
         notifier,
         ledger=ledger,
     )
+    business_analysis = BusinessAnalysisService(database, ledger)
     send_limiter = SlidingWindowRateLimiter(settings.send_rate_limit_per_minute)
     actions = HumanActions(database, channel_senders, style_learning)
     automation = AutoReplyService(
@@ -223,4 +226,5 @@ def build_runtime(settings: Settings) -> Runtime:
         send_limiter=send_limiter,
         ledger=ledger,
         product_intelligence=product_intelligence,
+        business_analysis=business_analysis,
     )

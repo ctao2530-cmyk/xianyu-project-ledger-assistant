@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import router
+from .business_analysis_api import business_analysis_router
 from .config import get_settings
 from .events import event_router
 from .ledger_api import ledger_router
@@ -123,6 +124,7 @@ async def rate_limit(request: Request, call_next):
 
 
 app.include_router(router)
+app.include_router(business_analysis_router)
 app.include_router(ledger_router)
 app.include_router(product_router)
 app.include_router(sales_router)

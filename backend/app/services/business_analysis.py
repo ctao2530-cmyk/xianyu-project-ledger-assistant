@@ -1,0 +1,923 @@
+from __future__ import annotations
+
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import func, select
+
+from ..business_analysis_schemas import (
+    BusinessAnalysisDataSource,
+    BusinessAnalysisFutureField,
+    BusinessAnalysisInsight,
+    BusinessAnalysisMetrics,
+    BusinessAnalysisOverview,
+    BusinessAnalysisPeriod,
+    BusinessAnalysisRecommendation,
+    CustomerAnalysisMetrics,
+    FinanceAnalysisMetrics,
+    PeriodMetric,
+    ProductAnalysisMetrics,
+    ProductSignalMetric,
+    ProjectAnalysisMetrics,
+)
+from ..database import Database
+from ..ledger import LedgerService
+from ..models import Conversation, LedgerState, ProductDailySnapshot, ProductMonitor
+
+
+ANALYSIS_TIMEZONE = "Asia/Shanghai"
+ACTIVE_PRODUCT_MARKERS = ("在售", "上架", "active", "selling", "onsale")
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_datetime(value: Any, zone: ZoneInfo) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=zone)
+    return parsed.astimezone(zone)
+
+
+def _parse_date(value: Any) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _month_bounds(now: datetime) -> tuple[datetime, datetime, datetime]:
+    current_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if current_start.month == 1:
+        previous_start = current_start.replace(year=current_start.year - 1, month=12)
+    else:
+        previous_start = current_start.replace(month=current_start.month - 1)
+    if current_start.month == 12:
+        next_start = current_start.replace(year=current_start.year + 1, month=1)
+    else:
+        next_start = current_start.replace(month=current_start.month + 1)
+    return previous_start, current_start, next_start
+
+
+def _in_period(value: Any, start: datetime, end: datetime, zone: ZoneInfo) -> bool:
+    parsed = _parse_datetime(value, zone)
+    return parsed is not None and start <= parsed < end
+
+
+def _round_money(value: float) -> float:
+    return round(value + 0.0, 2)
+
+
+def _period_metric(current: float, previous: float) -> PeriodMetric:
+    current = _round_money(current)
+    previous = _round_money(previous)
+    delta = _round_money(current - previous)
+    if delta > 0.005:
+        direction = "up"
+    elif delta < -0.005:
+        direction = "down"
+    else:
+        direction = "flat"
+    change_percent = None
+    if abs(previous) > 0.005:
+        change_percent = round((delta / abs(previous)) * 100, 1)
+    return PeriodMetric(
+        current=current,
+        previous=previous,
+        delta=delta,
+        change_percent=change_percent,
+        direction=direction,
+    )
+
+
+class BusinessAnalysisService:
+    """Read-only, cross-domain business evidence and recommendation layer.
+
+    Phase one deliberately keeps metric calculation deterministic. It never
+    calls a model, changes business records, or treats missing evidence as a
+    fact. Model-assisted synthesis can be added later on top of this stable
+    contract without weakening source traceability.
+    """
+
+    def __init__(
+        self,
+        database: Database,
+        ledger: LedgerService,
+        *,
+        timezone_name: str = ANALYSIS_TIMEZONE,
+    ) -> None:
+        self.database = database
+        self.ledger = ledger
+        self.timezone_name = timezone_name
+        self.zone = ZoneInfo(timezone_name)
+
+    def overview(self, *, now: datetime | None = None) -> BusinessAnalysisOverview:
+        generated_at = now or datetime.now(timezone.utc)
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=timezone.utc)
+        local_now = generated_at.astimezone(self.zone)
+        previous_start, current_start, next_start = _month_bounds(local_now)
+
+        revision, snapshot = self.ledger.get()
+        products, product_source = self._product_metrics()
+        conversation_stats = self._conversation_stats()
+        customers = self._customer_metrics(snapshot, conversation_stats, local_now)
+        finance = self._finance_metrics(
+            snapshot,
+            previous_start=previous_start,
+            current_start=current_start,
+            next_start=next_start,
+        )
+        projects = self._project_metrics(snapshot, finance)
+        ledger_source = self._ledger_source(snapshot)
+
+        metrics = BusinessAnalysisMetrics(
+            products=products,
+            customers=customers,
+            projects=projects,
+            finance=finance,
+        )
+        insights, recommendations, data_gaps = self._decision_layer(metrics)
+        recommendations.sort(
+            key=lambda row: ({"high": 0, "medium": 1, "low": 2}[row.priority], row.id)
+        )
+        insights.sort(
+            key=lambda row: (
+                {"critical": 0, "warning": 1, "info": 2, "positive": 3}[row.severity],
+                row.id,
+            )
+        )
+
+        if data_gaps:
+            summary = (
+                f"当前经营状态：基线建设中。{len(data_gaps)} 类关键证据仍不完整，"
+                "建议先补齐数据，再扩大投入或调整长期策略。"
+            )
+        elif any(row.priority == "high" for row in recommendations):
+            summary = (
+                "当前经营状态：存在优先处理项。经营数据已经形成跨域基线，"
+                "但利润、交付或转化信号需要先处理。"
+            )
+        else:
+            summary = (
+                "当前经营状态：基础稳定。商品、客户、项目和财务数据已形成可解释基线，"
+                "可以按建议进行人工验证并持续记录结果。"
+            )
+
+        return BusinessAnalysisOverview(
+            summary=summary,
+            metrics=metrics,
+            insights=insights,
+            recommendations=recommendations[:6],
+            data_sources=[ledger_source, product_source, conversation_stats["source"]],
+            future_fields=self._future_fields(),
+            data_gaps=data_gaps,
+            ledger_revision=revision,
+            period=BusinessAnalysisPeriod(
+                timezone=self.timezone_name,
+                current_month_start=current_start.date().isoformat(),
+                current_month_end=(next_start.date() - timedelta(days=1)).isoformat(),
+                previous_month_start=previous_start.date().isoformat(),
+                previous_month_end=(current_start.date() - timedelta(days=1)).isoformat(),
+            ),
+            generated_at=generated_at.astimezone(timezone.utc),
+        )
+
+    def _product_metrics(
+        self,
+    ) -> tuple[ProductAnalysisMetrics, BusinessAnalysisDataSource]:
+        with self.database.session() as session:
+            monitors = list(
+                session.scalars(
+                    select(ProductMonitor)
+                    .where(ProductMonitor.ownership_status == "owned")
+                    .order_by(ProductMonitor.id)
+                ).all()
+            )
+            item_ids = [monitor.item_id for monitor in monitors]
+            snapshots = (
+                list(
+                    session.scalars(
+                        select(ProductDailySnapshot)
+                        .where(ProductDailySnapshot.item_id.in_(item_ids))
+                        .order_by(
+                            ProductDailySnapshot.item_id,
+                            ProductDailySnapshot.snapshot_date,
+                            ProductDailySnapshot.id,
+                        )
+                    ).all()
+                )
+                if item_ids
+                else []
+            )
+
+        histories: dict[int, list[ProductDailySnapshot]] = defaultdict(list)
+        for snapshot in snapshots:
+            histories[snapshot.item_id].append(snapshot)
+
+        status_counts: Counter[str] = Counter()
+        current_browse = 0
+        current_inquiries = 0
+        current_conversions = 0
+        platform_sold = 0
+        browse_delta = 0
+        inquiry_delta = 0
+        conversion_delta = 0
+        comparable_products = 0
+        published_values: list[tuple[datetime, str]] = []
+
+        for monitor in monitors:
+            history = histories.get(monitor.item_id, [])
+            if not history:
+                status_counts["等待快照"] += 1
+                continue
+            current = history[-1]
+            status = current.status.strip() or "未知"
+            status_counts[status] += 1
+            current_browse += max(0, current.browse_count)
+            current_inquiries += max(0, current.inquiry_count)
+            current_conversions += max(0, current.converted_project_count)
+            platform_sold += max(0, current.sold_count)
+            published_at = _parse_datetime(current.published_at, self.zone)
+            if published_at is not None:
+                published_values.append((published_at, current.published_at))
+
+            current_date = _parse_date(current.snapshot_date)
+            if current_date is None:
+                continue
+            threshold = current_date - timedelta(days=7)
+            baseline = next(
+                (
+                    row
+                    for row in reversed(history[:-1])
+                    if (_parse_date(row.snapshot_date) or current_date) <= threshold
+                ),
+                None,
+            )
+            if baseline is None:
+                continue
+            comparable_products += 1
+            browse_delta += max(0, current.browse_count - baseline.browse_count)
+            inquiry_delta += max(0, current.inquiry_count - baseline.inquiry_count)
+            conversion_delta += max(
+                0,
+                current.converted_project_count - baseline.converted_project_count,
+            )
+
+        latest_snapshots = sum(1 for monitor in monitors if histories.get(monitor.item_id))
+        coverage = round((latest_snapshots / len(monitors)) * 100, 1) if monitors else 0.0
+        active_products = sum(
+            count
+            for status, count in status_counts.items()
+            if any(marker in status.casefold() for marker in ACTIVE_PRODUCT_MARKERS)
+        )
+        captured_values = [
+            parsed
+            for row in snapshots
+            if (parsed := _parse_datetime(row.captured_at, self.zone)) is not None
+        ]
+        latest_captured = max(captured_values, default=None)
+        latest_published = max(published_values, default=None, key=lambda row: row[0])
+        inquiry_rate = (
+            round((current_inquiries / current_browse) * 100, 2)
+            if current_browse > 0
+            else None
+        )
+
+        metrics = ProductAnalysisMetrics(
+            owned_products=len(monitors),
+            monitored_products=sum(1 for monitor in monitors if monitor.enabled),
+            active_products=active_products,
+            status_counts=dict(status_counts),
+            latest_published_at=latest_published[1] if latest_published else None,
+            snapshot_days=len({row.snapshot_date for row in snapshots}),
+            snapshot_coverage_percent=coverage,
+            exposure=ProductSignalMetric(
+                current=current_browse,
+                delta_7d=browse_delta if comparable_products else None,
+                comparison_products=comparable_products,
+                available=bool(latest_snapshots),
+                unit="经营浏览",
+            ),
+            inquiries=ProductSignalMetric(
+                current=current_inquiries,
+                delta_7d=inquiry_delta if comparable_products else None,
+                comparison_products=comparable_products,
+                available=bool(latest_snapshots),
+                unit="咨询",
+            ),
+            converted_projects=ProductSignalMetric(
+                current=current_conversions,
+                delta_7d=conversion_delta if comparable_products else None,
+                comparison_products=comparable_products,
+                available=bool(latest_snapshots),
+                unit="转化项目",
+            ),
+            platform_sold_count=platform_sold,
+            inquiry_rate_percent=inquiry_rate,
+        )
+        source = BusinessAnalysisDataSource(
+            id="products",
+            label="本人商品经营快照",
+            source_type="sqlite",
+            tables=["product_monitors", "product_daily_snapshots"],
+            fields=[
+                "ownership_status",
+                "enabled",
+                "status",
+                "published_at",
+                "browse_count",
+                "inquiry_count",
+                "sold_count",
+                "converted_project_count",
+            ],
+            available=bool(monitors),
+            record_count=len(snapshots),
+            latest_at=latest_captured.isoformat() if latest_captured else None,
+            note="只统计 ownership_status=owned 的商品；经营浏览已排除保守采集自访问。",
+        )
+        return metrics, source
+
+    def _conversation_stats(self) -> dict[str, Any]:
+        with self.database.session() as session:
+            record_count = int(session.scalar(select(func.count(Conversation.id))) or 0)
+            customer_count = int(
+                session.scalar(select(func.count(func.distinct(Conversation.customer_id)))) or 0
+            )
+            latest = session.scalar(select(func.max(Conversation.last_message_at)))
+        latest_at = _parse_datetime(latest, self.zone)
+        return {
+            "record_count": record_count,
+            "customer_count": customer_count,
+            "latest_at": latest_at,
+            "source": BusinessAnalysisDataSource(
+                id="conversations",
+                label="客户沟通时间元数据",
+                source_type="sqlite",
+                tables=["conversations"],
+                fields=["customer_id", "last_message_at", "channel"],
+                available=record_count > 0,
+                record_count=record_count,
+                latest_at=latest_at.isoformat() if latest_at else None,
+                note="仅聚合沟通时间和去重数量，不读取或返回客户消息正文。",
+            ),
+        }
+
+    def _customer_metrics(
+        self,
+        snapshot: dict[str, Any],
+        conversation_stats: dict[str, Any],
+        now: datetime,
+    ) -> CustomerAnalysisMetrics:
+        customers = snapshot.get("customers", [])
+        statuses = Counter(str(row.get("followUpStatus") or "unknown") for row in customers)
+        threshold = now - timedelta(days=30)
+        contact_dates = [
+            parsed
+            for row in customers
+            if (parsed := _parse_datetime(row.get("lastContactAt"), self.zone)) is not None
+        ]
+        active = sum(1 for parsed in contact_dates if parsed >= threshold)
+        stale = len(customers) - active
+        latest_contact = max(contact_dates, default=None)
+        latest_message = conversation_stats["latest_at"]
+        latest_overall = max(
+            [row for row in (latest_contact, latest_message) if row is not None],
+            default=None,
+        )
+        return CustomerAnalysisMetrics(
+            total=len(customers),
+            follow_up_status_counts=dict(statuses),
+            won_customers=statuses.get("won", 0),
+            active_last_30d=active,
+            stale_or_missing_contact_30d=stale,
+            latest_contact_at=latest_overall.isoformat() if latest_overall else None,
+            conversation_customers=conversation_stats["customer_count"],
+            latest_message_at=latest_message.isoformat() if latest_message else None,
+        )
+
+    def _finance_metrics(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        previous_start: datetime,
+        current_start: datetime,
+        next_start: datetime,
+    ) -> FinanceAnalysisMetrics:
+        payments = snapshot.get("payments", [])
+        issues = snapshot.get("settlementIssues", [])
+        expenses = snapshot.get("expenses", [])
+
+        def net_income(start: datetime | None = None, end: datetime | None = None) -> float:
+            def matches(value: Any) -> bool:
+                if start is None or end is None:
+                    return True
+                return _in_period(value, start, end, self.zone)
+
+            gross = sum(
+                _number(row.get("amount"))
+                for row in payments
+                if row.get("status") in {"confirmed", "refunded"}
+                and matches(row.get("paidAt"))
+            )
+            legacy_refunds = sum(
+                _number(row.get("amount"))
+                for row in payments
+                if row.get("status") == "refunded" and matches(row.get("paidAt"))
+            )
+            issue_refunds = sum(
+                _number(row.get("refundAmount"))
+                for row in issues
+                if matches(row.get("occurredAt"))
+            )
+            return gross - legacy_refunds - issue_refunds
+
+        def expense_total(start: datetime | None = None, end: datetime | None = None) -> float:
+            return sum(
+                _number(row.get("amount"))
+                for row in expenses
+                if start is None
+                or end is None
+                or _in_period(row.get("paidAt"), start, end, self.zone)
+            )
+
+        current_income = net_income(current_start, next_start)
+        previous_income = net_income(previous_start, current_start)
+        current_expenses = expense_total(current_start, next_start)
+        previous_expenses = expense_total(previous_start, current_start)
+        all_time_income = net_income()
+        all_time_expenses = expense_total()
+        return FinanceAnalysisMetrics(
+            income=_period_metric(current_income, previous_income),
+            expenses=_period_metric(current_expenses, previous_expenses),
+            profit=_period_metric(
+                current_income - current_expenses,
+                previous_income - previous_expenses,
+            ),
+            all_time_income=_round_money(all_time_income),
+            all_time_expenses=_round_money(all_time_expenses),
+            all_time_profit=_round_money(all_time_income - all_time_expenses),
+            confirmed_payment_count=sum(
+                1 for row in payments if row.get("status") in {"confirmed", "refunded"}
+            ),
+            expense_count=len(expenses),
+        )
+
+    def _project_metrics(
+        self,
+        snapshot: dict[str, Any],
+        finance: FinanceAnalysisMetrics,
+    ) -> ProjectAnalysisMetrics:
+        projects = snapshot.get("projects", [])
+        payments = snapshot.get("payments", [])
+        issues = snapshot.get("settlementIssues", [])
+        statuses = Counter(str(row.get("status") or "unknown") for row in projects)
+        outstanding = 0.0
+        for project in projects:
+            project_id = project.get("id")
+            gross = sum(
+                _number(row.get("amount"))
+                for row in payments
+                if row.get("projectId") == project_id
+                and row.get("status") in {"confirmed", "refunded"}
+            )
+            uncollectible = sum(
+                _number(row.get("receivableImpact"))
+                for row in issues
+                if row.get("projectId") == project_id
+            )
+            outstanding += max(0.0, _number(project.get("totalAmount")) - gross - uncollectible)
+        return ProjectAnalysisMetrics(
+            total=len(projects),
+            status_counts=dict(statuses),
+            active_projects=statuses.get("in_progress", 0) + statuses.get("overdue", 0),
+            completed_projects=statuses.get("delivered", 0) + statuses.get("completed", 0),
+            overdue_projects=statuses.get("overdue", 0),
+            contract_total=_round_money(
+                sum(_number(project.get("totalAmount")) for project in projects)
+            ),
+            confirmed_income=finance.all_time_income,
+            outstanding_receivables=_round_money(outstanding),
+        )
+
+    def _ledger_source(self, snapshot: dict[str, Any]) -> BusinessAnalysisDataSource:
+        with self.database.session() as session:
+            state = session.get(LedgerState, 1)
+            latest = _parse_datetime(state.updated_at, self.zone) if state else None
+        collections = ("projects", "payments", "settlementIssues", "expenses", "customers")
+        return BusinessAnalysisDataSource(
+            id="ledger",
+            label="统一经营账本",
+            source_type="ledger",
+            tables=[
+                "ledger_state",
+                "business_customers",
+                "business_projects",
+                "payment_nodes",
+                "project_settlement_issues",
+                "business_expenses",
+            ],
+            fields=[
+                "followUpStatus",
+                "lastContactAt",
+                "project.status",
+                "project.totalAmount",
+                "payment.status",
+                "payment.paidAt",
+                "expense.amount",
+                "expense.paidAt",
+            ],
+            available=state is not None,
+            record_count=sum(len(snapshot.get(name, [])) for name in collections),
+            latest_at=latest.isoformat() if latest else None,
+            note="收入使用确认到账净额；利润为净到账减支出，退款和无法收回金额按统一账本口径处理。",
+        )
+
+    def _decision_layer(
+        self,
+        metrics: BusinessAnalysisMetrics,
+    ) -> tuple[
+        list[BusinessAnalysisInsight],
+        list[BusinessAnalysisRecommendation],
+        list[str],
+    ]:
+        insights: list[BusinessAnalysisInsight] = []
+        recommendations: list[BusinessAnalysisRecommendation] = []
+        data_gaps: list[str] = []
+        products = metrics.products
+        customers = metrics.customers
+        projects = metrics.projects
+        finance = metrics.finance
+
+        if products.owned_products == 0:
+            data_gaps.append("缺少已验证属于当前卖家的商品")
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="product-baseline-missing",
+                    domain="data",
+                    severity="warning",
+                    title="商品经营基线尚未建立",
+                    reason="数据库没有可纳入经营指标的已验证本人商品，不能据此判断曝光、咨询或成交表现。",
+                    evidence_refs=["products.ownership_status"],
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="verify-owned-products",
+                    domain="products",
+                    priority="high",
+                    title="先确认本人商品范围",
+                    action="在商品经营中完成本人商品确认并进行一次只读采集。",
+                    reason="未验证归属的商品不能进入经营指标和建议，先补齐来源比直接优化更可靠。",
+                    target_page="商品经营",
+                    evidence_refs=["products.ownership_status", "products.snapshot_coverage_percent"],
+                )
+            )
+        elif products.snapshot_coverage_percent < 100:
+            data_gaps.append("部分已验证商品缺少经营快照")
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="product-snapshot-gap",
+                    domain="data",
+                    severity="warning",
+                    title="部分商品缺少可比较快照",
+                    reason=f"当前商品快照覆盖率为 {products.snapshot_coverage_percent:.1f}%，缺失商品不会被推断为零表现。",
+                    evidence_refs=["products.snapshot_coverage_percent"],
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="refresh-product-snapshots",
+                    domain="products",
+                    priority="high",
+                    title="补齐商品快照",
+                    action="对缺少快照的本人商品执行一次人工只读刷新。",
+                    reason="只有覆盖完整后，商品之间的曝光与咨询比较才具有一致口径。",
+                    target_page="商品经营",
+                    evidence_refs=["products.snapshot_coverage_percent"],
+                )
+            )
+        else:
+            if products.exposure.current >= 50 and products.inquiries.current == 0:
+                insights.append(
+                    BusinessAnalysisInsight(
+                        id="exposure-without-inquiry",
+                        domain="products",
+                        severity="warning",
+                        title="已有曝光但尚未形成咨询",
+                        reason=f"已记录 {products.exposure.current} 次经营浏览，但咨询仍为 0；当前瓶颈更接近商品表达或匹配度，而不是曝光不足。",
+                        evidence_refs=["products.exposure.current", "products.inquiries.current"],
+                    )
+                )
+                recommendations.append(
+                    BusinessAnalysisRecommendation(
+                        id="improve-listing-conversion",
+                        domain="products",
+                        priority="high",
+                        title="先验证商品转化表达",
+                        action="选择一个变量检查标题、封面或交付边界，并记录修改前后的咨询变化。",
+                        reason="当前证据不支持继续扩大曝光投入，应先验证浏览到咨询的转化环节。",
+                        target_page="商品经营",
+                        evidence_refs=["products.exposure.current", "products.inquiries.current"],
+                    )
+                )
+            elif (
+                products.inquiry_rate_percent is not None
+                and products.exposure.current >= 100
+                and products.inquiry_rate_percent < 1
+            ):
+                insights.append(
+                    BusinessAnalysisInsight(
+                        id="low-inquiry-rate",
+                        domain="products",
+                        severity="warning",
+                        title="浏览到咨询转化偏弱",
+                        reason=f"当前经营浏览到咨询比例约为 {products.inquiry_rate_percent:.2f}%，需要先定位商品表达和目标客户匹配问题。",
+                        evidence_refs=["products.inquiry_rate_percent"],
+                    )
+                )
+                recommendations.append(
+                    BusinessAnalysisRecommendation(
+                        id="test-product-message",
+                        domain="products",
+                        priority="medium",
+                        title="做一次单变量商品实验",
+                        action="只调整一个商品变量并观察至少 7 天，避免同时改动导致无法归因。",
+                        reason="单变量记录可以把优化建议转化为可复验的数据资产。",
+                        target_page="商品经营",
+                        evidence_refs=["products.inquiry_rate_percent", "products.snapshot_days"],
+                    )
+                )
+            if products.inquiries.current > 0 and products.converted_projects.current == 0:
+                insights.append(
+                    BusinessAnalysisInsight(
+                        id="inquiry-without-project",
+                        domain="products",
+                        severity="warning",
+                        title="咨询尚未转化为项目",
+                        reason=f"已有 {products.inquiries.current} 次咨询记录，但关联转化项目仍为 0。",
+                        evidence_refs=["products.inquiries.current", "products.converted_projects.current"],
+                    )
+                )
+                recommendations.append(
+                    BusinessAnalysisRecommendation(
+                        id="review-consultation-conversion",
+                        domain="customers",
+                        priority="medium",
+                        title="复核咨询到项目的断点",
+                        action="检查近期咨询是否完成需求澄清、报价和项目关联。",
+                        reason="已有需求信号但没有项目转化，优先检查销售流程比增加曝光更直接。",
+                        target_page="客户消息",
+                        evidence_refs=["products.inquiries.current", "products.converted_projects.current"],
+                    )
+                )
+
+        if customers.total == 0:
+            data_gaps.append("客户关系账本为空")
+            reason = (
+                f"目前有 {customers.conversation_customers} 个沟通身份，但尚未形成已确认客户记录。"
+                if customers.conversation_customers
+                else "当前没有已确认客户或沟通身份可用于客户经营分析。"
+            )
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="customer-baseline-missing",
+                    domain="data",
+                    severity="warning",
+                    title="客户经营基线尚未建立",
+                    reason=reason,
+                    evidence_refs=["ledger.customers", "conversations.customer_id"],
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="confirm-customer-records",
+                    domain="customers",
+                    priority="medium",
+                    title="建立已确认客户记录",
+                    action="从真实咨询中人工确认需要持续跟进的客户关系。",
+                    reason="会话身份不能自动等同于经营客户，必须保留人工确认边界。",
+                    target_page="客户消息",
+                    evidence_refs=["ledger.customers", "conversations.customer_id"],
+                )
+            )
+        elif customers.stale_or_missing_contact_30d > 0:
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="stale-customer-followup",
+                    domain="customers",
+                    severity="warning",
+                    title="存在长期未更新的客户关系",
+                    reason=f"{customers.stale_or_missing_contact_30d} 个客户超过 30 天未联系或缺少联系时间。",
+                    evidence_refs=["ledger.customers.lastContactAt"],
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="review-stale-customers",
+                    domain="customers",
+                    priority="medium",
+                    title="人工复核待跟进客户",
+                    action="逐个判断继续跟进、暂缓或结束，不自动发送消息。",
+                    reason="客户状态长期不更新会放大漏跟进和虚假机会数量。",
+                    target_page="客户管理",
+                    evidence_refs=["ledger.customers.lastContactAt", "ledger.customers.followUpStatus"],
+                )
+            )
+
+        if projects.total == 0:
+            data_gaps.append("项目账本为空")
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="project-baseline-missing",
+                    domain="data",
+                    severity="warning",
+                    title="项目交付基线尚未建立",
+                    reason="当前没有项目状态、合同或交付样本，无法判断项目结构和收入质量。",
+                    evidence_refs=["ledger.projects"],
+                )
+            )
+        elif projects.overdue_projects > 0:
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="overdue-projects",
+                    domain="projects",
+                    severity="critical",
+                    title="存在逾期项目",
+                    reason=f"当前有 {projects.overdue_projects} 个逾期项目，交付风险应优先于新增投入。",
+                    evidence_refs=["ledger.projects.status"],
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="stabilize-overdue-projects",
+                    domain="projects",
+                    priority="high",
+                    title="先收口逾期交付",
+                    action="核对逾期项目的剩余任务、交付边界和下一次可验证节点。",
+                    reason="逾期会同时影响客户信任、回款和后续接单容量。",
+                    target_page="项目管理",
+                    evidence_refs=["ledger.projects.status"],
+                )
+            )
+
+        if finance.confirmed_payment_count == 0 and finance.expense_count == 0:
+            data_gaps.append("缺少确认收支记录")
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="finance-baseline-missing",
+                    domain="data",
+                    severity="warning",
+                    title="财务经营基线尚未建立",
+                    reason="没有确认到账或支出记录，利润与趋势只能标记为未知，不能按零利润处理。",
+                    evidence_refs=["ledger.payments", "ledger.expenses"],
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="record-cashflow-baseline",
+                    domain="finance",
+                    priority="high",
+                    title="补齐真实收支记录",
+                    action="记录已确认到账和真实支出，再重新查看经营分析。",
+                    reason="利润建议只有建立在真实现金流上才可执行。",
+                    target_page="收入记录",
+                    evidence_refs=["ledger.payments", "ledger.expenses"],
+                )
+            )
+        elif finance.profit.current < 0:
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="negative-month-profit",
+                    domain="finance",
+                    severity="critical",
+                    title="本月利润为负",
+                    reason=f"本月净到账 ¥{finance.income.current:.2f}，支出 ¥{finance.expenses.current:.2f}，利润 ¥{finance.profit.current:.2f}。",
+                    evidence_refs=["ledger.finance.current_month_income", "ledger.finance.current_month_expenses"],
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="repair-month-profit",
+                    domain="finance",
+                    priority="high",
+                    title="先修复本月利润结构",
+                    action="按项目核对确认到账、关联支出和工时，定位亏损来源。",
+                    reason="在亏损原因未明确前扩大投入可能放大损失。",
+                    target_page="数据统计",
+                    evidence_refs=["ledger.finance.current_month_profit"],
+                )
+            )
+        elif finance.income.change_percent is not None and finance.income.change_percent <= -20:
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="income-decline",
+                    domain="finance",
+                    severity="warning",
+                    title="本月净到账较上月下降",
+                    reason=f"本月净到账较上月变化 {finance.income.change_percent:.1f}%。",
+                    evidence_refs=["ledger.finance.current_month_income", "ledger.finance.previous_month_income"],
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="trace-income-decline",
+                    domain="finance",
+                    priority="medium",
+                    title="拆解收入下降来源",
+                    action="分别检查近期咨询、在途项目和待确认到账，不把合同额当成已收入。",
+                    reason="先定位是获客、交付还是回款变化，再选择对应动作。",
+                    target_page="数据统计",
+                    evidence_refs=["ledger.finance.current_month_income", "ledger.projects.status"],
+                )
+            )
+        else:
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="finance-baseline-readable",
+                    domain="finance",
+                    severity="positive",
+                    title="财务口径已经可以追踪",
+                    reason=f"累计净到账 ¥{finance.all_time_income:.2f}、累计支出 ¥{finance.all_time_expenses:.2f}、累计利润 ¥{finance.all_time_profit:.2f}。",
+                    evidence_refs=["ledger.finance.all_time_income", "ledger.finance.all_time_expenses"],
+                )
+            )
+
+        if projects.outstanding_receivables > 0:
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="review-receivables",
+                    domain="finance",
+                    priority="medium",
+                    title="复核仍可收余额",
+                    action="按项目确认待收节点、已核销金额和真实回款状态。",
+                    reason=f"当前仍可收余额为 ¥{projects.outstanding_receivables:.2f}，需要保持合同额与确认到账口径一致。",
+                    target_page="收入记录",
+                    evidence_refs=["ledger.projects.outstanding_receivables"],
+                )
+            )
+
+        if not data_gaps and not any(row.severity in {"critical", "warning"} for row in insights):
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="cross-domain-baseline-ready",
+                    domain="portfolio",
+                    severity="positive",
+                    title="跨域经营基线已经形成",
+                    reason="商品、客户、项目与财务均有可追溯来源，可以开始小步执行并记录结果。",
+                    evidence_refs=["products", "ledger", "conversations"],
+                )
+            )
+        if not recommendations:
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="continue-evidence-loop",
+                    domain="portfolio",
+                    priority="low",
+                    title="继续积累可比较样本",
+                    action="保持商品快照、客户状态、项目交付和收支记录同步更新。",
+                    reason="稳定样本比单次判断更能支持后续 AI 增强和经营复盘。",
+                    target_page="首页概览",
+                    evidence_refs=["products", "ledger", "conversations"],
+                )
+            )
+        return insights, recommendations, data_gaps
+
+    @staticmethod
+    def _future_fields() -> list[BusinessAnalysisFutureField]:
+        return [
+            BusinessAnalysisFutureField(
+                domain="customers",
+                field="won_at",
+                reason="当前只有成交状态，没有状态变更时间，暂不能计算客户成交周期趋势。",
+            ),
+            BusinessAnalysisFutureField(
+                domain="projects",
+                field="completed_at",
+                reason="当前只有项目状态，没有统一完成时间，暂不能精确计算月度完工趋势。",
+            ),
+            BusinessAnalysisFutureField(
+                domain="recommendations",
+                field="outcome",
+                reason="商品实验已有局部反馈，但跨客户、项目和财务建议尚无统一结果字段。",
+            ),
+        ]
