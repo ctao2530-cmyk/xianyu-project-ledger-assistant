@@ -147,6 +147,42 @@ export interface Customer {
   channelIdentities?: Array<{ channel: "xianyu" | "wechat"; externalCustomerId: string; conversationId?: number }>;
 }
 
+export interface CustomerUpdateValue {
+  requestId: string;
+  name: string;
+  source: Customer["source"];
+  phone: string;
+  followUpStatus: CustomerFollowUpStatus;
+  lastContactAt: string;
+  level: CustomerLevel;
+  tags: string[];
+}
+
+export interface CustomerRelationImpact {
+  project_count: number;
+  payment_count: number;
+  change_order_count: number;
+  settlement_issue_count: number;
+  confirmed_amount: number;
+  pending_amount: number;
+}
+
+export interface CustomerRelationPreview {
+  preview_token: string;
+  revision: number;
+  project_id: string;
+  project_name: string;
+  project_status: string;
+  contract_total: number;
+  current_customer_id: string;
+  current_customer_name: string;
+  target_customer_id: string;
+  target_customer_name: string;
+  impact: CustomerRelationImpact;
+  preserves: string[];
+  warnings: string[];
+}
+
 export interface ProjectTask {
   id: string;
   projectId: string;

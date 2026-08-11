@@ -174,6 +174,7 @@ const navItems: Array<{ label: string; icon: PhosphorIcon; displayLabel?: string
   { label: "支出记录", icon: Receipt },
   { label: "客户管理", icon: UsersThree },
   { label: "数据统计", icon: ChartBar },
+  { label: "经营分析中心", icon: ChartLineUp },
   { label: "目标计划", icon: Target },
   { label: "AI经营助手", displayLabel: "小策 · 今日判断", icon: Brain },
   { label: "设置中心", icon: GearSix },
@@ -188,6 +189,7 @@ const pageMeta: Record<string, { title: string; subtitle: string; placeholder: s
   支出记录: { title: "支出记录", subtitle: "全面追踪工具成本、外包成本、退款与日常支出", placeholder: "搜索项目、客户或订单..." },
   客户管理: { title: "客户管理", subtitle: "管理客户资料、来源、成交记录与跟进状态", placeholder: "搜索客户名称、联系人、标签..." },
   数据统计: { title: "数据统计", subtitle: "跨商品、跨周期判断哪些增长真正带来咨询与成交", placeholder: "当前页面无需搜索" },
+  经营分析中心: { title: "AI经营分析中心", subtitle: "从业务指标出发，基于证据发现问题并给出可解释的人工行动建议", placeholder: "当前页面无需搜索" },
   目标计划: { title: "目标计划", subtitle: "设定收入目标、交付计划与个人成长安排，让每一步都朝着目标前进", placeholder: "搜索项目、客户或订单..." },
   AI经营助手: { title: "小策 · AI 技术与商业合伙人", subtitle: "让每个经营判断都有事实、反证和清晰的下一步", placeholder: "搜索项目、客户、知识与规则..." },
   设置中心: { title: "设置中心", subtitle: "管理账号信息、界面风格、运营日期、提醒与数据同步", placeholder: "搜索项目、客户或订单..." },
@@ -767,7 +769,7 @@ function TopHeader({
         {activePage === "AI经营助手" ? <><img src="/assets/xunying/orbit-mark.png" alt="" aria-hidden="true" /><span>循营</span></> : <List size={24} />}
       </button>
       <div className="greeting">
-        <h1>{meta.title}{activePage === "数据统计" && <em className="page-context-tag">商品增长复盘</em>}{activePage === "首页概览" && <span aria-hidden="true"><HandWaving size={25} weight="duotone" /></span>}</h1>
+        <h1>{meta.title}{activePage === "数据统计" && <em className="page-context-tag">商品增长复盘</em>}{activePage === "经营分析中心" && <em className="page-context-tag">证据链优先</em>}{activePage === "首页概览" && <span aria-hidden="true"><HandWaving size={25} weight="duotone" /></span>}</h1>
         <p>{meta.subtitle}</p>
       </div>
       <img className={`header-planet ${activePage === "AI经营助手" ? "header-partner-avatar" : ""}`} src={activePage === "AI经营助手" ? "/assets/xunying/xiaoce-avatar.png" : "/assets/chrome-v2/header-planet.png"} alt="" aria-hidden="true" draggable={false} />
@@ -1895,11 +1897,11 @@ function DashboardLayout({
                 </div>
               </div>
             </section>
-          </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => openQuickAccounting()} onCreatePaymentPlan={(projectId) => openQuickAccounting(projectId)} onCreateChangeOrder={(projectId) => setChangeOrderTarget({ projectId })} onConfirmPayment={(projectId, paymentId) => setReceiptTarget({ projectId, paymentId })} onRecordSettlementIssue={(projectId) => setSettlementIssueTarget({ projectId })} onSnapshotChange={onSnapshotChange} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} projectRoute={projectRoute} onProjectRouteChange={changeProjectRoute} customerRoute={customerRoute} onCustomerRouteChange={changeCustomerRoute} />}
+          </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => openQuickAccounting()} onCreatePaymentPlan={(projectId) => openQuickAccounting(projectId)} onCreateChangeOrder={(projectId) => setChangeOrderTarget({ projectId })} onConfirmPayment={(projectId, paymentId) => setReceiptTarget({ projectId, paymentId })} onRecordSettlementIssue={(projectId) => setSettlementIssueTarget({ projectId })} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} projectRoute={projectRoute} onProjectRouteChange={changeProjectRoute} customerRoute={customerRoute} onCustomerRouteChange={changeCustomerRoute} />}
         </div>
       </main>
 
-      <button className={`floating-add ${activeNav === "AI经营助手" ? "is-hidden-on-partner" : ""}`} onClick={() => openQuickAccounting()} aria-label="立即记账">
+      <button className={`floating-add ${activeNav === "AI经营助手" || activeNav === "经营分析中心" ? "is-hidden-on-partner" : ""}`} onClick={() => openQuickAccounting()} aria-label="立即记账">
         <Plus size={24} weight="bold" /><span>立即记账</span>
       </button>
 

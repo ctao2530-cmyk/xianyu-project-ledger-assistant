@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .api import router
 from .business_analysis_api import business_analysis_router
 from .config import get_settings
+from .customer_relationship_api import customer_relationship_router
 from .events import event_router
 from .ledger_api import ledger_router
 from .logging_config import configure_logging
@@ -85,7 +86,7 @@ app.add_middleware(
     allow_origins=settings.cors_origin_list,
     allow_origin_regex=r"^http://(127\.0\.0\.1|localhost):\d+$",
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-Yuda-Desktop"],
 )
 
@@ -125,6 +126,7 @@ async def rate_limit(request: Request, call_next):
 
 app.include_router(router)
 app.include_router(business_analysis_router)
+app.include_router(customer_relationship_router)
 app.include_router(ledger_router)
 app.include_router(product_router)
 app.include_router(sales_router)

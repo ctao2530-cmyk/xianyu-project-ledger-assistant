@@ -81,6 +81,7 @@ import "./other-pages.css";
 import { CustomerMessagesPage } from "./CustomerMessagesPage";
 import { ProductIntelligencePage } from "./ProductIntelligencePage";
 import { CustomerRequirementBlueprintPage } from "./CustomerRequirementBlueprintPage";
+import { BusinessAnalysisPage } from "./BusinessAnalysisPage";
 
 export type OtherPageName =
   | "客户消息"
@@ -90,6 +91,7 @@ export type OtherPageName =
   | "支出记录"
   | "客户管理"
   | "数据统计"
+  | "经营分析中心"
   | "目标计划"
   | "AI经营助手"
   | "设置中心";
@@ -119,6 +121,7 @@ interface OtherPagesProps {
   onConfirmPayment: (projectId: string, paymentId?: string) => void;
   onRecordSettlementIssue: (projectId: string) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
+  onPersistedSnapshot: (snapshot: LedgerSnapshot) => void;
   onNavigate: (page: string) => void;
   globalSearch: string;
   initialSettingsSection?: SettingsSectionName;
@@ -1021,7 +1024,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
   </div></div>;
 }
 
-export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, onCreateChangeOrder, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onNavigate, globalSearch, initialSettingsSection, projectRoute, onProjectRouteChange, customerRoute, onCustomerRouteChange }: OtherPagesProps) {
+export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, onCreateChangeOrder, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onPersistedSnapshot, onNavigate, globalSearch, initialSettingsSection, projectRoute, onProjectRouteChange, customerRoute, onCustomerRouteChange }: OtherPagesProps) {
   const [modal, setModal] = useState<ActionKind | null>(null);
   const [createProjectKind, setCreateProjectKind] = useState<ProjectKind>("client");
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
@@ -1060,12 +1063,13 @@ export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, on
     if (page === "客户管理") {
       const customer = customerRoute ? snapshot.customers.find((item) => item.id === customerRoute.customerId) : null;
       if (customerRoute && customer) return <CustomerRequirementBlueprintPage customer={customer} route={customerRoute} onRouteChange={onCustomerRouteChange} onSnapshotChange={onSnapshotChange} />;
-      return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setModal("customer")} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} onOpenRequirements={(customerId) => onCustomerRouteChange({ customerId, caseId: null }, "push")} />;
+      return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setModal("customer")} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} globalSearch={globalSearch} onOpenRequirements={(customerId) => onCustomerRouteChange({ customerId, caseId: null }, "push")} />;
     }
     if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
+    if (page === "经营分析中心") return <BusinessAnalysisPage onNavigate={onNavigate} />;
     if (page === "目标计划") return <CleanGoalPlanPage snapshot={snapshot} onEditGoal={() => { onNavigate("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />;
     if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} onNavigate={onNavigate} />;
     return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} initialSection={initialSettingsSection} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
-  }, [customerRoute, globalSearch, initialSettingsSection, onConfirmPayment, onCreateChangeOrder, onCreatePaymentPlan, onCustomerRouteChange, onNavigate, onProjectRouteChange, onQuickAdd, onRecordSettlementIssue, onSnapshotChange, page, projectRoute, snapshot]);
+  }, [customerRoute, globalSearch, initialSettingsSection, onConfirmPayment, onCreateChangeOrder, onCreatePaymentPlan, onCustomerRouteChange, onNavigate, onPersistedSnapshot, onProjectRouteChange, onQuickAdd, onRecordSettlementIssue, onSnapshotChange, page, projectRoute, snapshot]);
   return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} initialProjectKind={createProjectKind} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
 }

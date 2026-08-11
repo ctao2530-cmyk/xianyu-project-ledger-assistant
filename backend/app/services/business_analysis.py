@@ -2,14 +2,23 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
+import hashlib
+import json
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
+from ..ai.base import AIModelSelection, AIProvider, AIProviderError
+from ..business_analysis_repository import (
+    BusinessAnalysisRepository,
+    StoredBusinessAnalysis,
+)
 from ..business_analysis_schemas import (
+    BusinessAnalysisAIError,
     BusinessAnalysisDataSource,
     BusinessAnalysisFutureField,
+    BusinessAnalysisHistoryResponse,
     BusinessAnalysisInsight,
     BusinessAnalysisMetrics,
     BusinessAnalysisOverview,
@@ -25,10 +34,22 @@ from ..business_analysis_schemas import (
 from ..database import Database
 from ..ledger import LedgerService
 from ..models import Conversation, LedgerState, ProductDailySnapshot, ProductMonitor
+from .business_analysis_reasoning import (
+    BusinessAnalysisEvidenceError,
+    BusinessAnalysisReasoningService,
+)
+from .ai_models import AIModelSettingsService
 
 
 ANALYSIS_TIMEZONE = "Asia/Shanghai"
 ACTIVE_PRODUCT_MARKERS = ("在售", "上架", "active", "selling", "onsale")
+
+
+class BusinessAnalysisProviderSelectionError(ValueError):
+    def __init__(self, code: str, message: str, *, status_code: int = 422) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
 
 
 def _number(value: Any) -> float:
@@ -110,12 +131,11 @@ def _period_metric(current: float, previous: float) -> PeriodMetric:
 
 
 class BusinessAnalysisService:
-    """Read-only, cross-domain business evidence and recommendation layer.
+    """Cross-domain evidence, AI reasoning, and persisted feedback layer.
 
-    Phase one deliberately keeps metric calculation deterministic. It never
-    calls a model, changes business records, or treats missing evidence as a
-    fact. Model-assisted synthesis can be added later on top of this stable
-    contract without weakening source traceability.
+    Metric calculation stays deterministic. A user-triggered run may ask the
+    explicitly selected provider to clarify and order evidence, but model output can
+    never change business facts or execute a recommendation.
     """
 
     def __init__(
@@ -124,11 +144,122 @@ class BusinessAnalysisService:
         ledger: LedgerService,
         *,
         timezone_name: str = ANALYSIS_TIMEZONE,
+        repository: BusinessAnalysisRepository | None = None,
+        reasoning: BusinessAnalysisReasoningService | None = None,
+        reasoning_providers: dict[str, AIProvider] | None = None,
+        model_settings: AIModelSettingsService | None = None,
+        provider_selections: dict[str, AIModelSelection] | None = None,
+        provider_enabled: dict[str, bool] | None = None,
+        reasoning_timeout_seconds: float = 20,
     ) -> None:
         self.database = database
         self.ledger = ledger
         self.timezone_name = timezone_name
         self.zone = ZoneInfo(timezone_name)
+        self.repository = repository or BusinessAnalysisRepository(database)
+        self.reasoning = reasoning
+        self.reasoning_providers = dict(reasoning_providers or {})
+        self.model_settings = model_settings
+        self.provider_selections = dict(provider_selections or {})
+        self.provider_enabled = dict(provider_enabled or {})
+        self.reasoning_timeout_seconds = reasoning_timeout_seconds
+
+    async def _resolve_reasoning(
+        self,
+        *,
+        provider_name: str,
+        model: str | None,
+        reasoning_effort: str | None,
+    ) -> BusinessAnalysisReasoningService | None:
+        if not self.reasoning_providers:
+            return self.reasoning
+
+        provider = self.reasoning_providers.get(provider_name)
+        if provider is None:
+            raise BusinessAnalysisProviderSelectionError(
+                "business_analysis_provider_unavailable",
+                "所选分析服务当前不可用",
+                status_code=409,
+            )
+        if not self.provider_enabled.get(provider_name, True):
+            raise BusinessAnalysisProviderSelectionError(
+                "business_analysis_provider_not_configured",
+                "所选分析服务尚未配置",
+                status_code=409,
+            )
+
+        requested_model = (model or "").strip() or None
+        requested_effort = (reasoning_effort or "").strip() or None
+        if provider_name == "codex_cli":
+            if self.model_settings is None:
+                raise BusinessAnalysisProviderSelectionError(
+                    "business_analysis_model_catalog_unavailable",
+                    "GPT 模型目录当前不可用",
+                    status_code=503,
+                )
+            catalog = await self.model_settings.get(refresh=False)
+            effective_model = requested_model or catalog.selection.model
+            if effective_model is None:
+                raise BusinessAnalysisProviderSelectionError(
+                    "business_analysis_model_required",
+                    "请先选择一个当前账号可用的 GPT 模型",
+                )
+            option = next(
+                (row for row in catalog.models if row.model == effective_model),
+                None,
+            )
+            if option is None:
+                raise BusinessAnalysisProviderSelectionError(
+                    "business_analysis_model_invalid",
+                    "所选 GPT 模型不在当前账号的可用目录中",
+                )
+            effective_effort = (
+                requested_effort
+                or catalog.selection.reasoning_effort
+                or option.default_reasoning_effort
+            )
+            if (
+                effective_effort is not None
+                and effective_effort not in option.supported_reasoning_efforts
+            ):
+                raise BusinessAnalysisProviderSelectionError(
+                    "business_analysis_reasoning_effort_invalid",
+                    "所选推理强度不受该 GPT 模型支持",
+                )
+            selection = AIModelSelection(
+                model=effective_model,
+                reasoning_effort=effective_effort,
+            )
+        else:
+            configured = self.provider_selections.get(provider_name)
+            configured_model = (
+                configured.model
+                if configured and configured.model
+                else provider.model_selection.model
+            )
+            if configured_model is None:
+                raise BusinessAnalysisProviderSelectionError(
+                    "business_analysis_model_required",
+                    "所选分析服务没有可用模型",
+                    status_code=409,
+                )
+            if requested_model is not None and requested_model != configured_model:
+                raise BusinessAnalysisProviderSelectionError(
+                    "business_analysis_model_invalid",
+                    "所选模型与当前 DeepSeek 配置不一致",
+                )
+            if requested_effort is not None:
+                raise BusinessAnalysisProviderSelectionError(
+                    "business_analysis_reasoning_effort_invalid",
+                    "DeepSeek 当前不支持单独选择推理强度",
+                )
+            selection = AIModelSelection(model=configured_model)
+
+        return BusinessAnalysisReasoningService(
+            provider,
+            model_selection=selection,
+            timeout_seconds=self.reasoning_timeout_seconds,
+        )
 
     def overview(self, *, now: datetime | None = None) -> BusinessAnalysisOverview:
         generated_at = now or datetime.now(timezone.utc)
@@ -157,6 +288,10 @@ class BusinessAnalysisService:
             finance=finance,
         )
         insights, recommendations, data_gaps = self._decision_layer(metrics)
+        recommendations = self._explain_recommendations(
+            recommendations,
+            insights=insights,
+        )
         recommendations.sort(
             key=lambda row: ({"high": 0, "medium": 1, "low": 2}[row.priority], row.id)
         )
@@ -200,7 +335,241 @@ class BusinessAnalysisService:
                 previous_month_end=(current_start.date() - timedelta(days=1)).isoformat(),
             ),
             generated_at=generated_at.astimezone(timezone.utc),
+            snapshot_time=generated_at.astimezone(timezone.utc),
         )
+
+    @staticmethod
+    def _evidence_source_labels(evidence_refs: list[str]) -> list[str]:
+        labels: list[str] = []
+        for reference in evidence_refs:
+            if reference.startswith("products"):
+                label = "商品经营快照"
+            elif reference.startswith("conversations"):
+                label = "客户沟通时间元数据"
+            elif reference.startswith("ledger.customers"):
+                label = "客户关系账本"
+            elif reference.startswith("ledger.projects"):
+                label = "项目与应收账本"
+            elif reference.startswith(("ledger.finance", "ledger.payments", "ledger.expenses")):
+                label = "统一收支账本"
+            elif reference.startswith("ledger"):
+                label = "统一经营账本"
+            else:
+                label = "经营事实指标"
+            if label not in labels:
+                labels.append(label)
+        return labels
+
+    @staticmethod
+    def _observe_period(domain: str) -> str:
+        return {
+            "products": "7 days",
+            "customers": "30 days",
+            "projects": "7 days",
+            "finance": "current month",
+            "portfolio": "30 days",
+            "data": "7 days",
+        }.get(domain, "7 days")
+
+    def _explain_recommendations(
+        self,
+        recommendations: list[BusinessAnalysisRecommendation],
+        *,
+        insights: list[BusinessAnalysisInsight],
+    ) -> list[BusinessAnalysisRecommendation]:
+        explained: list[BusinessAnalysisRecommendation] = []
+        for recommendation in recommendations:
+            evidence = set(recommendation.evidence_refs)
+            ranked = sorted(
+                insights,
+                key=lambda insight: (
+                    len(evidence.intersection(insight.evidence_refs)),
+                    insight.domain == recommendation.domain,
+                    insight.severity in {"critical", "warning"},
+                ),
+                reverse=True,
+            )
+            matching = ranked[0] if ranked else None
+            has_match = bool(
+                matching
+                and (
+                    evidence.intersection(matching.evidence_refs)
+                    or matching.domain == recommendation.domain
+                )
+            )
+            problem = (
+                matching.title
+                if matching is not None and has_match
+                else "需要继续验证当前经营信号"
+            )
+            confidence = (
+                "low"
+                if recommendation.domain == "data"
+                or any(reference in {"products", "ledger", "conversations"} for reference in evidence)
+                else "medium"
+            )
+            explained.append(
+                recommendation.model_copy(
+                    update={
+                        "source_key": recommendation.id,
+                        "problem": problem,
+                        "data_source": self._evidence_source_labels(
+                            recommendation.evidence_refs
+                        ),
+                        "confidence": confidence,
+                        "observe_period": self._observe_period(recommendation.domain),
+                        "status": "pending",
+                        "version": 1,
+                        "user_note": "",
+                    }
+                )
+            )
+        return explained
+
+    @staticmethod
+    def snapshot_hash(result: BusinessAnalysisOverview) -> str:
+        payload = {
+            "ledger_revision": result.ledger_revision,
+            "period": result.period.model_dump(mode="json"),
+            "metrics": result.metrics.model_dump(mode="json"),
+            "data_sources": [row.model_dump(mode="json") for row in result.data_sources],
+            "data_gaps": result.data_gaps,
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def latest_or_overview(self) -> BusinessAnalysisOverview:
+        latest = self.repository.latest()
+        if latest is None:
+            return self.overview()
+        current = self.overview()
+        return latest.result.model_copy(
+            update={"is_stale": latest.snapshot_hash != self.snapshot_hash(current)}
+        )
+
+    def history(self, *, limit: int, offset: int) -> BusinessAnalysisHistoryResponse:
+        return self.repository.history(limit=limit, offset=offset)
+
+    def history_detail(self, analysis_id: str) -> BusinessAnalysisOverview:
+        return self.repository.get(analysis_id).result
+
+    def update_recommendation(
+        self,
+        recommendation_id: str,
+        *,
+        status: str,
+        expected_version: int,
+        request_id: str,
+        note: str,
+    ) -> BusinessAnalysisRecommendation:
+        return self.repository.update_recommendation(
+            recommendation_id,
+            status=status,
+            expected_version=expected_version,
+            request_id=request_id,
+            note=note,
+        )
+
+    async def run_analysis(
+        self,
+        *,
+        request_id: str,
+        provider: str,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        now: datetime | None = None,
+    ) -> BusinessAnalysisOverview:
+        existing = self.repository.get_by_request_id(request_id)
+        if existing is not None:
+            if existing.result.provider != provider or (
+                model is not None and existing.result.model != model
+            ):
+                raise BusinessAnalysisProviderSelectionError(
+                    "business_analysis_request_conflict",
+                    "该请求编号已用于不同的分析模型",
+                    status_code=409,
+                )
+            return existing.result
+
+        baseline = self.overview(now=now)
+        snapshot_hash = self.snapshot_hash(baseline)
+        result = baseline
+        reasoning = await self._resolve_reasoning(
+            provider_name=provider,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
+        if reasoning is None:
+            result = baseline.model_copy(
+                update={
+                    "provider": provider,
+                    "ai_status": "failed",
+                    "fallback_used": True,
+                    "ai_error": BusinessAnalysisAIError(
+                        code="business_analysis_ai_unavailable",
+                        message="AI经营分析服务尚未连接，已保留规则分析结果",
+                    ),
+                }
+            )
+        elif provider != reasoning.provider_name:
+            result = baseline.model_copy(
+                update={
+                    "provider": provider,
+                    "model": reasoning.model_name,
+                    "ai_status": "failed",
+                    "fallback_used": True,
+                    "ai_error": BusinessAnalysisAIError(
+                        code="business_analysis_provider_mismatch",
+                        message="请求的分析模型与当前配置不一致，已保留规则分析结果",
+                    ),
+                }
+            )
+        else:
+            try:
+                result = await reasoning.enhance(
+                    baseline,
+                    task_key=f"business-analysis:{request_id}",
+                )
+            except AIProviderError as exc:
+                result = baseline.model_copy(
+                    update={
+                        "provider": reasoning.provider_name,
+                        "model": reasoning.model_name,
+                        "ai_status": "failed",
+                        "fallback_used": True,
+                        "ai_error": BusinessAnalysisAIError(
+                            code=exc.code,
+                            message=exc.safe_message,
+                            retryable=exc.retryable,
+                        ),
+                    }
+                )
+            except BusinessAnalysisEvidenceError:
+                result = baseline.model_copy(
+                    update={
+                        "provider": reasoning.provider_name,
+                        "model": reasoning.model_name,
+                        "ai_status": "failed",
+                        "fallback_used": True,
+                        "ai_error": BusinessAnalysisAIError(
+                            code="business_analysis_ai_evidence_rejected",
+                            message="AI返回内容缺少有效数据依据，已保留规则分析结果",
+                            retryable=True,
+                        ),
+                    }
+                )
+        result = result.model_copy(update={"snapshot_time": baseline.generated_at})
+        stored: StoredBusinessAnalysis = self.repository.save_completed(
+            request_id=request_id,
+            snapshot_hash=snapshot_hash,
+            result=result,
+        )
+        return stored.result
 
     def _product_metrics(
         self,

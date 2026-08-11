@@ -1250,3 +1250,120 @@ final result: passed
 - P3: split the approximately `1.315 MB` main JavaScript chunk in a separate performance pass; it is not a visual or interaction blocker for this implementation.
 
 final result: passed
+
+---
+
+# AI经营分析中心设计验收记录
+
+## 验收范围
+
+- 已确认方向：方案 3「证据链优先」。
+- 核心结构：`业务指标 / 数据来源 → AI发现与原因 → 人工行动建议`。
+- 本次只验收 AI经营分析中心；没有调整现有客户、项目、商品和财务业务逻辑。
+- 所有建议仍为人工决策与人工执行，浏览器验收没有触发真实 DeepSeek 请求。
+
+## 视觉来源与截图
+
+- 修改前设计预览（视觉参考，不代表已经运行）：
+  `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/ai-business-analysis-source-1440x1024.png`
+- 第一轮真实实现：
+  `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/ai-business-analysis-implementation-pass1-1440x1024.png`
+- 第二轮真实实现：
+  `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/ai-business-analysis-implementation-pass2-1440x1024.png`
+- 第二轮同画面对照（左侧设计预览，右侧真实实现）：
+  `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/ai-business-analysis-comparison-pass2.png`
+- 移动端真实实现：
+  `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/ai-business-analysis-mobile-480x844.png`
+
+## 视口与密度归一化
+
+### 桌面端
+
+- 目标 CSS 视口：`1440 × 1024`。
+- 浏览器能力设置值：`720 × 512`。
+- 页面实际报告：`innerWidth=1440`、`innerHeight=1024`、`devicePixelRatio=0.5`。
+- 浏览器原始截图为 `2880 × 2048` 的 2 × 2 平铺；验收图取左上角 `1440 × 1024`，没有缩放页面内容。
+
+### 移动端
+
+- 浏览器当前最窄可用 CSS 视口为 `480 × 844`，`devicePixelRatio=0.5`；对 `195px` 的设置请求会被运行时钳制到 `480px`。
+- 实测 `scrollWidth=480`，无横向溢出。
+- 证据链与指标区均为单列；采纳按钮和“查看依据”按钮实测高度均为 `44px`。
+- `390px` 使用同一组 `@media (max-width: 620px)` 规则，并由 `tests/business-analysis-center.test.mjs` 对单列布局、触控高度和减少动效约束做静态回归。
+
+## 第一轮发现与修复
+
+1. 财务卡第二金额 `¥1,072.20` 被省略。
+   - 修复：双列改为等宽，减少分隔区占宽，并为财务金额使用更稳妥的字号。
+   - 第二轮实测两个金额均 `scrollWidth == clientWidth`，没有截断。
+2. 页面纵向密度偏高，第三条证据链被截断，历史区域不在首屏。
+   - 修复：命令条压缩到 `60px`、指标区压缩到 `128px`、证据链首行压缩到 `158px`，同步减少不必要内边距和间距。
+   - 第二轮历史区域顶部为 `961px`，已经进入 `1024px` 首屏；证据链三条内容仍完整可读。
+3. 历史表“问题数”错误复用建议数。
+   - 修复：后端历史 DTO 新增 `insight_count`，从对应分析记录的 `result_json.insights` 计算；前端改用该字段。
+4. 历史表“观察周期”错误复用当前正在查看记录的周期。
+   - 修复：按每条历史记录自己的 `snapshot_time`，以 `Asia/Shanghai` 时区显示快照月份。
+
+## 交互与运行证据
+
+- “查看依据”展开：`aria-expanded=true`，对应依据面板可见；再次点击后为 `false`，面板数量回到 0。
+- 领域筛选：选择“收入 / 财务”后只显示 2 条财务证据链。
+- 建议展开：默认 3 条，可展开为 5 条，再收起为 3 条。
+- Hash 直达与刷新：`#经营分析中心` 刷新后恢复同一页面。
+- 顶部导航继续沿用项目既有的 `replaceState` 规则；本功能没有扩大范围重写全局路由。
+- 浏览器控制台日志：`[]`，没有错误或警告。
+- 真实数据为空历史状态：页面明确显示“还没有历史分析”；没有为了截图向 SQLite 插入样例记录。
+- 真实 `POST /api/business-analysis/runs` 未触发，避免未经确认产生模型费用；AI 成功、失败回退和历史详情由自动化测试覆盖。
+
+## 自动化与服务验收
+
+- 后端完整回归：`186 passed, 1 warning`（既有 Starlette 弃用警告）。
+- 前端交互约束：`13 passed`。
+- TypeScript：通过。
+- 生产构建：通过；仅保留既有大包体积警告。
+- Sites 交付测试：`4 passed`。
+- `git diff --check`：通过。
+- SQLite 新表存在：`business_analysis_records`、`business_analysis_recommendations`。
+- 常驻服务：LaunchAgent 自动恢复检查通过；旧进程退出后拉起新进程，`8877` 保持单一监听，`/api/health` 返回 `ok`。
+
+## 结论
+
+设计方向、真实数据边界、核心交互、响应式、API、数据库兼容、构建和常驻运行均通过本阶段验收。
+
+`final result: passed`
+
+---
+
+# 2026-08-11 客户编辑、关系修正与模型选择补充 Design QA
+
+## 验收范围
+
+- 客户资料编辑：基础资料、状态、等级和标签可在抽屉内修改，使用 revision 防止覆盖较新的浏览器会话，并使用 request-id 保证重复请求幂等。
+- 订单关系修正：必须先生成影响预览，再由用户人工确认；确认后在同一事务内同步项目、付款节点与追加订单的客户关系，不移动需求案例或渠道身份，也不改变合同、到账、待收和交付状态。
+- 经营分析模型：GPT 为默认提供方，可显式切换 GPT / DeepSeek 及具体模型；选中模型失败时保留规则分析并显示错误，不静默切换提供方。
+- 本轮没有触发真实模型生成，避免额外费用与分析记录；真实关系修正已经按用户确认的预览映射执行一次，后续浏览器验收只调用预览接口，没有再次写入。
+
+## 视觉来源与证据边界
+
+- 已确认的修改前设计预览：
+  `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/customer-model-correction-preview.html`
+- 内置浏览器安全策略禁止打开本地 `file://` 源文件，也不允许通过其他浏览器或间接方式绕过，因此无法在同一受控浏览器中并排打开源视觉与正式实现。
+- 客户页包含真实经营与客户资料；在无法稳定裁切脱敏区域的情况下，没有保留全页实现截图，避免将客户隐私作为验收附件。
+- 浏览器响应式能力的最窄真实 CSS 视口为 `480px`，无法生成精确 `360px` 的运行截图。`480px` 实测无横向溢出，客户抽屉为全屏布局，模型下拉框与关键操作点击高度均为 `44px`；`360px` 仅有媒体查询和自动化回归证据，不能等同于真实视口截图。
+
+## 功能、数据与运行验收
+
+- 客户编辑抽屉可直接打开；字段、焦点约束、Escape 关闭和窄屏全屏状态通过浏览器验收。
+- 关系修正必须先预览，预览影响与用户确认映射一致；事务完成后，目标项目的付款节点与追加订单同步更新，其他项目及其争议、终止合作历史保持不变。
+- 真实 SQLite 修订号由 `36` 递增至 `40`；审计表记录三次客户更新和一次关系修正；`PRAGMA integrity_check = ok`，`PRAGMA foreign_key_check` 无异常。
+- 修正前 WAL 安全备份：`/Users/chentao/Documents/New project 3/data/backups/xianyu_operator.pre-customer-rebind-20260811-163853.db`；完整性为 `ok`。
+- GPT 默认选中；DeepSeek 可切换后再切回 GPT；具体模型列表和“失败不自动切换”提示正常。
+- 后端完整测试、14 项前端交互测试、4 项 Sites 测试、TypeScript、生产构建和 `git diff --check` 均通过。
+- LaunchAgent `com.chentao.xianyu-ledger-assistant` 已受控重启；最终只有一个进程监听 `127.0.0.1:8877`，`/api/health` 返回 `ok`，运行中的 OpenAPI 已包含新客户关系接口。
+- 浏览器已恢复到 `#经营分析中心`，临时 viewport override 已重置；控制台无错误。
+
+## 结论
+
+功能、事务数据修正、自动化回归、构建和常驻服务均已通过。正式视觉 QA 仍缺少可在同一受控环境打开的源预览图，以及隐私安全的精确 `360px` 实现截图；按 Product Design 验收规则，本补充项不能标记为视觉通过。
+
+`final result: blocked`

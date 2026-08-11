@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     deepseek_reply_model: str = "deepseek-v4-flash"
     deepseek_lead_model: str = "deepseek-v4-flash"
     deepseek_timeout_seconds: float = Field(default=12, ge=3, le=60)
+    business_analysis_model: str = ""
+    business_analysis_timeout_seconds: float = Field(default=20, ge=3, le=120)
 
     # Sales Agent runs independently from reply drafting. It performs only
     # read-only analysis until the user explicitly confirms saving a customer
