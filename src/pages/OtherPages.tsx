@@ -1064,7 +1064,7 @@ export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, on
     }
     if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
     if (page === "目标计划") return <CleanGoalPlanPage snapshot={snapshot} onEditGoal={() => { onNavigate("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />;
-    if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} />;
+    if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} onNavigate={onNavigate} />;
     return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} initialSection={initialSettingsSection} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
   }, [customerRoute, globalSearch, initialSettingsSection, onConfirmPayment, onCreateChangeOrder, onCreatePaymentPlan, onCustomerRouteChange, onNavigate, onProjectRouteChange, onQuickAdd, onRecordSettlementIssue, onSnapshotChange, page, projectRoute, snapshot]);
   return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} initialProjectKind={createProjectKind} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;

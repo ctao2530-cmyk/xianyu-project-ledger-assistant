@@ -165,7 +165,7 @@ const headerReminderIcons: Record<HeaderReminderKind, PhosphorIcon> = {
   strategy: Lightbulb,
 };
 
-const navItems: Array<{ label: string; icon: PhosphorIcon }> = [
+const navItems: Array<{ label: string; icon: PhosphorIcon; displayLabel?: string }> = [
   { label: "首页概览", icon: House },
   { label: "客户消息", icon: ChatCircleDots },
   { label: "商品经营", icon: ShoppingBag },
@@ -175,7 +175,7 @@ const navItems: Array<{ label: string; icon: PhosphorIcon }> = [
   { label: "客户管理", icon: UsersThree },
   { label: "数据统计", icon: ChartBar },
   { label: "目标计划", icon: Target },
-  { label: "AI经营助手", icon: Brain },
+  { label: "AI经营助手", displayLabel: "小策 · 今日判断", icon: Brain },
   { label: "设置中心", icon: GearSix },
 ];
 
@@ -189,7 +189,7 @@ const pageMeta: Record<string, { title: string; subtitle: string; placeholder: s
   客户管理: { title: "客户管理", subtitle: "管理客户资料、来源、成交记录与跟进状态", placeholder: "搜索客户名称、联系人、标签..." },
   数据统计: { title: "数据统计", subtitle: "跨商品、跨周期判断哪些增长真正带来咨询与成交", placeholder: "当前页面无需搜索" },
   目标计划: { title: "目标计划", subtitle: "设定收入目标、交付计划与个人成长安排，让每一步都朝着目标前进", placeholder: "搜索项目、客户或订单..." },
-  AI经营助手: { title: "AI 经营助手", subtitle: "分析需求、生成报价并复盘项目，让每次接单都更有把握", placeholder: "搜索项目，或粘贴客户需求..." },
+  AI经营助手: { title: "小策 · AI 技术与商业合伙人", subtitle: "让每个经营判断都有事实、反证和清晰的下一步", placeholder: "搜索项目、客户、知识与规则..." },
   设置中心: { title: "设置中心", subtitle: "管理账号信息、界面风格、运营日期、提醒与数据同步", placeholder: "搜索项目、客户或订单..." },
 };
 
@@ -592,11 +592,11 @@ function Sidebar({
         onClick={onClose}
       />
       <aside className={`sidebar ${open ? "is-open" : ""}`}>
-        <div className="brand">
-          <img src="/assets/chrome-v2/duck-logo.png" alt="" aria-hidden="true" draggable={false} />
+        <div className="brand xunying-brand">
+          <img src="/assets/xunying/orbit-mark.png" alt="" aria-hidden="true" draggable={false} />
           <div>
-            <strong>咸鱼经营助手</strong>
-            <span>客户 · 项目 · 收支一体化</span>
+            <strong>循营</strong>
+            <span>一人经营台</span>
           </div>
           <button className="mobile-close" aria-label="关闭导航" onClick={onClose}>
             <X size={20} />
@@ -604,7 +604,7 @@ function Sidebar({
         </div>
 
         <nav aria-label="主导航">
-          {navItems.map(({ label, icon: Icon }) => (
+          {navItems.map(({ label, displayLabel, icon: Icon }) => (
             <button
               key={label}
               className={active === label ? "active" : ""}
@@ -614,7 +614,7 @@ function Sidebar({
               }}
             >
               <Icon size={22} weight={active === label ? "fill" : "regular"} />
-              <span>{label}</span>
+              <span>{displayLabel || label}</span>
               {active === label && <Sparkle className="nav-sparkle" size={17} weight="fill" />}
             </button>
           ))}
@@ -622,15 +622,16 @@ function Sidebar({
 
         <div className="sidebar-spacer" />
 
-        <div className="sidebar-promo">
+        <div className="sidebar-promo xiaoce-sidebar-card">
           <div>
-            <strong>每一笔收款，<br />都是成长的脚印</strong>
-            <button onClick={onQuickAdd}>
-              立即记账 <ArrowRight size={15} weight="bold" />
+            <small>小策 · AI 技术与商业合伙人</small>
+            <strong>把不确定，<br />变成可验证行动</strong>
+            <button onClick={() => { onActiveChange("AI经营助手"); onClose(); }}>
+              查看今日判断 <ArrowRight size={15} weight="bold" />
             </button>
           </div>
           <div className="sidebar-promo-artwork" aria-hidden="true">
-            <img src="/assets/chrome-v2/duck-laptop.png" alt="" draggable={false} />
+            <img src="/assets/xunying/xiaoce-avatar.png" alt="" draggable={false} />
           </div>
         </div>
 
@@ -644,7 +645,7 @@ function Sidebar({
           </div>
         </div>
 
-        <footer>© {new Date().getFullYear()} 咸鱼经营助手<br />Local-first business OS.</footer>
+        <footer>© {new Date().getFullYear()} 循营 · 一人经营台<br />Local-first business OS.</footer>
       </aside>
     </>
   );
@@ -761,15 +762,15 @@ function TopHeader({
   const closeNotifications = () => setNotificationsOpen(false);
 
   return (
-    <header className="top-header">
-      <button className="menu-button" aria-label="打开导航" onClick={onMenu}>
-        <List size={24} />
+    <header className={`top-header ${activePage === "AI经营助手" ? "top-header-partner" : ""}`}>
+      <button className={`menu-button ${activePage === "AI经营助手" ? "partner-brand-menu" : ""}`} aria-label="打开导航" onClick={onMenu}>
+        {activePage === "AI经营助手" ? <><img src="/assets/xunying/orbit-mark.png" alt="" aria-hidden="true" /><span>循营</span></> : <List size={24} />}
       </button>
       <div className="greeting">
         <h1>{meta.title}{activePage === "数据统计" && <em className="page-context-tag">商品增长复盘</em>}{activePage === "首页概览" && <span aria-hidden="true"><HandWaving size={25} weight="duotone" /></span>}</h1>
         <p>{meta.subtitle}</p>
       </div>
-      <img className="header-planet" src="/assets/chrome-v2/header-planet.png" alt="" aria-hidden="true" draggable={false} />
+      <img className={`header-planet ${activePage === "AI经营助手" ? "header-partner-avatar" : ""}`} src={activePage === "AI经营助手" ? "/assets/xunying/xiaoce-avatar.png" : "/assets/chrome-v2/header-planet.png"} alt="" aria-hidden="true" draggable={false} />
       <label className="search-box">
         <MagnifyingGlass size={23} />
         <input
@@ -1898,7 +1899,7 @@ function DashboardLayout({
         </div>
       </main>
 
-      <button className="floating-add" onClick={() => openQuickAccounting()} aria-label="立即记账">
+      <button className={`floating-add ${activeNav === "AI经营助手" ? "is-hidden-on-partner" : ""}`} onClick={() => openQuickAccounting()} aria-label="立即记账">
         <Plus size={24} weight="bold" /><span>立即记账</span>
       </button>
 
