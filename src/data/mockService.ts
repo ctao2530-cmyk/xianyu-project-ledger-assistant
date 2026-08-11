@@ -1,5 +1,7 @@
 import type {
   LedgerSnapshot,
+  CustomerRelationPreview,
+  CustomerUpdateValue,
   PaymentConfirmationValue,
   ProjectChangeOrderValue,
   QuickAccountingFormValue,
@@ -148,6 +150,119 @@ export const mockLedgerService = {
       backendConnected = false;
       throw new LedgerBackendRequiredError("无法刷新本机经营数据，请确认 8877 服务已经连接");
     }
+  },
+
+  async updateCustomer(
+    customerId: string,
+    value: CustomerUpdateValue,
+  ): Promise<LedgerSnapshot> {
+    if (!backendConnected || backendRevision === null) {
+      throw new LedgerBackendRequiredError("编辑客户需要连接本机经营服务，离线状态不会写入客户资料");
+    }
+    let response: Response;
+    try {
+      response = await fetch(`/api/ledger/customers/${encodeURIComponent(customerId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_id: value.requestId,
+          expected_revision: backendRevision,
+          name: value.name,
+          source: value.source,
+          phone: value.phone,
+          follow_up_status: value.followUpStatus,
+          last_contact_at: value.lastContactAt,
+          level: value.level,
+          tags: value.tags,
+        }),
+      });
+    } catch {
+      throw new LedgerBackendRequiredError("本机经营服务暂时无法连接，本次客户编辑没有写入");
+    }
+    if (response.status === 409) {
+      const detail = await responseMessage(response, "经营数据已经变化，请刷新后重新编辑客户");
+      throw new LedgerRevisionConflictError(detail.message, detail.revision);
+    }
+    if (!response.ok) {
+      const detail = await responseMessage(response, `客户编辑失败（${response.status}）`);
+      throw new Error(detail.message);
+    }
+    const payload = await response.json() as { revision: number; snapshot: LedgerSnapshot };
+    backendRevision = payload.revision;
+    backendConnected = true;
+    return cloneSnapshot(payload.snapshot);
+  },
+
+  async previewCustomerRelation(
+    projectId: string,
+    currentCustomerId: string,
+    targetCustomerId: string,
+  ): Promise<CustomerRelationPreview> {
+    if (!backendConnected || backendRevision === null) {
+      throw new LedgerBackendRequiredError("关系影响预览需要连接本机经营服务，离线状态不会执行修正");
+    }
+    let response: Response;
+    try {
+      response = await fetch("/api/ledger/customer-relations/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_revision: backendRevision,
+          project_id: projectId,
+          current_customer_id: currentCustomerId,
+          target_customer_id: targetCustomerId,
+        }),
+      });
+    } catch {
+      throw new LedgerBackendRequiredError("本机经营服务暂时无法连接，无法预览关系影响");
+    }
+    if (response.status === 409) {
+      const detail = await responseMessage(response, "经营数据已经变化，请刷新后重新预览关系影响");
+      throw new LedgerRevisionConflictError(detail.message, detail.revision);
+    }
+    if (!response.ok) {
+      const detail = await responseMessage(response, `关系影响预览失败（${response.status}）`);
+      throw new Error(detail.message);
+    }
+    return response.json() as Promise<CustomerRelationPreview>;
+  },
+
+  async rebindCustomerRelation(
+    preview: CustomerRelationPreview,
+    requestId: string,
+  ): Promise<LedgerSnapshot> {
+    if (!backendConnected || backendRevision === null) {
+      throw new LedgerBackendRequiredError("确认关系修正需要连接本机经营服务，离线状态不会修改订单归属");
+    }
+    let response: Response;
+    try {
+      response = await fetch("/api/ledger/customer-relations/rebind", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_id: requestId,
+          expected_revision: preview.revision,
+          preview_token: preview.preview_token,
+          project_id: preview.project_id,
+          current_customer_id: preview.current_customer_id,
+          target_customer_id: preview.target_customer_id,
+        }),
+      });
+    } catch {
+      throw new LedgerBackendRequiredError("本机经营服务暂时无法连接，本次关系修正没有执行");
+    }
+    if (response.status === 409) {
+      const detail = await responseMessage(response, "关系预览已经失效，请刷新后重新确认");
+      throw new LedgerRevisionConflictError(detail.message, detail.revision);
+    }
+    if (!response.ok) {
+      const detail = await responseMessage(response, `关系修正失败（${response.status}）`);
+      throw new Error(detail.message);
+    }
+    const payload = await response.json() as { revision: number; snapshot: LedgerSnapshot };
+    backendRevision = payload.revision;
+    backendConnected = true;
+    return cloneSnapshot(payload.snapshot);
   },
 
   async createProjectChangeOrder(

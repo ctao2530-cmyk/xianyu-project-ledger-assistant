@@ -425,6 +425,18 @@ class LedgerState(Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
+class LedgerMutationRequest(Base):
+    """Idempotency audit for narrow, revision-protected ledger mutations."""
+
+    __tablename__ = "ledger_mutation_requests"
+
+    request_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(64), index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+
 class BusinessCustomer(Base):
     __tablename__ = "business_customers"
 
@@ -726,6 +738,90 @@ class BusinessSetting(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value_json: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+# Additive, auditable snapshots produced by the business-analysis center. These
+# tables only store aggregated analysis output and manual recommendation
+# feedback. They never authorize or execute listing, customer, project, or
+# financial mutations.
+
+
+class BusinessAnalysisRecord(Base):
+    __tablename__ = "business_analysis_records"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    snapshot_time: Mapped[datetime] = mapped_column(index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), index=True)
+    ledger_revision: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="completed", index=True)
+    analysis_method: Mapped[str] = mapped_column(String(64))
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ai_status: Mapped[str] = mapped_column(String(32), default="not_requested", index=True)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    summary: Mapped[str] = mapped_column(Text)
+    result_json: Mapped[str] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_business_analysis_status_snapshot",
+            "status",
+            "snapshot_time",
+        ),
+    )
+
+
+class BusinessAnalysisRecommendationRecord(Base):
+    __tablename__ = "business_analysis_recommendations"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    analysis_id: Mapped[str] = mapped_column(
+        ForeignKey("business_analysis_records.id", ondelete="CASCADE"), index=True
+    )
+    source_key: Mapped[str] = mapped_column(String(128), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    domain: Mapped[str] = mapped_column(String(32), index=True)
+    entity_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    entity_label: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    title: Mapped[str] = mapped_column(String(300))
+    problem: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    priority: Mapped[str] = mapped_column(String(16))
+    confidence: Mapped[str] = mapped_column(String(16))
+    observe_period: Mapped[str] = mapped_column(String(64))
+    observe_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    data_sources_json: Mapped[str] = mapped_column(Text, default="[]")
+    evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    target_page: Mapped[str] = mapped_column(String(500), default="")
+    execution_mode: Mapped[str] = mapped_column(String(32), default="manual")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    last_request_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, unique=True, index=True
+    )
+    user_note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_id",
+            "source_key",
+            name="uq_business_analysis_recommendation_source",
+        ),
+        Index(
+            "idx_business_analysis_recommendation_order",
+            "analysis_id",
+            "position",
+        ),
+    )
 
 
 # Read-only Xianyu product intelligence. These records never contain cookies

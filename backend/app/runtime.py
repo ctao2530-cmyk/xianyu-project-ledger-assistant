@@ -18,6 +18,7 @@ from .services.ai_queue import AIJobQueue
 from .services.ai_models import AIModelSettingsService
 from .services.automation import AutoReplyService
 from .services.business_analysis import BusinessAnalysisService
+from .services.customer_relationships import CustomerRelationshipService
 from .services.event_hub import EventHub
 from .services.listener import ListenerService
 from .services.listener_state import ListenerStateTracker
@@ -65,6 +66,7 @@ class Runtime:
     ledger: LedgerService
     product_intelligence: ProductIntelligenceService
     business_analysis: BusinessAnalysisService
+    customer_relationships: CustomerRelationshipService
 
 
 def build_runtime(settings: Settings) -> Runtime:
@@ -133,7 +135,26 @@ def build_runtime(settings: Settings) -> Runtime:
         notifier,
         ledger=ledger,
     )
-    business_analysis = BusinessAnalysisService(database, ledger)
+    business_analysis = BusinessAnalysisService(
+        database,
+        ledger,
+        reasoning_providers={ai.name: ai, deepseek.name: deepseek},
+        model_settings=ai_models,
+        provider_selections={
+            deepseek.name: AIModelSelection(
+                model=(
+                    settings.business_analysis_model.strip()
+                    or settings.deepseek_lead_model
+                )
+            ),
+        },
+        provider_enabled={
+            ai.name: settings.ai_configured,
+            deepseek.name: settings.deepseek_configured,
+        },
+        reasoning_timeout_seconds=settings.business_analysis_timeout_seconds,
+    )
+    customer_relationships = CustomerRelationshipService(database, ledger)
     send_limiter = SlidingWindowRateLimiter(settings.send_rate_limit_per_minute)
     actions = HumanActions(database, channel_senders, style_learning)
     automation = AutoReplyService(
@@ -227,4 +248,5 @@ def build_runtime(settings: Settings) -> Runtime:
         ledger=ledger,
         product_intelligence=product_intelligence,
         business_analysis=business_analysis,
+        customer_relationships=customer_relationships,
     )

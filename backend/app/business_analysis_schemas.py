@@ -89,11 +89,19 @@ class BusinessAnalysisInsight(BaseModel):
 
 class BusinessAnalysisRecommendation(BaseModel):
     id: str
+    source_key: str | None = None
     domain: Literal["portfolio", "products", "customers", "projects", "finance", "data"]
     priority: Literal["low", "medium", "high"]
     title: str
+    problem: str = ""
     action: str
     reason: str
+    data_source: list[str] = Field(default_factory=list)
+    confidence: Literal["low", "medium", "high"] = "medium"
+    observe_period: str = "7 days"
+    status: Literal["pending", "accepted", "ignored", "completed"] = "pending"
+    version: int = 1
+    user_note: str = ""
     target_page: str
     execution_mode: Literal["manual"] = "manual"
     evidence_refs: list[str] = Field(default_factory=list)
@@ -127,6 +135,12 @@ class BusinessAnalysisPeriod(BaseModel):
     product_change_window_days: int = 7
 
 
+class BusinessAnalysisAIError(BaseModel):
+    code: str
+    message: str
+    retryable: bool = False
+
+
 class BusinessAnalysisOverview(BaseModel):
     summary: str
     metrics: BusinessAnalysisMetrics
@@ -135,7 +149,76 @@ class BusinessAnalysisOverview(BaseModel):
     data_sources: list[BusinessAnalysisDataSource]
     future_fields: list[BusinessAnalysisFutureField]
     data_gaps: list[str]
-    analysis_method: Literal["evidence_rules_v1"] = "evidence_rules_v1"
+    analysis_method: Literal[
+        "evidence_rules_v1",
+        "rules_plus_deepseek_v1",
+        "rules_plus_codex_v1",
+    ] = (
+        "evidence_rules_v1"
+    )
     ledger_revision: int
     period: BusinessAnalysisPeriod
     generated_at: datetime
+    analysis_id: str | None = None
+    record_status: Literal["live", "completed"] = "live"
+    provider: str | None = None
+    model: str | None = None
+    ai_status: Literal["not_requested", "succeeded", "failed"] = "not_requested"
+    fallback_used: bool = False
+    snapshot_time: datetime | None = None
+    is_stale: bool = False
+    ai_error: BusinessAnalysisAIError | None = None
+
+
+class BusinessAnalysisRunRequest(BaseModel):
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    provider: Literal["codex_cli", "deepseek"] = "codex_cli"
+    model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=32,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+
+
+class BusinessAnalysisHistoryItem(BaseModel):
+    id: str
+    snapshot_time: datetime
+    created_at: datetime
+    provider: str | None
+    model: str | None
+    ai_status: Literal["not_requested", "succeeded", "failed"]
+    fallback_used: bool
+    status: Literal["completed"]
+    summary: str
+    insight_count: int
+    recommendation_count: int
+    pending_recommendation_count: int
+
+
+class BusinessAnalysisHistoryResponse(BaseModel):
+    items: list[BusinessAnalysisHistoryItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class BusinessAnalysisRecommendationUpdate(BaseModel):
+    status: Literal["pending", "accepted", "ignored", "completed"]
+    expected_version: int = Field(ge=1)
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    note: str = Field(default="", max_length=1000)

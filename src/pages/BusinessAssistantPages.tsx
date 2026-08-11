@@ -14,6 +14,7 @@ import {
   Clock,
   Code,
   Coins,
+  Eye,
   File,
   FileArchive,
   FileText,
@@ -53,10 +54,17 @@ import {
   getProjectFinancials,
 } from "../data/businessMetrics";
 import { localPlatformService, type BusinessQuote, type BusinessRequirementAnalysis, type BusinessReview } from "../data/localPlatformService";
+import {
+  LedgerRevisionConflictError,
+  mockLedgerService,
+} from "../data/mockService";
 import { projectKindOf } from "../data/projectKinds";
 import { hasTerminalSettlementIssue, latestSettlementIssue, settlementIssueLabels } from "../data/settlementIssues";
 import type {
+  Customer,
   CustomerFollowUpStatus,
+  CustomerLevel,
+  CustomerRelationPreview,
   LedgerSnapshot,
   PaymentType,
   Project,
@@ -574,11 +582,220 @@ export function ProfitAnalysisPage({ snapshot }: { snapshot: LedgerSnapshot }) {
   </div>;
 }
 
-export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onSnapshotChange, globalSearch, onOpenRequirements }: { snapshot: LedgerSnapshot; onCreateCustomer: () => void; onSnapshotChange: (snapshot: LedgerSnapshot) => void; globalSearch: string; onOpenRequirements: (customerId: string) => void }) {
+type CustomerEditorStep = "details" | "preview" | "done";
+
+const customerSourceLabel: Record<Customer["source"], string> = {
+  xianyu: "闲鱼",
+  wechat: "微信",
+  referral: "转介绍",
+  other: "其他",
+};
+
+function customerMutationRequestId(scope: "update" | "rebind") {
+  const unique = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `customer-${scope}:${unique}`;
+}
+
+function toLocalDateTimeInput(value: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function CustomerEditorDrawer({
+  customer,
+  snapshot,
+  onPersistedSnapshot,
+  onClose,
+}: {
+  customer: Customer;
+  snapshot: LedgerSnapshot;
+  onPersistedSnapshot: (snapshot: LedgerSnapshot) => void;
+  onClose: () => void;
+}) {
+  const [step, setStep] = useState<CustomerEditorStep>("details");
+  const [draft, setDraft] = useState({
+    name: customer.name,
+    source: customer.source,
+    phone: customer.phone,
+    followUpStatus: customer.followUpStatus,
+    lastContactAt: toLocalDateTimeInput(customer.lastContactAt),
+    level: customer.level,
+    tags: (customer.tags || []).join("，"),
+  });
+  const [relationProjectId, setRelationProjectId] = useState("");
+  const [preview, setPreview] = useState<CustomerRelationPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const drawerRef = useRef<HTMLElement>(null);
+  const relationCandidates = snapshot.projects.filter((project) => (
+    projectKindOf(project) === "client"
+    && Boolean(project.customerId)
+    && project.customerId !== customer.id
+  ));
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const frame = window.requestAnimationFrame(() => drawerRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [busy, onClose]);
+
+  const handleFailure = async (reason: unknown, fallback: string) => {
+    if (reason instanceof LedgerRevisionConflictError) {
+      try {
+        const refreshed = await mockLedgerService.refreshDashboard();
+        onPersistedSnapshot(refreshed);
+        setPreview(null);
+        setStep("details");
+        setError(`${reason.message}；数据已刷新，请重新预览并确认。`);
+      } catch (refreshError) {
+        setError(refreshError instanceof Error ? refreshError.message : fallback);
+      }
+      return;
+    }
+    setError(reason instanceof Error ? reason.message : fallback);
+  };
+
+  const saveCustomer = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!draft.name.trim()) {
+      setError("请输入客户名称");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const next = await mockLedgerService.updateCustomer(customer.id, {
+        requestId: customerMutationRequestId("update"),
+        name: draft.name.trim(),
+        source: draft.source,
+        phone: draft.phone.trim(),
+        followUpStatus: draft.followUpStatus,
+        lastContactAt: draft.lastContactAt ? new Date(draft.lastContactAt).toISOString() : "",
+        level: draft.level,
+        tags: draft.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
+      });
+      onPersistedSnapshot(next);
+      setNotice("客户资料已保存到 SQLite");
+    } catch (reason: unknown) {
+      await handleFailure(reason, "客户资料保存失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const previewRelation = async () => {
+    const project = relationCandidates.find((item) => item.id === relationProjectId);
+    if (!project) {
+      setError("请选择需要修正归属的客户项目");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await mockLedgerService.previewCustomerRelation(
+        project.id,
+        project.customerId,
+        customer.id,
+      );
+      setPreview(result);
+      setStep("preview");
+    } catch (reason: unknown) {
+      await handleFailure(reason, "关系影响预览失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmRelation = async () => {
+    if (!preview) return;
+    setBusy(true);
+    setError("");
+    try {
+      const next = await mockLedgerService.rebindCustomerRelation(
+        preview,
+        customerMutationRequestId("rebind"),
+      );
+      onPersistedSnapshot(next);
+      setStep("done");
+      setNotice("订单关系已按预览结果修正");
+    } catch (reason: unknown) {
+      await handleFailure(reason, "订单关系修正失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className="customer-editor-layer" role="presentation">
+    <button className="customer-editor-backdrop" type="button" aria-label="关闭客户编辑" disabled={busy} onClick={onClose} />
+    <section ref={drawerRef} className="customer-editor-drawer" role="dialog" aria-modal="true" aria-labelledby="customer-editor-title" tabIndex={-1}>
+      <header className="customer-editor-head">
+        <div><span>SAFE EDIT</span><h2 id="customer-editor-title">编辑客户 · {customer.name}</h2><p>资料编辑与订单归属修正分步确认</p></div>
+        <button type="button" aria-label="关闭编辑客户" disabled={busy} onClick={onClose}><X size={19} /></button>
+      </header>
+      <div className="customer-editor-steps" aria-label="编辑步骤">
+        <span className={step === "details" ? "active" : "done"}>1 基础资料</span>
+        <span className={step === "preview" ? "active" : step === "done" ? "done" : ""}>2 预览影响</span>
+        <span className={step === "done" ? "active" : ""}>3 人工确认</span>
+      </div>
+
+      {step === "details" && <div className="customer-editor-scroll">
+        <form className="customer-editor-form" onSubmit={(event) => void saveCustomer(event)}>
+          <label className="customer-editor-wide"><span>客户名称</span><input value={draft.name} maxLength={255} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} /></label>
+          <label><span>来源</span><select value={draft.source} onChange={(event) => setDraft((value) => ({ ...value, source: event.target.value as Customer["source"] }))}>{(Object.entries(customerSourceLabel) as Array<[Customer["source"], string]>).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          <label><span>客户等级</span><select value={draft.level} onChange={(event) => setDraft((value) => ({ ...value, level: event.target.value as CustomerLevel }))}><option value="A">A · 高价值</option><option value="B">B · 重点培养</option><option value="C">C · 普通客户</option></select></label>
+          <label><span>关系状态</span><select value={draft.followUpStatus} onChange={(event) => setDraft((value) => ({ ...value, followUpStatus: event.target.value as CustomerFollowUpStatus }))}>{(Object.entries(followLabel) as Array<[CustomerFollowUpStatus, string]>).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          <label><span>最近联系</span><input type="datetime-local" value={draft.lastContactAt} onChange={(event) => setDraft((value) => ({ ...value, lastContactAt: event.target.value }))} /></label>
+          <label className="customer-editor-wide"><span>联系方式</span><input value={draft.phone} maxLength={100} placeholder="选填" onChange={(event) => setDraft((value) => ({ ...value, phone: event.target.value }))} /></label>
+          <label className="customer-editor-wide"><span>客户标签</span><input value={draft.tags} placeholder="使用逗号分隔，最多 20 个" onChange={(event) => setDraft((value) => ({ ...value, tags: event.target.value }))} /></label>
+          <div className="customer-editor-inline-actions customer-editor-wide"><small>清空“最近联系”可修正误录的联系时间。</small><button className="customer-editor-secondary" type="submit" disabled={busy}><PencilSimple size={15} />{busy ? "保存中…" : "保存客户资料"}</button></div>
+        </form>
+
+        <section className="customer-relation-picker">
+          <header><span><ShieldCheck size={18} weight="duotone" /></span><div><h3>订单关系修正</h3><p>只选择一个真实客户项目；系统会先预览全部级联影响。</p></div></header>
+          {relationCandidates.length > 0 ? <><label><span>需要转入当前客户的项目</span><select value={relationProjectId} onChange={(event) => { setRelationProjectId(event.target.value); setPreview(null); }}><option value="">请选择项目</option>{relationCandidates.map((project) => { const sourceCustomer = snapshot.customers.find((item) => item.id === project.customerId); return <option value={project.id} key={project.id}>{project.name} · 当前归属 {sourceCustomer?.name || "未知客户"}</option>; })}</select></label><button className="business-primary wide" type="button" disabled={busy || !relationProjectId} onClick={() => void previewRelation()}><Eye size={16} />{busy ? "正在核对…" : "预览关系影响"}</button></> : <p className="customer-relation-empty">当前没有可从其他客户转入的接单项目。</p>}
+        </section>
+      </div>}
+
+      {step === "preview" && preview && <div className="customer-editor-scroll customer-relation-preview">
+        <div className="customer-relation-route"><span><small>当前归属</small><b>{preview.current_customer_name}</b></span><ArrowRight size={20} /><span><small>目标客户</small><b>{preview.target_customer_name}</b></span></div>
+        <section><header><span><Briefcase size={18} /></span><div><small>项目</small><h3>{preview.project_name}</h3><p>合同 {money.format(preview.contract_total)} · 状态保持 {projectStatusLabel[preview.project_status as Project["status"]] || preview.project_status}</p></div></header><div className="customer-relation-impact"><span>项目记录 <b>{preview.impact.project_count}</b></span><span>收款节点 <b>{preview.impact.payment_count}</b></span><span>追加订单 <b>{preview.impact.change_order_count}</b></span><span>结算异常 <b>{preview.impact.settlement_issue_count}</b></span><span>已到账 <b>{money.format(preview.impact.confirmed_amount)}</b></span><span>待收款 <b>{money.format(preview.impact.pending_amount)}</b></span></div></section>
+        <aside><ShieldCheck size={18} weight="fill" /><span><b>只更换归属</b><p>保留{preview.preserves.join("、")}；不会迁移无关身份、需求案例或其他项目。</p>{preview.warnings.map((warning) => <small key={warning}>{warning}</small>)}</span></aside>
+      </div>}
+
+      {step === "done" && preview && <div className="customer-editor-success"><CheckCircle size={48} weight="duotone" /><h3>关系修正已完成</h3><p>“{preview.project_name}”及其 {preview.impact.payment_count} 个收款节点、{preview.impact.change_order_count} 个追加订单已归属到 {preview.target_customer_name}。</p><small>合同、到账、待收与交付状态均未改变。</small></div>}
+
+      {(error || notice) && <div className={`customer-editor-message ${error ? "is-error" : "is-success"}`} role="status">{error ? <WarningCircle size={17} /> : <CheckCircle size={17} weight="fill" />}{error || notice}</div>}
+
+      <footer className="customer-editor-actions">
+        {step === "preview" ? <><button className="customer-editor-secondary" type="button" disabled={busy} onClick={() => { setStep("details"); setError(""); }}>返回编辑</button><button className="business-primary" type="button" disabled={busy} onClick={() => void confirmRelation()}><ShieldCheck size={16} />{busy ? "正在修正…" : "确认修正"}</button></> : step === "done" ? <button className="business-primary" type="button" onClick={onClose}>完成并关闭</button> : <button className="customer-editor-secondary" type="button" disabled={busy} onClick={onClose}>关闭</button>}
+      </footer>
+    </section>
+  </div>;
+}
+
+export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onSnapshotChange, onPersistedSnapshot, globalSearch, onOpenRequirements }: { snapshot: LedgerSnapshot; onCreateCustomer: () => void; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onPersistedSnapshot: (snapshot: LedgerSnapshot) => void; globalSearch: string; onOpenRequirements: (customerId: string) => void }) {
   const [selected, setSelected] = useState(snapshot.customers[0]?.id || "");
   const [lifecycle, setLifecycle] = useState<"following" | "won" | "lost">("following");
   const [channel, setChannel] = useState<"all" | "xianyu" | "wechat">("all");
   const [requirementCount, setRequirementCount] = useState(0);
+  const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
   const customerRows = useMemo(() => snapshot.customers.map((item) => {
     const business = getCustomerBusiness(snapshot, item.id);
     const lifecycleValue: "following" | "won" | "lost" = item.followUpStatus === "inactive"
@@ -599,6 +816,7 @@ export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onS
     .filter((row) => `${row.item.name} ${row.item.phone} ${(row.item.tags || []).join(" ")}`.toLowerCase().includes(globalSearch.trim().toLowerCase()));
   const selectedId = visibleRows.some((row) => row.item.id === selected) ? selected : visibleRows[0]?.item.id || "";
   const customer = snapshot.customers.find((item) => item.id === selectedId);
+  const editingCustomer = snapshot.customers.find((item) => item.id === editingCustomerId);
   useEffect(() => {
     if (!selectedId) { setRequirementCount(0); return; }
     let active = true;
@@ -618,7 +836,7 @@ export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onS
   };
   const totalSpend = snapshot.customers.reduce((sum, item) => sum + getCustomerBusiness(snapshot, item.id).totalSpend, 0);
   if (!snapshot.customers.length) return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid"><BusinessMetric label="客户总数" value="0 位" detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} /><BusinessMetric label="累计消费" value={money.format(0)} detail="按退款后的净到账统计" tone="green" icon={Wallet} /><BusinessMetric label="A级客户" value="0 位" detail="高价值与高复购潜力" tone="orange" icon={Sparkle} /><BusinessMetric label="跟进中" value="0 位" detail="需要继续联系的客户" tone="blue" icon={BellRinging} /></section><BusinessEmptyState icon={UsersThree} title="还没有客户资料" description="客户示例数据已经清空，可以录入自己的第一位客户。" action={<button className="business-primary" onClick={onCreateCustomer}><Plus size={16} />新增客户</button>} /></div>;
-  return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid">
+  return <><div className="business-page enhanced-crm-page"><section className="business-metrics-grid">
     <BusinessMetric label="客户总数" value={`${snapshot.customers.length} 位`} detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} />
     <BusinessMetric label="累计消费" value={money.format(totalSpend)} detail="按退款后的净到账统计" tone="green" icon={Wallet} />
     <BusinessMetric label="A级客户" value={`${snapshot.customers.filter((item) => item.level === "A").length} 位`} detail="高价值与高复购潜力" tone="orange" icon={Sparkle} />
@@ -630,7 +848,7 @@ export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onS
       <nav aria-label="客户渠道筛选">{([ ["all", "全部"], ["xianyu", "闲鱼"], ["wechat", "微信"] ] as const).map(([value, label]) => <button type="button" aria-pressed={channel === value} className={channel === value ? "active" : ""} onClick={() => setChannel(value)} key={value}>{label}</button>)}</nav>
     </div>
     {visibleRows.length ? <div className="crm-table"><div><span>客户</span><span>跟进状态</span><span>最近联系</span><span>历史订单</span><span>消费金额</span><span>客户等级</span></div>{visibleRows.map(({ item, business }) => { const status = item.followUpStatus; return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelected(item.id)} key={item.id}><span><i>{item.name.slice(0, 1)}</i><b>{item.name}<small>{item.phone || (item.source === "xianyu" ? "闲鱼客户" : "暂无联系方式")}</small></b></span><em className={`follow-${status}`}>{followLabel[status]}</em><time>{shortDate(item.lastContactAt)}</time><strong>{business.orderCount} 单</strong><strong>{money.format(business.totalSpend)}</strong><i className={`customer-level level-${item.level}`}>{item.level}</i></button>; })}</div> : <div className="crm-filter-empty"><MagnifyingGlass size={28} weight="duotone" /><b>当前分类没有客户</b><small>{globalSearch ? "尝试清除搜索词或切换分类、渠道。" : "切换生命周期或渠道查看其他客户。"}</small></div>}
-  </Surface></main>{customer ? <aside><Surface className="customer-profile"><div className="customer-profile-head"><i>{customer.name.slice(0, 1)}</i><span><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : customer.source === "referral" ? "转介绍" : "其他来源"}</small><h3>{customer.name}</h3><p>{customer.phone || "暂无联系方式"}</p></span><b className={`customer-level level-${customer.level}`}>{customer.level}</b></div><div className="customer-profile-stats"><span><small>历史订单</small><b>{selectedBusiness.orderCount}</b></span><span><small>累计消费</small><b>{money.format(selectedBusiness.totalSpend)}</b></span><span><small>最近联系</small><b>{shortDate(customer.lastContactAt)}</b></span></div><div className="customer-tags">{customer.tags?.map((tag) => <i key={tag}>{tag}</i>)}</div><button className="customer-blueprint-entry" onClick={() => onOpenRequirements(customer.id)}><FileText size={17} weight="duotone" /><span><b>需求蓝图</b><small>{requirementCount ? `${requirementCount} 个需求案例` : "查看或导入客户需求"}</small></span><ArrowRight size={15} /></button><button className="business-primary wide" onClick={nextStatus}><NotePencil size={16} />{customer.followUpStatus === "inactive" ? "重新开始跟进" : "记录本次跟进"}</button></Surface><Surface><SurfaceTitle eyebrow="ORDER HISTORY" title="历史订单" /><div className="customer-order-list">{selectedBusiness.projects.length ? selectedBusiness.projects.map((project) => { const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!; return <article key={project.id}><i><Briefcase size={17} /></i><span><b>{project.name}</b><small>{shortDate(project.startDate)} · {project.status === "completed" ? "已完成" : "进行中"}</small></span><strong>{money.format(project.totalAmount)}<small>净到账 {money.format(financial.income)}</small></strong></article>; }) : <div className="customer-order-empty">暂无成交项目，需求蓝图可在成交前独立存在。</div>}</div></Surface></aside> : null}</section></div>;
+  </Surface></main>{customer ? <aside><Surface className="customer-profile"><div className="customer-profile-head"><i>{customer.name.slice(0, 1)}</i><span><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : customer.source === "referral" ? "转介绍" : "其他来源"}</small><h3>{customer.name}</h3><p>{customer.phone || "暂无联系方式"}</p></span><b className={`customer-level level-${customer.level}`}>{customer.level}</b></div><div className="customer-profile-stats"><span><small>历史订单</small><b>{selectedBusiness.orderCount}</b></span><span><small>累计消费</small><b>{money.format(selectedBusiness.totalSpend)}</b></span><span><small>最近联系</small><b>{shortDate(customer.lastContactAt)}</b></span></div><div className="customer-tags">{customer.tags?.map((tag) => <i key={tag}>{tag}</i>)}</div><button className="customer-edit-entry" onClick={() => setEditingCustomerId(customer.id)}><PencilSimple size={17} weight="duotone" /><span><b>编辑客户</b><small>资料、状态与订单关系修正</small></span><ArrowRight size={15} /></button><button className="customer-blueprint-entry" onClick={() => onOpenRequirements(customer.id)}><FileText size={17} weight="duotone" /><span><b>需求蓝图</b><small>{requirementCount ? `${requirementCount} 个需求案例` : "查看或导入客户需求"}</small></span><ArrowRight size={15} /></button><button className="business-primary wide" onClick={nextStatus}><NotePencil size={16} />{customer.followUpStatus === "inactive" ? "重新开始跟进" : "记录本次跟进"}</button></Surface><Surface><SurfaceTitle eyebrow="ORDER HISTORY" title="历史订单" /><div className="customer-order-list">{selectedBusiness.projects.length ? selectedBusiness.projects.map((project) => { const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!; return <article key={project.id}><i><Briefcase size={17} /></i><span><b>{project.name}</b><small>{shortDate(project.startDate)} · {project.status === "completed" ? "已完成" : "进行中"}</small></span><strong>{money.format(project.totalAmount)}<small>净到账 {money.format(financial.income)}</small></strong></article>; }) : <div className="customer-order-empty">暂无成交项目，需求蓝图可在成交前独立存在。</div>}</div></Surface></aside> : null}</section></div>{editingCustomer && <CustomerEditorDrawer key={editingCustomer.id} customer={editingCustomer} snapshot={snapshot} onPersistedSnapshot={onPersistedSnapshot} onClose={() => setEditingCustomerId(null)} />}</>;
 }
 
 interface RequirementResult {
