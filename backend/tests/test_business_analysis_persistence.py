@@ -24,6 +24,7 @@ from backend.app.database import Database
 from backend.app.ledger import LedgerService, default_snapshot
 from backend.app.models import (
     BusinessAnalysisRecord,
+    BusinessAnalysisRecommendationEvent,
     BusinessAnalysisRecommendationRecord,
 )
 from backend.app.services.business_analysis import (
@@ -33,6 +34,7 @@ from backend.app.services.business_analysis import (
 from backend.app.services.business_analysis_reasoning import (
     BusinessAnalysisReasoningService,
 )
+from backend.app.services.business_recommendations import BusinessRecommendationService
 
 
 FIXED_NOW = datetime(2026, 8, 11, 4, 0, tzinfo=timezone.utc)
@@ -439,7 +441,8 @@ async def test_analysis_record_and_recommendations_roll_back_together(
 async def test_recommendation_feedback_uses_version_and_request_protection(
     tmp_path: Path,
 ) -> None:
-    _, _, service, _ = build_service(tmp_path)
+    database, _, service, _ = build_service(tmp_path)
+    feedback = BusinessRecommendationService(database, service)
     result = await service.run_analysis(
         request_id="analysis-request-feedback",
         provider="deepseek",
@@ -447,19 +450,21 @@ async def test_recommendation_feedback_uses_version_and_request_protection(
     )
     recommendation_id = result.recommendations[0].id
 
-    accepted = service.update_recommendation(
+    accepted = feedback.update(
         recommendation_id,
         status="accepted",
         expected_version=1,
         request_id="feedback-request-0001",
         note="先人工验证",
+        now=FIXED_NOW,
     )
-    repeated = service.update_recommendation(
+    repeated = feedback.update(
         recommendation_id,
         status="accepted",
         expected_version=1,
         request_id="feedback-request-0001",
         note="先人工验证",
+        now=FIXED_NOW,
     )
     assert accepted.version == 2
     assert repeated.version == 2
@@ -467,38 +472,59 @@ async def test_recommendation_feedback_uses_version_and_request_protection(
     assert accepted.user_note == "先人工验证"
 
     with pytest.raises(RecommendationVersionConflict):
-        service.update_recommendation(
+        feedback.update(
             recommendation_id,
             status="ignored",
             expected_version=1,
             request_id="feedback-request-0002",
             note="",
+            now=FIXED_NOW,
         )
 
-    completed = service.update_recommendation(
+    started = feedback.start(
         recommendation_id,
-        status="completed",
         expected_version=2,
         request_id="feedback-request-0003",
-        note="已人工完成",
+        now=FIXED_NOW,
+    )
+    assert started.status == "observing"
+    completed = feedback.complete(
+        recommendation_id,
+        expected_version=3,
+        request_id="feedback-request-0004",
+        outcome="positive",
+        actual_cost=0,
+        actual_hours=1.5,
+        user_conclusion="已人工完成并观察到改善",
+        now=datetime(2026, 8, 19, 4, 0, tzinfo=timezone.utc),
     )
     assert completed.status == "completed"
-    assert completed.version == 3
+    assert completed.version == 4
+    assert completed.outcome == "positive"
+    assert completed.baseline_metrics is not None
+    assert completed.result_metrics is not None
     with pytest.raises(RecommendationTransitionError):
-        service.update_recommendation(
+        feedback.update(
             recommendation_id,
             status="ignored",
-            expected_version=3,
-            request_id="feedback-request-0004",
+            expected_version=4,
+            request_id="feedback-request-0005",
             note="",
+            now=FIXED_NOW,
         )
+    with database.session() as session:
+        assert session.scalar(select(func.count(BusinessAnalysisRecommendationEvent.id))) == 3
 
 
 def test_business_analysis_api_supports_runs_history_and_feedback(tmp_path: Path) -> None:
-    _, _, service, _ = build_service(tmp_path)
+    database, _, service, _ = build_service(tmp_path)
+    feedback = BusinessRecommendationService(database, service)
     app = FastAPI()
     app.include_router(business_analysis_router)
-    app.state.runtime = SimpleNamespace(business_analysis=service)
+    app.state.runtime = SimpleNamespace(
+        business_analysis=service,
+        business_recommendations=feedback,
+    )
     client = TestClient(app)
 
     initial = client.get("/api/business-analysis")
@@ -547,7 +573,7 @@ def test_business_analysis_api_supports_runs_history_and_feedback(tmp_path: Path
 
 
 def test_business_analysis_api_sanitizes_repository_failure(tmp_path: Path) -> None:
-    _, _, service, _ = build_service(tmp_path)
+    database, _, service, _ = build_service(tmp_path)
 
     def fail_latest():
         raise BusinessAnalysisRepositoryError("raw sqlite detail")
@@ -555,7 +581,10 @@ def test_business_analysis_api_sanitizes_repository_failure(tmp_path: Path) -> N
     service.repository.latest = fail_latest  # type: ignore[method-assign]
     app = FastAPI()
     app.include_router(business_analysis_router)
-    app.state.runtime = SimpleNamespace(business_analysis=service)
+    app.state.runtime = SimpleNamespace(
+        business_analysis=service,
+        business_recommendations=BusinessRecommendationService(database, service),
+    )
 
     response = TestClient(app).get("/api/business-analysis")
 
@@ -605,9 +634,10 @@ def test_business_analysis_alembic_migration_upgrades_existing_0013_database(
             )
         }
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-    assert version == ("20260811_0015",)
+    assert version == ("20260811_0016",)
     assert tables == {
         "business_analysis_records",
+        "business_analysis_recommendation_events",
         "business_analysis_recommendations",
     }
     assert violations == []

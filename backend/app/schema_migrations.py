@@ -6,6 +6,61 @@ from uuid import uuid4
 from sqlalchemy.engine import Connection
 
 
+def migrate_business_recommendation_feedback_schema(connection: Connection) -> bool:
+    """Add the recommendation execution-loop columns to legacy SQLite data."""
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    table = "business_analysis_recommendations"
+    if table not in tables:
+        return False
+    columns = {
+        str(row[1])
+        for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+    }
+    additions = (
+        ("target_scope", "VARCHAR(32) NOT NULL DEFAULT 'domain'"),
+        ("accepted_at", "DATETIME"),
+        ("started_at", "DATETIME"),
+        ("observe_until", "DATETIME"),
+        ("completed_at", "DATETIME"),
+        ("baseline_metrics_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("result_metrics_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("outcome", "VARCHAR(32)"),
+        ("actual_cost", "FLOAT"),
+        ("actual_hours", "FLOAT"),
+        ("user_conclusion", "TEXT NOT NULL DEFAULT ''"),
+        ("execution_ref_type", "VARCHAR(64)"),
+        ("execution_ref_id", "VARCHAR(128)"),
+    )
+    changed = False
+    for name, definition in additions:
+        if name not in columns:
+            connection.exec_driver_sql(
+                f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
+            )
+            changed = True
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS "
+        "ix_business_analysis_recommendations_observe_until "
+        "ON business_analysis_recommendations(observe_until)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_business_analysis_recommendations_outcome "
+        "ON business_analysis_recommendations(outcome)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS "
+        "idx_business_analysis_recommendation_lifecycle "
+        "ON business_analysis_recommendations(status, observe_until)"
+    )
+    return changed
+
+
 PROJECT_TABLE = "business_projects"
 TEMP_PROJECT_TABLE = "business_projects__personal_upgrade"
 

@@ -19,7 +19,7 @@ test("AI经营分析中心 is an independent route after data statistics", async
   assert.match(app, /经营分析中心: \{ title: "AI经营分析中心"/);
 });
 
-test("analysis client uses explicit read, run, history, and versioned feedback APIs", async () => {
+test("analysis client uses explicit read, run, history, and lifecycle feedback APIs", async () => {
   const source = await readFile(servicePath, "utf8");
 
   assert.match(source, /latest: \(\) => request<BusinessAnalysisOverview>\("\/api\/business-analysis"\)/);
@@ -30,6 +30,11 @@ test("analysis client uses explicit read, run, history, and versioned feedback A
   assert.match(source, /expected_version: number/);
   assert.match(source, /request_id: string/);
   assert.match(source, /method: "PATCH"/);
+  assert.match(source, /recommendations: \(\) => request<BusinessAnalysisRecommendationQueueResponse>/);
+  assert.match(source, /\/recommendations\/\$\{encodeURIComponent\(recommendationId\)\}\/start/);
+  assert.match(source, /\/recommendations\/\$\{encodeURIComponent\(recommendationId\)\}\/complete/);
+  assert.match(source, /RecommendationUpdateStatus = "pending" \| "accepted" \| "ignored"/);
+  assert.match(source, /RecommendationOutcome = "positive" \| "negative" \| "inconclusive"/);
 });
 
 test("evidence chain keeps metrics, findings, and manual recommendations connected", async () => {
@@ -65,6 +70,38 @@ test("page exposes loading, empty, selected-model fallback, API error, stale, an
   assert.match(source, /historyPeriodLabel\(item\.snapshot_time\)/);
   assert.match(source, /item\.insight_count/);
   assert.match(service, /insight_count: number/);
+});
+
+test("execution queue separates acceptance, observation, due review, and completed outcome", async () => {
+  const source = await readFile(pagePath, "utf8");
+  const service = await readFile(servicePath, "utf8");
+
+  assert.match(source, /执行与复盘/);
+  assert.match(source, /已采纳 · 未开始/);
+  assert.match(source, /观察中/);
+  assert.match(source, /待复盘 · 已到期/);
+  assert.match(source, /开始观察/);
+  assert.match(source, /保存结果复盘/);
+  assert.match(source, /分析已过期/);
+  assert.match(source, /recommendation\.can_accept/);
+  assert.match(source, /businessAnalysisService\.startRecommendation/);
+  assert.match(source, /businessAnalysisService\.completeRecommendation/);
+  assert.match(source, /baseline_metrics/);
+  assert.match(source, /result_metrics/);
+  assert.match(source, /product_modification_experiment/);
+  assert.match(service, /lifecycle_status: RecommendationLifecycleStatus/);
+  assert.match(service, /source_snapshot_hash: string/);
+});
+
+test("result review uses a desktop side drawer and a narrow-screen bottom sheet", async () => {
+  const styles = await readFile(stylesPath, "utf8");
+
+  assert.match(styles, /\.analysis-review-backdrop \{ place-items: stretch end/);
+  assert.match(styles, /\.analysis-review-drawer \{[\s\S]*height: 100%/);
+  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.analysis-review-backdrop \{[\s\S]*place-items: end stretch/);
+  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.analysis-review-drawer \{[\s\S]*border-radius: 22px 22px 0 0/);
+  assert.match(styles, /\.analysis-review-metric-row/);
+  assert.match(styles, /\.analysis-outcome-options/);
 });
 
 test("model selection defaults to GPT and records the explicit provider and model", async () => {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import re
 from uuid import uuid4
@@ -14,10 +15,12 @@ from .business_analysis_schemas import (
     BusinessAnalysisHistoryResponse,
     BusinessAnalysisOverview,
     BusinessAnalysisRecommendation,
+    BusinessRecommendationMetricSnapshot,
 )
 from .database import Database
 from .models import (
     BusinessAnalysisRecord,
+    BusinessAnalysisRecommendationEvent,
     BusinessAnalysisRecommendationRecord,
     utcnow,
 )
@@ -61,6 +64,13 @@ class StoredBusinessAnalysis:
     snapshot_hash: str
 
 
+@dataclass(frozen=True, slots=True)
+class StoredBusinessRecommendation:
+    result: BusinessAnalysisRecommendation
+    snapshot_hash: str
+    analysis_snapshot_time: datetime
+
+
 def _json_list(value: str) -> list[str]:
     try:
         parsed = json.loads(value)
@@ -69,6 +79,35 @@ def _json_list(value: str) -> list[str]:
     if not isinstance(parsed, list) or not all(isinstance(row, str) for row in parsed):
         raise BusinessAnalysisDataError
     return parsed
+
+
+def _metric_snapshot(value: str) -> BusinessRecommendationMetricSnapshot | None:
+    if not value or value == "{}":
+        return None
+    try:
+        return BusinessRecommendationMetricSnapshot.model_validate_json(value)
+    except (TypeError, ValueError) as exc:
+        raise BusinessAnalysisDataError from exc
+
+
+def _payload_hash(
+    *,
+    recommendation_id: str,
+    event_type: str,
+    payload: dict[str, object],
+) -> str:
+    encoded = json.dumps(
+        {
+            "recommendation_id": recommendation_id,
+            "event_type": event_type,
+            "payload": payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _observe_days(value: str) -> int | None:
@@ -100,11 +139,19 @@ class BusinessAnalysisRepository:
     @staticmethod
     def _recommendation_schema(
         row: BusinessAnalysisRecommendationRecord,
+        *,
+        analysis_snapshot_time: datetime | None = None,
     ) -> BusinessAnalysisRecommendation:
         return BusinessAnalysisRecommendation(
             id=row.id,
+            analysis_id=row.analysis_id,
+            analysis_snapshot_time=analysis_snapshot_time,
             source_key=row.source_key,
             domain=row.domain,
+            entity_type=row.entity_type,
+            entity_id=row.entity_id,
+            entity_label=row.entity_label,
+            target_scope=row.target_scope,
             priority=row.priority,
             title=row.title,
             problem=row.problem,
@@ -113,12 +160,26 @@ class BusinessAnalysisRepository:
             data_source=_json_list(row.data_sources_json),
             confidence=row.confidence,
             observe_period=row.observe_period,
+            observe_days=row.observe_days,
             status=row.status,
+            lifecycle_status=row.status,
             version=row.version,
             user_note=row.user_note,
             target_page=row.target_page,
             execution_mode="manual",
             evidence_refs=_json_list(row.evidence_refs_json),
+            accepted_at=row.accepted_at,
+            started_at=row.started_at,
+            observe_until=row.observe_until,
+            completed_at=row.completed_at,
+            baseline_metrics=_metric_snapshot(row.baseline_metrics_json),
+            result_metrics=_metric_snapshot(row.result_metrics_json),
+            outcome=row.outcome,
+            actual_cost=row.actual_cost,
+            actual_hours=row.actual_hours,
+            user_conclusion=row.user_conclusion,
+            execution_ref_type=row.execution_ref_type,
+            execution_ref_id=row.execution_ref_id,
         )
 
     def _hydrate_record(
@@ -149,7 +210,13 @@ class BusinessAnalysisRepository:
                 "ai_status": record.ai_status,
                 "fallback_used": record.fallback_used,
                 "snapshot_time": record.snapshot_time,
-                "recommendations": [self._recommendation_schema(row) for row in rows],
+                "recommendations": [
+                    self._recommendation_schema(
+                        row,
+                        analysis_snapshot_time=record.snapshot_time,
+                    )
+                    for row in rows
+                ],
             }
         )
         return StoredBusinessAnalysis(result=result, snapshot_hash=record.snapshot_hash)
@@ -220,8 +287,18 @@ class BusinessAnalysisRepository:
             persisted = recommendation.model_copy(
                 update={
                     "id": recommendation_id,
+                    "analysis_id": analysis_id,
+                    "analysis_snapshot_time": snapshot_time,
                     "source_key": source_key,
+                    "target_scope": (
+                        "entity"
+                        if recommendation.entity_id
+                        else "portfolio"
+                        if recommendation.domain == "portfolio"
+                        else "domain"
+                    ),
                     "status": "pending",
+                    "lifecycle_status": "pending",
                     "version": 1,
                     "user_note": "",
                 }
@@ -234,9 +311,9 @@ class BusinessAnalysisRepository:
                     source_key=source_key,
                     position=position,
                     domain=persisted.domain,
-                    entity_type=None,
-                    entity_id=None,
-                    entity_label=None,
+                    entity_type=persisted.entity_type,
+                    entity_id=persisted.entity_id,
+                    entity_label=persisted.entity_label,
                     title=persisted.title,
                     problem=persisted.problem,
                     reason=persisted.reason,
@@ -256,6 +333,13 @@ class BusinessAnalysisRepository:
                         separators=(",", ":"),
                     ),
                     target_page=persisted.target_page,
+                    target_scope=(
+                        "entity"
+                        if persisted.entity_id
+                        else "portfolio"
+                        if persisted.domain == "portfolio"
+                        else "domain"
+                    ),
                     execution_mode="manual",
                     status="pending",
                     version=1,
@@ -383,51 +467,246 @@ class BusinessAnalysisRepository:
         except SQLAlchemyError as exc:
             raise BusinessAnalysisRepositoryError from exc
 
-    def update_recommendation(
+    def get_recommendation(
         self,
         recommendation_id: str,
-        *,
-        status: str,
-        expected_version: int,
-        request_id: str,
-        note: str,
-    ) -> BusinessAnalysisRecommendation:
-        allowed = {
-            "pending": {"pending", "accepted", "ignored"},
-            "accepted": {"accepted", "ignored", "completed"},
-            "ignored": {"ignored", "accepted", "pending"},
-            "completed": {"completed"},
-        }
+    ) -> StoredBusinessRecommendation:
         try:
             with self.database.session() as session:
                 row = session.get(BusinessAnalysisRecommendationRecord, recommendation_id)
                 if row is None:
                     raise RecommendationNotFound
-                if row.last_request_id == request_id:
-                    if row.status == status and row.user_note == note:
-                        return self._recommendation_schema(row)
-                    raise RecommendationRequestConflict
-                reused = session.scalar(
+                analysis = session.get(BusinessAnalysisRecord, row.analysis_id)
+                if analysis is None:
+                    raise BusinessAnalysisDataError
+                return StoredBusinessRecommendation(
+                    result=self._recommendation_schema(
+                        row,
+                        analysis_snapshot_time=analysis.snapshot_time,
+                    ),
+                    snapshot_hash=analysis.snapshot_hash,
+                    analysis_snapshot_time=analysis.snapshot_time,
+                )
+        except BusinessAnalysisRepositoryError:
+            raise
+        except SQLAlchemyError as exc:
+            raise BusinessAnalysisRepositoryError from exc
+
+    def list_recommendations(self) -> list[StoredBusinessRecommendation]:
+        try:
+            with self.database.session() as session:
+                pairs = list(
+                    session.execute(
+                        select(
+                            BusinessAnalysisRecommendationRecord,
+                            BusinessAnalysisRecord,
+                        )
+                        .join(
+                            BusinessAnalysisRecord,
+                            BusinessAnalysisRecommendationRecord.analysis_id
+                            == BusinessAnalysisRecord.id,
+                        )
+                        .where(BusinessAnalysisRecord.status == "completed")
+                        .order_by(
+                            BusinessAnalysisRecord.snapshot_time.desc(),
+                            BusinessAnalysisRecommendationRecord.position,
+                            BusinessAnalysisRecommendationRecord.id,
+                        )
+                    ).all()
+                )
+                return [
+                    StoredBusinessRecommendation(
+                        result=self._recommendation_schema(
+                            row,
+                            analysis_snapshot_time=analysis.snapshot_time,
+                        ),
+                        snapshot_hash=analysis.snapshot_hash,
+                        analysis_snapshot_time=analysis.snapshot_time,
+                    )
+                    for row, analysis in pairs
+                ]
+        except BusinessAnalysisRepositoryError:
+            raise
+        except SQLAlchemyError as exc:
+            raise BusinessAnalysisRepositoryError from exc
+
+    @staticmethod
+    def _event_result(
+        session,
+        *,
+        request_id: str,
+        recommendation_id: str,
+        event_type: str,
+        payload_hash: str,
+    ) -> StoredBusinessRecommendation | None:
+        event = session.scalar(
+            select(BusinessAnalysisRecommendationEvent).where(
+                BusinessAnalysisRecommendationEvent.request_id == request_id
+            )
+        )
+        if event is None:
+            return None
+        if (
+            event.recommendation_id != recommendation_id
+            or event.event_type != event_type
+            or event.payload_hash != payload_hash
+        ):
+            raise RecommendationRequestConflict
+        try:
+            result = BusinessAnalysisRecommendation.model_validate_json(event.result_json)
+        except (TypeError, ValueError) as exc:
+            raise BusinessAnalysisDataError from exc
+        row = session.get(BusinessAnalysisRecommendationRecord, recommendation_id)
+        if row is None:
+            raise RecommendationNotFound
+        analysis = session.get(BusinessAnalysisRecord, row.analysis_id)
+        if analysis is None:
+            raise BusinessAnalysisDataError
+        return StoredBusinessRecommendation(
+            result=result,
+            snapshot_hash=analysis.snapshot_hash,
+            analysis_snapshot_time=analysis.snapshot_time,
+        )
+
+    def transition_recommendation(
+        self,
+        recommendation_id: str,
+        *,
+        event_type: str,
+        to_status: str,
+        allowed_from: set[str],
+        expected_version: int,
+        request_id: str,
+        payload: dict[str, object],
+        changes: dict[str, object],
+    ) -> StoredBusinessRecommendation:
+        allowed_changes = {
+            "target_scope",
+            "user_note",
+            "accepted_at",
+            "started_at",
+            "observe_until",
+            "completed_at",
+            "baseline_metrics_json",
+            "result_metrics_json",
+            "outcome",
+            "actual_cost",
+            "actual_hours",
+            "user_conclusion",
+            "execution_ref_type",
+            "execution_ref_id",
+        }
+        if not set(changes).issubset(allowed_changes):
+            raise ValueError("unsupported recommendation mutation field")
+        fingerprint = _payload_hash(
+            recommendation_id=recommendation_id,
+            event_type=event_type,
+            payload=payload,
+        )
+        try:
+            with self.database.session() as session:
+                replay = self._event_result(
+                    session,
+                    request_id=request_id,
+                    recommendation_id=recommendation_id,
+                    event_type=event_type,
+                    payload_hash=fingerprint,
+                )
+                if replay is not None:
+                    return replay
+
+                row = session.get(BusinessAnalysisRecommendationRecord, recommendation_id)
+                if row is None:
+                    raise RecommendationNotFound
+                analysis = session.get(BusinessAnalysisRecord, row.analysis_id)
+                if analysis is None:
+                    raise BusinessAnalysisDataError
+                legacy_request = session.scalar(
                     select(BusinessAnalysisRecommendationRecord.id).where(
-                        BusinessAnalysisRecommendationRecord.last_request_id == request_id
+                        BusinessAnalysisRecommendationRecord.last_request_id
+                        == request_id
                     )
                 )
-                if reused is not None:
+                if legacy_request is not None:
                     raise RecommendationRequestConflict
                 if row.version != expected_version:
                     raise RecommendationVersionConflict(row.version)
-                if status not in allowed.get(row.status, set()):
+                if row.status not in allowed_from:
                     raise RecommendationTransitionError
-                row.status = status
+
+                from_status = row.status
+                for field, value in changes.items():
+                    setattr(row, field, value)
+                row.status = to_status
                 row.version += 1
                 row.last_request_id = request_id
-                row.user_note = note
                 row.updated_at = utcnow()
+                session.flush()
+                result = self._recommendation_schema(
+                    row,
+                    analysis_snapshot_time=analysis.snapshot_time,
+                )
+                session.add(
+                    BusinessAnalysisRecommendationEvent(
+                        id=f"recommendation-event-{uuid4().hex}",
+                        recommendation_id=recommendation_id,
+                        event_type=event_type,
+                        from_status=from_status,
+                        to_status=to_status,
+                        request_id=request_id,
+                        payload_hash=fingerprint,
+                        result_json=result.model_dump_json(),
+                    )
+                )
                 session.commit()
-                return self._recommendation_schema(row)
+                return StoredBusinessRecommendation(
+                    result=result,
+                    snapshot_hash=analysis.snapshot_hash,
+                    analysis_snapshot_time=analysis.snapshot_time,
+                )
         except BusinessAnalysisRepositoryError:
             raise
         except IntegrityError as exc:
-            raise RecommendationRequestConflict from exc
+            try:
+                with self.database.session() as session:
+                    replay = self._event_result(
+                        session,
+                        request_id=request_id,
+                        recommendation_id=recommendation_id,
+                        event_type=event_type,
+                        payload_hash=fingerprint,
+                    )
+                    if replay is not None:
+                        return replay
+            except BusinessAnalysisRepositoryError:
+                raise
+            raise BusinessAnalysisRepositoryError from exc
+        except SQLAlchemyError as exc:
+            raise BusinessAnalysisRepositoryError from exc
+
+    def replay_recommendation_event(
+        self,
+        recommendation_id: str,
+        *,
+        event_type: str,
+        request_id: str,
+        payload: dict[str, object],
+    ) -> StoredBusinessRecommendation | None:
+        fingerprint = _payload_hash(
+            recommendation_id=recommendation_id,
+            event_type=event_type,
+            payload=payload,
+        )
+        try:
+            with self.database.session() as session:
+                return self._event_result(
+                    session,
+                    request_id=request_id,
+                    recommendation_id=recommendation_id,
+                    event_type=event_type,
+                    payload_hash=fingerprint,
+                )
+        except BusinessAnalysisRepositoryError:
+            raise
         except SQLAlchemyError as exc:
             raise BusinessAnalysisRepositoryError from exc

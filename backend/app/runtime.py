@@ -18,6 +18,7 @@ from .services.ai_queue import AIJobQueue
 from .services.ai_models import AIModelSettingsService
 from .services.automation import AutoReplyService
 from .services.business_analysis import BusinessAnalysisService
+from .services.business_recommendations import BusinessRecommendationService
 from .services.customer_relationships import CustomerRelationshipService
 from .services.event_hub import EventHub
 from .services.listener import ListenerService
@@ -66,6 +67,7 @@ class Runtime:
     ledger: LedgerService
     product_intelligence: ProductIntelligenceService
     business_analysis: BusinessAnalysisService
+    business_recommendations: BusinessRecommendationService
     customer_relationships: CustomerRelationshipService
 
 
@@ -153,6 +155,11 @@ def build_runtime(settings: Settings) -> Runtime:
             deepseek.name: settings.deepseek_configured,
         },
         reasoning_timeout_seconds=settings.business_analysis_timeout_seconds,
+    )
+    business_recommendations = BusinessRecommendationService(
+        database,
+        business_analysis,
+        product_intelligence=product_intelligence,
     )
     customer_relationships = CustomerRelationshipService(database, ledger)
     send_limiter = SlidingWindowRateLimiter(settings.send_rate_limit_per_minute)
@@ -248,5 +255,6 @@ def build_runtime(settings: Settings) -> Runtime:
         ledger=ledger,
         product_intelligence=product_intelligence,
         business_analysis=business_analysis,
+        business_recommendations=business_recommendations,
         customer_relationships=customer_relationships,
     )

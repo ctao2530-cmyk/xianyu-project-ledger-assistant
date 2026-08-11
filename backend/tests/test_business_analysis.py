@@ -17,6 +17,7 @@ from backend.app.models import (
     ProductMonitor,
 )
 from backend.app.services.business_analysis import BusinessAnalysisService
+from backend.app.services.business_recommendations import BusinessRecommendationService
 
 
 FIXED_NOW = datetime(2026, 8, 11, 4, 0, tzinfo=timezone.utc)
@@ -287,10 +288,13 @@ def test_analysis_aggregates_only_owned_products_and_uses_net_ledger_income(tmp_
 
 
 def test_overview_api_returns_required_contract(tmp_path: Path) -> None:
-    _, _, service = build_service(tmp_path)
+    database, _, service = build_service(tmp_path)
     app = FastAPI()
     app.include_router(business_analysis_router)
-    app.state.runtime = SimpleNamespace(business_analysis=service)
+    app.state.runtime = SimpleNamespace(
+        business_analysis=service,
+        business_recommendations=BusinessRecommendationService(database, service),
+    )
 
     response = TestClient(app).get("/api/business-analysis/overview")
 
