@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BellRinging,
+  BookOpenText,
   Brain,
   Briefcase,
   CalendarBlank,
@@ -19,6 +20,7 @@ import {
   FolderSimple,
   FolderOpen,
   Gauge,
+  House,
   Lightbulb,
   ListChecks,
   MagicWand,
@@ -28,6 +30,7 @@ import {
   PencilSimple,
   Plus,
   Robot,
+  ShieldCheck,
   Sparkle,
   Stack,
   Target,
@@ -38,6 +41,7 @@ import {
   UsersThree,
   WarningCircle,
   Wallet,
+  X,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -710,8 +714,88 @@ function LegacyAIWorkspacePage({ snapshot }: { snapshot: LedgerSnapshot }) {
   </main></section></div>;
 }
 
-export function AIWorkspacePage({ snapshot }: { snapshot: LedgerSnapshot }) {
+type XunyingEvidenceFact = {
+  id: string;
+  label: string;
+  value: string;
+  detail: string;
+  complete: boolean;
+  targetPage: string;
+};
+
+export function buildXunyingDecision(snapshot: LedgerSnapshot) {
+  const summary = getBusinessSummary(snapshot);
+  const deliveredProjects = snapshot.projects.filter((project) => project.status === "delivered" || project.status === "completed").length;
+  const completedSamples = Math.max(snapshot.completedOrderCount || 0, deliveredProjects);
+  const confirmedPayments = snapshot.payments.filter((payment) => payment.status === "confirmed" || payment.status === "refunded").length;
+  const deliveryEvidence = snapshot.logs.length + snapshot.attachments.length;
+  const facts: XunyingEvidenceFact[] = [
+    {
+      id: "projects",
+      label: "项目样本",
+      value: `${snapshot.projects.length} 个真实项目`,
+      detail: `${completedSamples} 个已交付或完成样本`,
+      complete: completedSamples >= 2,
+      targetPage: "项目管理",
+    },
+    {
+      id: "cashflow",
+      label: "收支记录",
+      value: `${confirmedPayments} 笔确认收款 · ${snapshot.expenses.length} 笔支出`,
+      detail: confirmedPayments > 0 && snapshot.expenses.length > 0 ? "已有真实现金流记录" : "需要同时具备确认收款与支出",
+      complete: confirmedPayments > 0 && snapshot.expenses.length > 0,
+      targetPage: confirmedPayments > 0 ? "支出记录" : "收入记录",
+    },
+    {
+      id: "hours",
+      label: "工时证据",
+      value: `${summary.actualHours} 小时实际工时`,
+      detail: summary.actualHours > 0 ? "来自项目任务实际工时" : "尚未记录实际工时",
+      complete: summary.actualHours > 0,
+      targetPage: "项目管理",
+    },
+    {
+      id: "delivery",
+      label: "交付证据",
+      value: `${snapshot.logs.length} 条日志 · ${snapshot.attachments.length} 个附件`,
+      detail: deliveryEvidence > 0 ? "已有可回查的交付记录" : "尚无日志或交付附件",
+      complete: deliveryEvidence > 0,
+      targetPage: "项目管理",
+    },
+  ];
+  const missingFacts = facts.filter((fact) => !fact.complete);
+  const baselineReady = missingFacts.length === 0;
+  const targetHourlyRate = snapshot.settings.targetHourlyRate || 0;
+  const belowTarget = targetHourlyRate > 0 && summary.averageHourlyIncome < targetHourlyRate;
+  const profitable = summary.actualProfit > 0 && !belowTarget;
+  const headline = !baselineReady
+    ? "当前证据不足，先补齐经营基线，再决定是否扩大投入"
+    : profitable
+      ? "经营基线已经形成，优先复用高收益交付方式"
+      : "经营基线已经形成，先修复利润与工时结构，再扩大投入";
+  const reason = !baselineReady
+    ? `当前已有 ${snapshot.projects.length} 个项目、${confirmedPayments} 笔确认收款和 ${summary.actualHours} 小时实际工时，但${missingFacts.map((fact) => fact.label).join("、")}尚未形成可复用基线。`
+    : profitable
+      ? "收支、工时与交付证据已经形成闭环，现有数据支持先复用已验证的交付方式。"
+      : "证据已经形成闭环，但利润或单位工时收益尚未达到当前经营目标。";
+
+  return {
+    facts,
+    missingFacts,
+    baselineReady,
+    headline,
+    reason,
+    confidence: baselineReady ? "中" : completedSamples > 0 ? "待验证" : "低",
+    confidenceDetail: baselineReady ? "事实链完整，仍需持续复验" : "关键样本未闭环，暂不输出确定结论",
+    counterargument: "样本不足不等于方向错误；近期成交、线下沟通或未回填工时可能尚未进入当前账本。",
+    failureCondition: "补齐已完成项目的收支、工时和交付证据后，如单位时间利润与回款保持稳定，本判断应被推翻并重新计算。",
+    nextEvidencePage: missingFacts[0]?.targetPage || "项目管理",
+  };
+}
+
+export function AIWorkspacePage({ snapshot, onNavigate }: { snapshot: LedgerSnapshot; onNavigate: (page: string) => void }) {
   const [tool, setTool] = useState<"requirements" | "quote" | "review">("requirements");
+  const [workflowExpanded, setWorkflowExpanded] = useState(false);
   const [content, setContent] = useState("");
   const [analysis, setAnalysis] = useState<BusinessRequirementAnalysis | null>(null);
   const [quote, setQuote] = useState<BusinessQuote | null>(null);
@@ -720,13 +804,86 @@ export function AIWorkspacePage({ snapshot }: { snapshot: LedgerSnapshot }) {
   const [reviewInsight, setReviewInsight] = useState<BusinessReview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [challengeOpen, setChallengeOpen] = useState(false);
+  const evidenceDrawerRef = useRef<HTMLElement>(null);
+  const evidenceTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const workflowRef = useRef<HTMLElement>(null);
   const financials = getProjectFinancials(snapshot);
   const review = financials.find((item) => item.project.id === reviewProject) || financials[0];
+  const decision = useMemo(() => buildXunyingDecision(snapshot), [snapshot]);
   const tools = [
-    ["requirements", "AI 需求分析", Brain, "真实调用本机 Codex CLI"],
-    ["quote", "AI 报价生成", FileText, "AI 拆工时，服务端规则算金额"],
-    ["review", "AI 项目复盘", ChartLineUp, "读取真实收支、工时与回款"],
+    ["requirements", "需求分析", Brain, "把真实客户材料拆成可交付范围"],
+    ["quote", "规则报价", FileText, "AI 拆工时，服务端规则计算金额"],
+    ["review", "项目复盘", ChartLineUp, "读取真实收支、工时与回款"],
   ] as const;
+
+  const openEvidence = (trigger: HTMLButtonElement, challenge = false) => {
+    evidenceTriggerRef.current = trigger;
+    setChallengeOpen(challenge);
+    setEvidenceOpen(true);
+  };
+
+  const closeEvidence = () => {
+    setEvidenceOpen(false);
+    setChallengeOpen(false);
+    window.requestAnimationFrame(() => evidenceTriggerRef.current?.focus());
+  };
+
+  const openWorkflow = (nextTool: "requirements" | "quote" | "review") => {
+    setTool(nextTool);
+    setWorkflowExpanded(true);
+    setError("");
+    window.requestAnimationFrame(() => workflowRef.current?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "start",
+    }));
+  };
+
+  useEffect(() => {
+    if (!evidenceOpen) return;
+    const drawer = evidenceDrawerRef.current;
+    const frame = window.requestAnimationFrame(() => drawer?.focus());
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeEvidence();
+        return;
+      }
+      if (event.key !== "Tab" || !drawer) return;
+      const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      )).filter((element) => element.getClientRects().length > 0);
+      if (!focusable.length) {
+        event.preventDefault();
+        drawer.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (document.activeElement === drawer) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (!drawer.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [evidenceOpen]);
 
   const run = async (task: () => Promise<void>) => {
     setBusy(true);
@@ -795,14 +952,56 @@ export function AIWorkspacePage({ snapshot }: { snapshot: LedgerSnapshot }) {
     URL.revokeObjectURL(url);
   };
 
-  return <div className="business-page ai-workspace-page">
-    <section className="ai-hero">
-      <div><span><Sparkle size={15} weight="fill" /> LOCAL CODEX BUSINESS COPILOT</span><h2>AI 经营助手</h2><p>真实调用当前 Codex 账号；需求拆解与经营复盘由 AI 完成，价格由本机经营规则计算，所有结果都需要人工确认。</p></div>
-      <i><Robot size={76} weight="duotone" /></i>
+  return <div className="business-page ai-workspace-page xunying-workbench">
+    <section className="xunying-page-heading" aria-labelledby="xunying-today-title">
+      <div>
+        <img src="/assets/xunying/xiaoce-avatar.png" alt="" aria-hidden="true" />
+        <span><small>循营 · 一人经营台</small><h2 id="xunying-today-title">小策 · 今日判断</h2></span>
+      </div>
+      <p>先看事实，再看反方条件，最后只决定一个清晰的下一步。</p>
     </section>
-    <section className="ai-layout">
-      <nav>{tools.map(([key, label, Icon, description]) => <button className={tool === key ? "active" : ""} onClick={() => { setTool(key); setError(""); }} key={key}><i><Icon size={22} weight="duotone" /></i><span><b>{label}</b><small>{description}</small></span><CaretRight size={16} /></button>)}<div className="ai-privacy"><CheckCircle size={18} weight="fill" /><span><b>本机安全边界</b><small>不使用 API Key，不会自动发送或转项目</small></span></div></nav>
-      <main>
+
+    <section className="xunying-decision-grid" aria-label="今日经营判断">
+      <section className="xunying-evidence-panel xunying-facts-panel">
+        <header><span><FileText size={19} weight="duotone" />事实来源</span><small>{decision.facts.filter((fact) => fact.complete).length}/{decision.facts.length} 项形成基线</small></header>
+        <div className="xunying-fact-list">
+          {decision.facts.map((fact) => <article className={fact.complete ? "is-ready" : "is-missing"} key={fact.id}><i><CheckCircle size={15} weight={fact.complete ? "fill" : "regular"} /></i><span><b>{fact.label}</b><strong>{fact.value}</strong><small>{fact.detail}</small></span></article>)}
+        </div>
+        <button type="button" className="xunying-panel-link" onClick={(event) => openEvidence(event.currentTarget)}>查看证据清单 <ArrowRight size={15} /></button>
+      </section>
+
+      <article className="xunying-judgment-panel">
+        <span className="xunying-judgment-eyebrow"><Sparkle size={16} weight="fill" />本次关键判断</span>
+        <h3>{decision.headline}</h3>
+        <div className="xunying-reasoning"><Lightbulb size={22} weight="duotone" /><span><b>判断依据</b><p>{decision.reason}</p></span></div>
+      </article>
+
+      <section className="xunying-evidence-panel xunying-knowledge-panel">
+        <header><span><BookOpenText size={19} weight="duotone" />知识引用</span><small>可追溯来源</small></header>
+        <div className="xunying-knowledge-empty"><BookOpenText size={42} weight="duotone" /><b>暂无匹配知识引用</b><p>当前判断只使用本机经营账本，不把通用经验伪装成你的历史知识。</p></div>
+        <button type="button" className="xunying-panel-link" onClick={(event) => openEvidence(event.currentTarget)}>查看引用边界 <ArrowRight size={15} /></button>
+      </section>
+    </section>
+
+    <section className="xunying-audit-band" aria-label="判断审计信息">
+      <article><i className="is-confidence"><ShieldCheck size={25} weight="duotone" /></i><span><small>置信度</small><b>{decision.confidence}</b><p>{decision.confidenceDetail}</p></span></article>
+      <article><i className="is-counter"><WarningCircle size={25} weight="duotone" /></i><span><small>反方意见</small><b>保留另一种解释</b><p>{decision.counterargument}</p></span></article>
+      <article><i className="is-failure"><Target size={25} weight="duotone" /></i><span><small>失败条件</small><b>何时推翻当前判断</b><p>{decision.failureCondition}</p></span></article>
+    </section>
+
+    <section className="xunying-next-step" aria-label="建议下一步">
+      <div><small>下一步</small><strong>{decision.baselineReady ? "用真实项目复盘验证判断" : `优先补齐：${decision.missingFacts.map((fact) => fact.label).join("、")}`}</strong></div>
+      <button type="button" className="xunying-primary-action" onClick={(event) => openEvidence(event.currentTarget)}><Target size={20} weight="duotone" />补齐经营基线 <ArrowRight size={18} /></button>
+      <button type="button" className="xunying-secondary-action" onClick={(event) => openEvidence(event.currentTarget)}><NotePencil size={18} />记录可验证证据</button>
+      <button type="button" className="xunying-secondary-action" onClick={(event) => openEvidence(event.currentTarget, true)}><ShieldCheck size={18} />挑战当前判断</button>
+    </section>
+
+    <section ref={workflowRef} className="xunying-workflow" aria-labelledby="xunying-workflow-title">
+      <header><div><span>已保留的真实能力</span><h3 id="xunying-workflow-title">接单工作流</h3><p>从材料梳理到报价与复盘，所有真实写入和对外动作仍保留人工确认边界。</p></div><small><ShieldCheck size={16} weight="fill" />本机安全执行</small></header>
+      <nav className="xunying-workflow-tabs" role="tablist" aria-label="接单工作流工具">
+        {tools.map(([key, label, Icon, description], index) => <button type="button" role="tab" aria-selected={workflowExpanded && tool === key} aria-expanded={workflowExpanded && tool === key} aria-controls="xunying-workflow-panel" className={workflowExpanded && tool === key ? "active" : ""} onClick={() => openWorkflow(key)} key={key}><i><Icon size={21} weight="duotone" /></i><span><em>{index + 1}</em><b>{label}</b><small>{description}</small></span><CaretRight size={16} /></button>)}
+      </nav>
+      {workflowExpanded && <main id="xunying-workflow-panel" className="xunying-workflow-content" role="tabpanel" aria-label={tools.find(([key]) => key === tool)?.[1]}>
         {error && <div className="ai-backend-error" role="alert"><WarningCircle size={18} weight="fill" /><span><b>任务未完成</b><small>{error}</small></span></div>}
         {tool === "requirements" && <>
           <Surface className="ai-input-card"><SurfaceTitle eyebrow="01 / REQUIREMENT" title="粘贴客户聊天内容" /><textarea value={content} onChange={(event) => setContent(event.target.value)} rows={7} placeholder="粘贴客户的聊天记录、需求描述或语音转文字内容…" /><div><span>{content.length} 字 · 内容只传给本机 Codex 进程</span><button className="ai-run-button" disabled={busy || content.trim().length < 10} onClick={() => void analyze()}>{busy ? <CircleNotch className="spin" size={18} /> : <MagicWand size={18} weight="fill" />}开始真实分析</button></div></Surface>
@@ -824,7 +1023,29 @@ export function AIWorkspacePage({ snapshot }: { snapshot: LedgerSnapshot }) {
           <Surface><SurfaceTitle eyebrow="03 / RETROSPECT" title="选择真实项目" /><select value={review?.project.id || ""} onChange={(event) => { setReviewProject(event.target.value); setReviewInsight(null); }}>{snapshot.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>{review ? <div className="review-project-preview"><Briefcase size={31} weight="duotone" /><span><b>{review.project.name}</b><small>{review.project.type} · 当前进度 {review.project.progress}%</small></span><em>{money.format(review.project.totalAmount)}</em></div> : <div className="review-project-preview"><Briefcase size={31} weight="duotone" /><span><b>尚未导入项目</b><small>复盘不会使用演示数据</small></span></div>}<button className="ai-run-button wide" disabled={busy || !review} onClick={generateReview}>{busy ? <CircleNotch className="spin" size={18} /> : <MagicWand size={18} weight="fill" />}读取真实经营数据并复盘</button></Surface>
           {review && reviewInsight ? <div className="review-results"><Surface><small>实际收益</small><strong>{money.format(review.profit)}</strong><p>已收 {money.format(review.income)} - 成本 {money.format(review.expenses)}</p></Surface><Surface><small>时间成本</small><strong>{review.actualHours} 小时</strong><p>小时收益 {money.format(review.hourlyIncome)}</p></Surface><Surface><small>回款状态</small><strong>{review.paymentProgress.toFixed(0)}%</strong><p>仍有 {money.format(review.outstanding)} 待收</p></Surface><Surface className="pricing-advice"><Sparkle size={25} weight="fill" /><span><small>Codex 定价建议</small><h3>{reviewInsight.pricing_advice}</h3><p>{reviewInsight.summary}</p><ul>{reviewInsight.improvements.map((item) => <li key={item}>{item}</li>)}</ul></span></Surface></div> : <Surface className="quote-empty"><ChartLineUp size={55} weight="duotone" /><h3>等待生成经营复盘</h3><p>Codex 会读取所选项目的真实收入、关联支出、任务工时与回款进度。</p></Surface>}
         </section>}
-      </main>
+      </main>}
     </section>
+
+    {evidenceOpen && <>
+      <button type="button" className="xunying-drawer-backdrop" aria-label="关闭判断证据" onClick={closeEvidence} tabIndex={-1} />
+      <aside ref={evidenceDrawerRef} id="xunying-evidence-drawer" className="xunying-evidence-drawer" role="dialog" aria-modal="true" aria-labelledby="xunying-evidence-title" tabIndex={-1}>
+        <header><div><span>本次关键判断</span><h2 id="xunying-evidence-title">判断证据</h2></div><button type="button" aria-label="关闭判断证据" onClick={closeEvidence}><X size={21} /></button></header>
+        <div className="xunying-drawer-body">
+          <p className="xunying-drawer-judgment">{decision.headline}</p>
+          <section><h3><FileText size={19} weight="duotone" />事实来源</h3><div className="xunying-drawer-facts">{decision.facts.map((fact) => <article key={fact.id}><i className={fact.complete ? "is-ready" : "is-missing"}><CheckCircle size={16} weight={fact.complete ? "fill" : "regular"} /></i><span><b>{fact.label}</b><strong>{fact.value}</strong><small>{fact.detail}</small></span><em>{fact.complete ? "已记录" : "待补齐"}</em></article>)}</div><p className="xunying-source-note"><ShieldCheck size={16} weight="fill" />仅使用当前经营台已授权数据</p></section>
+          <section><h3><BookOpenText size={19} weight="duotone" />知识引用</h3><div className="xunying-drawer-empty"><b>暂无匹配知识引用</b><p>知识中心尚未提供可追溯条目，本次不会自动补写经验。</p></div></section>
+          <section><h3><ShieldCheck size={19} weight="duotone" />推断边界</h3><p>事实、推断与建议分开呈现。小策不会把缺失信息当作事实。</p></section>
+          <section className={`xunying-challenge-section ${challengeOpen ? "is-open" : ""}`}><h3><WarningCircle size={19} weight="duotone" />反方意见与失败条件</h3><p>{decision.counterargument}</p><div hidden={!challengeOpen}><b>挑战当前判断时，请先核对：</b><ul><li>是否有尚未录入的成交、回款或支出？</li><li>实际工时和交付证据是否已经回填？</li><li>是否存在能推翻当前结论的新样本？</li></ul><small>{decision.failureCondition}</small></div></section>
+        </div>
+        <footer><button type="button" className="xunying-drawer-primary" onClick={() => { closeEvidence(); onNavigate(decision.nextEvidencePage); }}><NotePencil size={18} />记录可验证证据</button><button type="button" className="xunying-drawer-secondary" aria-expanded={challengeOpen} onClick={() => setChallengeOpen((value) => !value)}><ShieldCheck size={18} />{challengeOpen ? "收起挑战清单" : "挑战当前判断"}</button></footer>
+      </aside>
+    </>}
+
+    <nav className="xunying-mobile-nav" aria-label="小策移动导航">
+      <button type="button" className="active" onClick={() => onNavigate("AI经营助手")}><House size={22} weight="fill" /><span>首页</span></button>
+      <button type="button" onClick={() => onNavigate("客户消息")}><ChatCircleDots size={22} /><span>消息</span></button>
+      <button type="button" onClick={() => onNavigate("项目管理")}><Briefcase size={22} /><span>项目</span></button>
+      <button type="button" onClick={() => onNavigate("设置中心")}><UserCircle size={22} /><span>我的</span></button>
+    </nav>
   </div>;
 }

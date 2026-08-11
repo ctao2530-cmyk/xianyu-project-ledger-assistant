@@ -2660,3 +2660,172 @@ a {
   .product-strip-title, .product-strategy-strip .product-strip-advice, .product-strategy-strip > button { grid-column: 1 / -1; }
   .product-strategy-strip > button { grid-row: auto; justify-self: stretch; justify-content: center; }
 }
+
+/* 循营品牌外壳 */
+.xunying-brand {
+  min-height: 60px;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.xunying-brand img {
+  width: 54px;
+  height: 54px;
+  filter: none;
+}
+
+.xunying-brand strong {
+  margin-bottom: 4px;
+  color: #1f2945;
+  font-size: 22px;
+  letter-spacing: -.6px;
+}
+
+.xunying-brand span {
+  color: #68738c;
+  font-size: 11px;
+  letter-spacing: .2px;
+}
+
+.xiaoce-sidebar-card {
+  min-height: 154px;
+  border-color: #e3dfff;
+  background: #faf9ff;
+  box-shadow: 0 10px 28px rgba(74, 58, 150, .06);
+}
+
+.xiaoce-sidebar-card > div:first-child {
+  position: relative;
+  z-index: 2;
+  max-width: 150px;
+}
+
+.xiaoce-sidebar-card small {
+  display: block;
+  max-width: 145px;
+  margin-bottom: 8px;
+  color: #7b68d7;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.xiaoce-sidebar-card strong {
+  color: #313c59;
+  font-size: 13px;
+}
+
+.xiaoce-sidebar-card .sidebar-promo-artwork {
+  right: -14px;
+  bottom: -12px;
+  width: 118px;
+  height: 118px;
+  opacity: .9;
+}
+
+.xiaoce-sidebar-card .sidebar-promo-artwork::before {
+  display: none;
+}
+
+.xiaoce-sidebar-card .sidebar-promo-artwork img {
+  filter: none;
+}
+
+.xiaoce-sidebar-card:hover .sidebar-promo-artwork img {
+  filter: none;
+}
+
+.top-header-partner .greeting h1 {
+  font-size: clamp(22px, 1.75vw, 28px);
+  letter-spacing: -.55px;
+}
+
+.top-header-partner .greeting p {
+  color: #747f97;
+}
+
+.header-planet.header-partner-avatar {
+  width: 82px;
+  height: 72px;
+  margin-right: auto;
+  filter: none;
+}
+
+.partner-brand-menu img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+
+.partner-brand-menu span {
+  color: #25304d;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+@media (max-width: 1100px) {
+  .partner-brand-menu {
+    width: auto;
+    min-width: 78px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 5px;
+    padding: 3px 8px 3px 4px;
+  }
+}
+
+@media (max-width: 820px) {
+  .top-header-partner {
+    gap: 9px;
+  }
+
+  .top-header-partner .greeting h1 {
+    font-size: 20px;
+  }
+
+  .top-header-partner .search-box {
+    display: none;
+  }
+
+  .top-header-partner + .page-route-view {
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .top-header-partner .round-button {
+    display: none;
+  }
+
+  .top-header-partner .greeting {
+    text-align: center;
+  }
+
+  .top-header-partner .greeting h1 {
+    overflow: hidden;
+    font-size: 17px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .partner-brand-menu {
+    min-width: 68px;
+    border: 0;
+    padding-inline: 0;
+    background: transparent;
+  }
+
+  .partner-brand-menu img {
+    width: 30px;
+    height: 30px;
+  }
+
+  .partner-brand-menu span {
+    font-size: 14px;
+  }
+
+  .floating-add.is-hidden-on-partner {
+    display: none;
+  }
+}

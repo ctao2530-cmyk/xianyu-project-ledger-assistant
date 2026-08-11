@@ -76,7 +76,6 @@
 - 最终 8991 仅保留一个真实服务，闲鱼监听状态为 connected；全新标签页从分类切换、整卡进入详情、刷新直达、返回列表到控制台检查全部通过，最终标签停留在交付地址。
 
 final result: passed
-
 ---
 
 # 2026-08-10 项目追加订单 Design QA
@@ -1165,5 +1164,89 @@ final result: passed
 - [x] Keyboard, drag, history, invalid route, responsive, reduced-motion contract, and console checks completed.
 - [x] P2 narrow-screen page jump fixed and re-captured.
 - [x] No actionable P0/P1/P2 finding remains.
+
+final result: passed
+
+---
+
+# 循营 · 小策证据工作台 Design QA
+
+## Comparison target
+
+- Source visual truth, desktop default: `/Users/chentao/.codex/generated_images/019feaab-cbe5-7c53-8ea3-e240d651b48b/exec-64f793e9-1187-4444-b2b4-0846261b5538.png` (`1487 × 1058`).
+- Source visual truth, mobile default: `/Users/chentao/.codex/generated_images/019feaab-cbe5-7c53-8ea3-e240d651b48b/exec-34dfa809-bdb6-412c-b447-be9f932ad8e1.png` (`853 × 1844`).
+- Source visual truth, desktop evidence drawer: `/Users/chentao/.codex/generated_images/019feaab-cbe5-7c53-8ea3-e240d651b48b/exec-fd59fbf2-4356-4db1-9649-7a808923a5ad.png` (`1487 × 1058`).
+- Implementation URL and state: `http://127.0.0.1:8877/#AI经营助手`, light theme, real local ledger snapshot, workflow panel collapsed by default.
+- Browser-rendered implementation, desktop default: `/Users/chentao/.codex/worktrees/c376/New project 3/artifacts/ui-qa/xunying-desktop-1440x1024.png` (`1440 × 1024`).
+- Browser-rendered implementation, desktop drawer with challenge checklist open: `/Users/chentao/.codex/worktrees/c376/New project 3/artifacts/ui-qa/xunying-desktop-drawer-1440x1024.png` (`1440 × 1024`).
+- Browser-rendered implementation, narrow default: `/Users/chentao/.codex/worktrees/c376/New project 3/artifacts/ui-qa/xunying-mobile-480x844.png` (`450 × 844` visible page crop from a `480 × 844` CSS viewport).
+
+## Viewport and density normalization
+
+- Desktop: the in-app browser viewport override was set to `720 × 512`; the page reported `1440 × 1024` CSS px with `devicePixelRatio = 0.5`. The browser capture backend returned a repeated `2880 × 2048` image, so the verified top-left `1440 × 1024` frame was extracted without rescaling.
+- Mobile: the browser clamps its override to a minimum physical width of `240`, which produced a `480 × 844` CSS viewport with `devicePixelRatio = 0.5`. The capture backend returned `900 × 1688`; the verified top-left `450 × 844` visible-page frame was extracted without rescaling. This viewport activates the same `(max-width: 480px)` rules used at the requested `390px` width.
+- Desktop references were proportionally contained in a `1440 × 1024` comparison frame. The mobile reference was resized to the implementation width and cropped to the same first-viewport height.
+
+## Full-view comparison evidence
+
+- Desktop default, source on the left and implementation on the right: `/Users/chentao/.codex/worktrees/c376/New project 3/artifacts/ui-qa/comparison-desktop-default.png`.
+- Desktop drawer, source on the left and implementation on the right: `/Users/chentao/.codex/worktrees/c376/New project 3/artifacts/ui-qa/comparison-desktop-drawer.png`.
+- Mobile first viewport, source on the left and implementation on the right: `/Users/chentao/.codex/worktrees/c376/New project 3/artifacts/ui-qa/comparison-mobile-default.png`.
+- Focused-region comparison was not needed: the source and implementation were opened at original pixel detail, and the judgment typography, fact rows, brand raster assets, drawer sections, icons and action labels are all legible in the full-resolution comparison inputs.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the implementation keeps the source's compact Chinese sans-serif hierarchy, dark navy judgment headline, purple eyebrow labels and lighter explanatory copy. Dynamic evidence rows are intentionally denser than the empty-state mock but remain legible and do not truncate the primary judgment.
+- Spacing and layout rhythm: the three-column desktop evidence composition, audit strip, single-action band and three workflow entries match the selected hierarchy. Desktop and narrow layouts have no horizontal overflow. The narrow layout preserves the judgment-first order and a fixed bottom navigation.
+- Colors and visual tokens: white-purple surfaces, violet primary actions, blue evidence, green knowledge and amber counterargument accents remain consistent with the source. Contrast and focus outlines remain visible.
+- Image quality and asset fidelity: the orbit mark and Xiaoce avatar are project-owned transparent RGBA raster assets, rendered with `object-fit: contain`; no placeholder, emoji, CSS illustration or handcrafted SVG substitutes are used. Phosphor supplies the standard UI icons.
+- Copy and content: sample numbers from the visual mock were not copied. The implementation shows the authoritative local snapshot: 2 projects, 1 confirmed receipt, 4 expenses, 4 actual hours, and no delivery log or attachment evidence. The missing knowledge state is explicit rather than fabricated.
+- Existing-shell constraints: the shared header, existing navigation order and live-data detail are retained for product compatibility. The evidence drawer is deliberately wider than the concept image so four real evidence categories and their provenance remain readable without truncation.
+
+## States, interactions and accessibility checked
+
+- Default workflow content is absent; each of 需求分析、规则报价 and 项目复盘 expands only after its entry is clicked and remains connected to its real local service.
+- Evidence drawer: open, outside-click close, Escape close, body scroll lock, Tab focus containment, focus return, and challenge checklist expanded/collapsed state all passed.
+- Desktop fixed-layer geometry after the final fix: backdrop `1440 × 1024`, drawer `480 × 1024` at `x = 960`, and `rightGap = 0`.
+- Narrow fixed navigation after the final fix: `y = 772`, height `72`, `bottomGap = 0` in an `844px`-high viewport. Four navigation targets are `111 × 57`; primary and secondary actions are `48px` high.
+- Project regression: one semantic click on the real project card navigated directly to `#项目管理/p-1786013284727/immersive`. The rail next arrow selected task 2; clicking task 1 returned it to the exact rail center (`activeCenter = 807`, `orbitCenter = 807`, delta `0px`) and synchronized the inspector.
+- Browser console warnings and errors: none.
+
+## Comparison history
+
+### Pass 1 — P2: workflow input leaked into the evidence-first home
+
+- Earlier evidence: the requirements textarea rendered immediately under the three workflow entries, making the first screen read like a chat/input tool rather than a decision workbench.
+- Fix: added a default-collapsed `workflowExpanded` state; the selected workflow now renders only after an entry click, with `aria-expanded`, `aria-selected` and a named tab panel.
+- Post-fix evidence: desktop and mobile default captures contain only the three workflow entries; DOM verification returned `workflowPanelCount = 0` and `textareaVisible = false` before interaction.
+
+### Pass 2 — P1: fixed navigation and drawer were anchored to page content
+
+- Earlier evidence: the inherited `business-enter` transform remained on `.xunying-workbench`, creating a containing block for fixed descendants. At the narrow viewport the bottom navigation reported `y = 1867.64` instead of the viewport bottom.
+- Fix: replaced the transform-based entrance on this page with an opacity-only `xunying-workbench-enter` fade.
+- Post-fix evidence: `.xunying-workbench` reports `transform: none`; the mobile navigation is fixed at the viewport bottom, and the desktop backdrop/drawer cover and align to the viewport exactly.
+
+## Findings
+
+- No actionable P0, P1 or P2 findings remain.
+- Expected deviation: real evidence replaces the source mock's empty fact state, increasing mobile content height while preserving order, readability and scroll access.
+
+## Open questions
+
+- Residual P3 verification gap: the in-app browser enforces a `480px` minimum CSS width in this environment. The exact `390 × 844` capture should be repeated when that clamp is unavailable; the tested viewport already activates the same final `max-width: 480px` rule set and showed no overflow.
+
+## Implementation checklist
+
+- [x] Preserve real-data decision derivation and explicit knowledge boundary.
+- [x] Keep the three existing local-service workflows, collapsed by default.
+- [x] Verify drawer dismissal, focus handling and challenge state.
+- [x] Verify desktop, narrow layout, fixed navigation and no horizontal overflow.
+- [x] Verify the original project-card, rail-arrow and exact task-centering regressions.
+- [x] Verify console, TypeScript, interaction tests, production build, Sites output and backend suite.
+
+## Follow-up polish
+
+- P3: capture the same narrow state at an exact `390 × 844` CSS viewport when the browser override permits it.
+- P3: split the approximately `1.315 MB` main JavaScript chunk in a separate performance pass; it is not a visual or interaction blocker for this implementation.
 
 final result: passed
