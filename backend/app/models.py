@@ -49,6 +49,9 @@ class Conversation(Base):
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"
     )
+    requirement_attachments: Mapped[list[MessageAttachment]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
 
 
 class Message(Base):
@@ -81,6 +84,9 @@ class Message(Base):
     ai_tasks: Mapped[list[AIGenerationTask]] = relationship(
         back_populates="message", cascade="all, delete-orphan"
     )
+    requirement_attachments: Mapped[list[MessageAttachment]] = relationship(
+        back_populates="message"
+    )
 
     __table_args__ = (
         Index("idx_messages_conversation_received", "conversation_id", "received_at"),
@@ -89,6 +95,55 @@ class Message(Base):
             "channel",
             "platform_message_id",
             unique=True,
+        ),
+    )
+
+
+class MessageAttachment(Base):
+    """A locally reviewed image that can be included in a requirement handoff."""
+
+    __tablename__ = "message_attachments"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id"), index=True
+    )
+    message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("messages.id"), nullable=True, index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    attachment_type: Mapped[str] = mapped_column(String(32), default="image")
+    mime_type: Mapped[str] = mapped_column(String(128))
+    original_name: Mapped[str] = mapped_column(String(255))
+    storage_path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    file_size: Mapped[int] = mapped_column(Integer)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    privacy_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    conversation: Mapped[Conversation] = relationship(
+        back_populates="requirement_attachments"
+    )
+    message: Mapped[Message | None] = relationship(
+        back_populates="requirement_attachments"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "message_id",
+            "sha256",
+            name="uq_message_attachment_conversation_message_sha256",
+        ),
+        Index(
+            "idx_message_attachments_conversation_sort",
+            "conversation_id",
+            "sort_order",
         ),
     )
 

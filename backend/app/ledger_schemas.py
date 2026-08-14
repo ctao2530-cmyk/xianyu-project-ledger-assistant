@@ -169,6 +169,74 @@ class RequirementExportView(BaseModel):
     private_content_included: bool
 
 
+class RequirementAttachmentView(BaseModel):
+    id: str
+    conversation_id: int
+    message_id: int | None
+    message_number: int | None
+    source: Literal["manual", "edge"]
+    attachment_type: Literal["image"]
+    mime_type: str
+    original_name: str
+    sha256: str
+    file_size: int
+    width: int
+    height: int
+    sort_order: int
+    privacy_status: Literal["pending", "reviewed", "excluded"]
+    reviewed_at: datetime | None
+    created_at: datetime
+    content_url: str
+    duplicate: bool = False
+
+
+class RequirementImageCandidateView(BaseModel):
+    message_id: int
+    message_number: int
+    direction: str
+    time: datetime
+    label: str
+    captured: bool
+    attachment_ids: list[str]
+
+
+class RequirementExportPreviewView(BaseModel):
+    conversation_id: int
+    text_message_count: int
+    image_candidate_count: int
+    captured_image_count: int
+    missing_image_count: int
+    total_bytes: int
+    redaction_count: int
+    package_complete: bool
+    attachments: list[RequirementAttachmentView]
+    image_candidates: list[RequirementImageCandidateView]
+
+
+class RequirementAttachmentPrivacyRequest(BaseModel):
+    privacy_status: Literal["pending", "reviewed", "excluded"]
+
+
+class RequirementExportPackageRequest(BaseModel):
+    confirmed: Literal[True]
+    attachment_ids: list[str] = Field(default_factory=list, max_length=20)
+    allow_incomplete: bool = False
+
+
+class RequirementExportPackageView(BaseModel):
+    export_id: str
+    conversation_id: int
+    package_root: str
+    readme_path: str
+    manifest_path: str
+    image_paths: list[str]
+    codex_prompt: str
+    selected_image_count: int
+    missing_image_count: int
+    package_complete: bool
+    redaction_count: int
+
+
 class RequirementImportPreviewRequest(BaseModel):
     conversation_id: int
     customer_id: str

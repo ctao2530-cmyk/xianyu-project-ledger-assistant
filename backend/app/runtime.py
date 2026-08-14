@@ -29,6 +29,7 @@ from .services.processor import MessageProcessor
 from .services.product_intelligence import ProductIntelligenceService
 from .services.requirements import RequirementAnalysisService
 from .services.requirement_exchange import RequirementExchangeService
+from .services.requirement_materials import RequirementMaterialsService
 from .services.reply_strategy import ReplyStrategyService
 from .services.status import RuntimeStatus
 from .services.style_learning import StyleLearningService
@@ -61,6 +62,7 @@ class Runtime:
     automation: AutoReplyService
     requirements: RequirementAnalysisService
     requirement_exchange: RequirementExchangeService
+    requirement_materials: RequirementMaterialsService
     sales_agent: SalesAgent
     api_limiter: SlidingWindowRateLimiter
     send_limiter: SlidingWindowRateLimiter
@@ -191,6 +193,11 @@ def build_runtime(settings: Settings) -> Runtime:
         event_hub=event_hub,
     )
     requirement_exchange = RequirementExchangeService(database, ledger)
+    requirement_materials = RequirementMaterialsService(
+        database,
+        requirement_exchange,
+        settings.project_root,
+    )
     processor = MessageProcessor(
         database,
         adapter,
@@ -249,6 +256,7 @@ def build_runtime(settings: Settings) -> Runtime:
         automation=automation,
         requirements=requirements,
         requirement_exchange=requirement_exchange,
+        requirement_materials=requirement_materials,
         sales_agent=sales_agent,
         api_limiter=SlidingWindowRateLimiter(settings.api_rate_limit_per_minute),
         send_limiter=send_limiter,
