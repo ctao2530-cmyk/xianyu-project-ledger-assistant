@@ -228,6 +228,7 @@
   .requirement-package-result button { grid-column: 1 / -1; justify-content: center; min-height: 44px; }
   .requirement-package-backdrop { place-items: end stretch; padding: 0; }
   .requirement-package-dialog { width: auto; max-height: 92vh; overflow-y: auto; border-radius: 20px 20px 0 0; }
+  .requirement-package-dialog > header button { width: 44px; height: 44px; }
   .requirement-package-facts { grid-template-columns: 1fr; }
   .requirement-package-dialog > footer { grid-template-columns: 1fr; }
   .requirement-package-dialog > footer button { min-height: 44px; }

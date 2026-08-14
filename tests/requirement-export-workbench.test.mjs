@@ -59,6 +59,7 @@ test("confirmed workbench layout keeps source hierarchy and practical narrow-scr
   assert.match(styles, /\.requirement-package-primary \{[\s\S]*linear-gradient/);
   assert.match(styles, /@media \(max-width: 720px\)[\s\S]*\.requirement-material-grid \{ grid-template-columns: 1fr/);
   assert.match(styles, /@media \(max-width: 480px\)[\s\S]*\.requirement-image-select,[\s\S]*min-width: 44px/);
+  assert.match(styles, /\.requirement-package-dialog > header button \{ width: 44px; height: 44px; \}/);
   assert.match(styles, /\.requirement-package-backdrop/);
   assert.match(styles, /\.requirement-image-card img \{[\s\S]*object-fit: contain/);
   assert.match(styles, /button:focus-visible/);
