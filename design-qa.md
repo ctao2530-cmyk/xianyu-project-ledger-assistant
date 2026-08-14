@@ -1367,3 +1367,65 @@ final result: passed
 功能、事务数据修正、自动化回归、构建和常驻服务均已通过。正式视觉 QA 仍缺少可在同一受控环境打开的源预览图，以及隐私安全的精确 `360px` 实现截图；按 Product Design 验收规则，本补充项不能标记为视觉通过。
 
 `final result: blocked`
+
+---
+
+# Design QA — 需求材料导出工作台
+
+## Comparison target
+
+- Source visual truth: `/Users/chentao/.codex/generated_images/019feaab-cbe5-7c53-8ea3-e240d651b48b/exec-bb909f85-c4af-4911-bf67-5b5c7f7b1d22.png`
+- Current-page safe reference: `/Users/chentao/.codex/visualizations/2026/08/10/019feaab-cbe5-7c53-8ea3-e240d651b48b/requirement-export-current-safe-reference.png`
+- Source pixels: `1132 × 1389`; safe reference pixels: `560 × 360`.
+- Intended implementation state: customer-message detail → “需求分析” → default export workbench, with three reviewed thumbnails, one missing-image slot, and no customer-identifying content.
+- Implementation screenshot: unavailable.
+- CSS viewport and density normalization: not established because the implementation could not be rendered in the selected browser.
+
+## Evidence captured
+
+- The source visual and current safe reference were both opened and visually inspected before implementation.
+- The production frontend bundle was generated successfully from the current worktree.
+- TypeScript typecheck, backend tests, interaction-contract tests, Sites packaging tests, and `git diff --check` passed.
+- The only maintained local origin is `http://127.0.0.1:8877`, and it remains served by `/Users/chentao/Documents/New project 3`, not this worktree.
+- The in-app browser rejected direct navigation to the worktree's local build file under its URL security policy. No alternate browser, second backend, new port, source-tree replacement, service switch, merge, or LaunchAgent change was attempted.
+
+## Full-view comparison
+
+Blocked. There is no browser-rendered implementation screenshot at the source state and viewport, so composition, density, spacing, typography, colors, imagery, copy, and responsive hierarchy cannot be truthfully compared side by side.
+
+## Focused-region comparison
+
+Blocked for the same reason. The workbench thumbnails, summary column, privacy states, primary export action, legacy actions, and confirmation dialog could not be captured from the running implementation.
+
+## Findings
+
+- [P0] Runtime implementation is not reachable for visual acceptance.
+  - Location: local `8877` preview boundary.
+  - Evidence: the persistent service serves the original local project while the implementation exists only in `codex/requirement-image-handoff`; direct local-file preview is blocked by browser policy.
+  - Impact: browser layout, responsive behavior, focus/hover states, console output, file chooser, privacy confirmation, incomplete-package confirmation, and final material export cannot be accepted from visible evidence.
+  - Fix: after explicit authorization, integrate the worktree into the maintained local project or switch the sole `8877` service to this branch, then capture desktop and narrow-screen states and rerun this QA gate.
+
+## Required fidelity surfaces
+
+- Fonts and typography: blocked pending browser capture.
+- Spacing and layout rhythm: blocked pending browser capture.
+- Colors and visual tokens: blocked pending browser capture.
+- Image quality and asset fidelity: blocked pending real local thumbnails and browser capture.
+- Copy and content: static copy is covered by interaction tests, but visible wrapping and hierarchy remain blocked.
+- Icons and states: Phosphor icons and semantic controls are present in code; visible alignment, hover, focus, loading, error and success states remain blocked.
+- Responsive and accessibility behavior: CSS includes desktop, tablet, narrow-screen and reduced-motion rules; browser verification remains blocked.
+
+## Interaction checks still required
+
+1. Add one PNG/JPEG/WebP image through the missing-image slot and through “补充参考图片”.
+2. Confirm and revoke per-image privacy review; verify unreviewed images block export.
+3. Remove one local attachment and confirm the original conversation is unchanged.
+4. Open export preview, confirm the incomplete-package gate, generate the package, and copy the Codex handoff prompt.
+5. Verify legacy Markdown download and plain-text copy.
+6. Check console errors and repeat at a narrow viewport with practical 44 px touch targets.
+
+## Comparison history
+
+- Pass 1: source artifacts opened; implementation capture blocked before a same-state comparison could begin. No visual fixes were claimed from code inspection alone.
+
+final result: blocked

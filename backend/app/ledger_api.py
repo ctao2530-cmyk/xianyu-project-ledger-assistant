@@ -6,7 +6,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 
 from .ai.base import AIModelSelection, AIProviderError
@@ -44,6 +45,11 @@ from .ledger_schemas import (
     RequirementCaseSummaryView,
     RequirementCaseTransferRequest,
     RequirementCaseTransferResult,
+    RequirementAttachmentPrivacyRequest,
+    RequirementAttachmentView,
+    RequirementExportPackageRequest,
+    RequirementExportPackageView,
+    RequirementExportPreviewView,
     RequirementExportView,
     RequirementImportCommitRequest,
     RequirementImportCommitResult,
@@ -128,7 +134,14 @@ def lead_analysis_view(run: LeadAnalysisRun) -> LeadAnalysisView:
 
 
 def _raise_exchange_error(exc: RequirementExchangeError) -> None:
-    if exc.code in {"conversation_not_found", "customer_not_found", "case_not_found", "source_missing"}:
+    if exc.code in {
+        "conversation_not_found",
+        "customer_not_found",
+        "case_not_found",
+        "source_missing",
+        "message_not_found",
+        "attachment_not_found",
+    }:
         code = status.HTTP_404_NOT_FOUND
     elif exc.code in {
         "version_conflict",
@@ -137,8 +150,18 @@ def _raise_exchange_error(exc: RequirementExchangeError) -> None:
         "customer_relationship_conflict",
         "case_item_mismatch",
         "item_changed",
+        "privacy_review_required",
+        "incomplete_package",
     }:
         code = status.HTTP_409_CONFLICT
+    elif exc.code in {
+        "attachment_too_large",
+        "attachment_total_too_large",
+        "attachment_limit_reached",
+    }:
+        code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+    elif exc.code in {"attachment_storage_failed", "package_write_failed"}:
+        code = status.HTTP_500_INTERNAL_SERVER_ERROR
     else:
         code = status.HTTP_422_UNPROCESSABLE_ENTITY
     raise HTTPException(status_code=code, detail=str(exc)) from None
@@ -493,6 +516,136 @@ async def export_requirement_package(
     except RequirementExchangeError as exc:
         _raise_exchange_error(exc)
     return RequirementExportView(**result)
+
+
+@ledger_router.get(
+    "/conversations/{conversation_id}/requirement-export-preview",
+    response_model=RequirementExportPreviewView,
+)
+def preview_requirement_export(
+    conversation_id: int,
+    request: Request,
+) -> RequirementExportPreviewView:
+    try:
+        result = runtime_from(request).requirement_materials.preview(conversation_id)
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    return RequirementExportPreviewView(**result)
+
+
+@ledger_router.post(
+    "/conversations/{conversation_id}/requirement-attachments",
+    response_model=RequirementAttachmentView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_requirement_attachment(
+    conversation_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    message_id: int | None = Form(default=None),
+    source: str = Form(default="manual"),
+) -> RequirementAttachmentView:
+    service = runtime_from(request).requirement_materials
+    try:
+        payload = await file.read(service.MAX_IMAGE_BYTES + 1)
+        result = service.add_attachment(
+            conversation_id,
+            data=payload,
+            content_type=file.content_type or "",
+            original_name=file.filename or "image",
+            message_id=message_id,
+            source=source,
+        )
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    finally:
+        await file.close()
+    return RequirementAttachmentView(**result)
+
+
+@ledger_router.patch(
+    "/conversations/{conversation_id}/requirement-attachments/{attachment_id}",
+    response_model=RequirementAttachmentView,
+)
+def update_requirement_attachment_privacy(
+    conversation_id: int,
+    attachment_id: str,
+    payload: RequirementAttachmentPrivacyRequest,
+    request: Request,
+) -> RequirementAttachmentView:
+    try:
+        result = runtime_from(request).requirement_materials.update_privacy(
+            conversation_id,
+            attachment_id,
+            payload.privacy_status,
+        )
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    return RequirementAttachmentView(**result)
+
+
+@ledger_router.delete(
+    "/conversations/{conversation_id}/requirement-attachments/{attachment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_requirement_attachment(
+    conversation_id: int,
+    attachment_id: str,
+    request: Request,
+) -> Response:
+    try:
+        runtime_from(request).requirement_materials.delete_attachment(
+            conversation_id,
+            attachment_id,
+        )
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@ledger_router.get(
+    "/conversations/{conversation_id}/requirement-attachments/{attachment_id}/content",
+)
+def requirement_attachment_content(
+    conversation_id: int,
+    attachment_id: str,
+    request: Request,
+) -> FileResponse:
+    try:
+        path, mime_type, _original_name = runtime_from(request).requirement_materials.attachment_file(
+            conversation_id,
+            attachment_id,
+        )
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    return FileResponse(
+        path,
+        media_type=mime_type,
+        headers={
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@ledger_router.post(
+    "/conversations/{conversation_id}/requirement-export-package",
+    response_model=RequirementExportPackageView,
+)
+def create_requirement_export_package(
+    conversation_id: int,
+    payload: RequirementExportPackageRequest,
+    request: Request,
+) -> RequirementExportPackageView:
+    try:
+        result = runtime_from(request).requirement_materials.create_package(
+            conversation_id,
+            attachment_ids=payload.attachment_ids,
+            allow_incomplete=payload.allow_incomplete,
+        )
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    return RequirementExportPackageView(**result)
 
 
 @ledger_router.post(

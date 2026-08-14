@@ -92,6 +92,10 @@
   overflow: hidden;
 }
 
+.messages-workbench.requirements-open {
+  grid-template-columns: minmax(210px, .62fr) minmax(330px, .88fr) minmax(500px, 1.45fr);
+}
+
 .conversation-list,
 .message-thread,
 .reply-inspector {
@@ -228,6 +232,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .requirement-title small { color: #77798a; }
 .requirements-panel pre { max-height: 420px; overflow: auto; white-space: pre-wrap; font: inherit; font-size: 12px; line-height: 1.65; color: #555766; background: white; border: 1px solid #e8e8f0; border-radius: 12px; padding: 12px; }
 .requirement-import-steps { display: grid; gap: 7px; margin: 0 0 10px; padding: 0; list-style: none; }
+.requirements-open .requirement-import-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .requirement-import-steps li { display: flex; align-items: center; gap: 8px; padding: 8px 9px; border: 1px solid #eceaf2; border-radius: 10px; background: #fff; }
 .requirement-import-steps li>i { display: grid; place-items: center; width: 23px; height: 23px; flex: none; border-radius: 7px; background: #f0eef5; color: #8a8495; font-style: normal; font-size: 9px; font-weight: 900; }
 .requirement-import-steps li.active>i,.requirement-import-steps li.done>i { background: #6850ee; color: #fff; }.requirement-import-steps li.done { background: #f9f8ff; }
@@ -296,7 +301,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 @keyframes sales-history-enter { from { opacity: 0; transform: translateY(-3px); } }
 
 @media (max-width: 1180px) {
-  .messages-workbench { max-height: none; grid-template-columns: 260px minmax(0, 1fr); }
+  .messages-workbench,
+  .messages-workbench.requirements-open { max-height: none; grid-template-columns: 260px minmax(0, 1fr); }
   .reply-inspector { grid-column: 1 / -1; border-left: 0; border-top: 1px solid #ececf4; min-height: 470px; }
 }
 
@@ -318,7 +324,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .thread-messages article > div { max-width: 90%; }
   .reply-panel, .requirements-panel, .conversion-panel { padding: 13px; }
   .sales-strategy-block { grid-template-columns: 1fr; }
-  .requirement-export-actions, .requirement-target-fields { grid-template-columns: 1fr; }.requirement-binding-card{grid-template-columns:1fr}.requirement-binding-card>svg{transform:rotate(90deg);justify-self:center}.requirement-target-fields .case-title-field{grid-column:auto}.reply-provider-switch{grid-template-columns:1fr}
+  .requirements-open .requirement-import-steps, .requirement-export-actions, .requirement-target-fields { grid-template-columns: 1fr; }.requirement-binding-card{grid-template-columns:1fr}.requirement-binding-card>svg{transform:rotate(90deg);justify-self:center}.requirement-target-fields .case-title-field{grid-column:auto}.reply-provider-switch{grid-template-columns:1fr}
 }
 
 @media (prefers-reduced-motion: reduce) {

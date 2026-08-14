@@ -39,6 +39,7 @@ import {
   type SalesMemory,
 } from "../data/localPlatformService";
 import type { Customer } from "../types";
+import { RequirementExportWorkbench } from "../components/RequirementExportWorkbench";
 import "./customer-messages.css";
 
 
@@ -385,46 +386,6 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
     }
   };
 
-  const loadRequirementExport = async () => {
-    if (!detail) return null;
-    const bundle = await localPlatformService.requirementExport(detail.id);
-    setExportBundle(bundle);
-    return bundle;
-  };
-
-  const copyRequirementAnalysisDocument = async () => {
-    setWorking("export");
-    try {
-      const bundle = exportBundle || await loadRequirementExport();
-      if (!bundle) return;
-      await navigator.clipboard.writeText(bundle.analysis_document);
-      showNotice(`需求分析材料已复制，包含固定提示词并隐藏 ${bundle.redaction_count} 处隐私信息`);
-    } catch (error) {
-      showNotice(error instanceof Error ? error.message : "需求分析材料复制失败");
-    } finally {
-      setWorking("");
-    }
-  };
-
-  const downloadRequirementAnalysisDocument = async () => {
-    setWorking("download");
-    try {
-      const bundle = exportBundle || await loadRequirementExport();
-      if (!bundle) return;
-      const file = new Blob([`\ufeff${bundle.analysis_document}`], { type: "text/markdown;charset=utf-8" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(file);
-      link.download = bundle.filename;
-      link.click();
-      URL.revokeObjectURL(link.href);
-      showNotice("需求分析文档已下载，可直接上传给 GPT");
-    } catch (error) {
-      showNotice(error instanceof Error ? error.message : "需求分析文档下载失败");
-    } finally {
-      setWorking("");
-    }
-  };
-
   const loadRequirementJsonFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -533,7 +494,7 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
 
   return <div className="customer-messages-page">
     <MessagesToolbar filter={filter} onFilter={setFilter} status={status} providers={providers} onRefresh={() => void refreshCurrent()} />
-    <section className="messages-workbench">
+    <section className={`messages-workbench ${tab === "requirements" ? "requirements-open" : ""}`}>
       <aside className="conversation-list" aria-label="客户会话列表">
         <header><span>会话</span><b>{conversations.length}</b></header>
         {conversations.map((conversation) => <button
@@ -623,9 +584,8 @@ export function CustomerMessagesPage({ customers, onProjectCreated, onOpenRequir
         {tab === "requirements" && detail && <section className="requirements-panel" id="conversation-export-panel">
           <header><span><FileText size={18} weight="duotone" />手动 GPT 需求分析</span><small>不会自动调用 GPT</small></header>
           <div className="requirement-usage-note"><ShieldCheck size={18} weight="fill" /><div><strong>客户需求基本明确后再使用</strong><p>只有点击下方导出按钮时才生成材料；系统不会自动分析、自动创建需求或自动发送消息。</p></div></div>
-          <ol className="requirement-import-steps"><li className={exportBundle ? "done" : "active"}><i>1</i><span><b>导出需求分析文档</b><small>包含脱敏对话、固定提示词和输出结构</small></span></li><li className={jsonInput.trim() ? "done" : ""}><i>2</i><span><b>上传文档给 GPT</b><small>让 GPT 按文档要求只返回 JSON</small></span></li><li className={importPreview ? "active" : ""}><i>3</i><span><b>导入客户需求</b><small>校验预览并由你确认保存</small></span></li></ol>
-          <div className="requirement-export-actions"><button className="primary" disabled={Boolean(working)} onClick={() => void downloadRequirementAnalysisDocument()}><DownloadSimple size={15} />下载分析文档 .md</button><button disabled={Boolean(working)} onClick={() => void copyRequirementAnalysisDocument()}><Copy size={15} />复制完整分析材料</button></div>
-          {exportBundle && <p className="redaction-note"><ShieldCheck size={15} weight="fill" />已隐藏 {exportBundle.redaction_count} 处手机号、邮箱或微信号；Cookie、消息 ID 与内部日志不会导出。</p>}
+          <ol className="requirement-import-steps"><li className={exportBundle ? "done" : "active"}><i>1</i><span><b>汇总完整材料</b><small>整理脱敏文字、参考图片与缺失状态</small></span></li><li className={jsonInput.trim() ? "done" : ""}><i>2</i><span><b>交给 GPT / Codex 分析</b><small>让模型按材料要求只返回 JSON</small></span></li><li className={importPreview ? "active" : ""}><i>3</i><span><b>导入客户需求</b><small>校验预览并由你确认保存</small></span></li></ol>
+          <RequirementExportWorkbench conversationId={detail.id} disabled={Boolean(working)} legacyBundle={exportBundle} onLegacyBundle={setExportBundle} onNotice={showNotice} />
           <p className="gpt-upload-instruction"><Sparkle size={15} />上传文档后对 GPT 发送：<b>请严格按照附件中的固定提示词完成需求分析，只返回 JSON。</b></p>
           <div className="requirement-section-title"><span>导入 GPT 分析结果</span><small>支持选择 JSON 文件或直接粘贴</small></div>
           <div className={`requirement-binding-card ${detail.linked_customer_id ? "is-linked" : "is-pending"}`}>

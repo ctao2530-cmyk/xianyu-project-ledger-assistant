@@ -217,6 +217,64 @@ export interface RequirementExport {
   private_content_included: boolean;
 }
 
+export interface RequirementAttachment {
+  id: string;
+  conversation_id: number;
+  message_id: number | null;
+  message_number: number | null;
+  source: "manual" | "edge";
+  attachment_type: "image";
+  mime_type: string;
+  original_name: string;
+  sha256: string;
+  file_size: number;
+  width: number;
+  height: number;
+  sort_order: number;
+  privacy_status: "pending" | "reviewed" | "excluded";
+  reviewed_at: string | null;
+  created_at: string;
+  content_url: string;
+  duplicate: boolean;
+}
+
+export interface RequirementImageCandidate {
+  message_id: number;
+  message_number: number;
+  direction: string;
+  time: string;
+  label: string;
+  captured: boolean;
+  attachment_ids: string[];
+}
+
+export interface RequirementExportPreview {
+  conversation_id: number;
+  text_message_count: number;
+  image_candidate_count: number;
+  captured_image_count: number;
+  missing_image_count: number;
+  total_bytes: number;
+  redaction_count: number;
+  package_complete: boolean;
+  attachments: RequirementAttachment[];
+  image_candidates: RequirementImageCandidate[];
+}
+
+export interface RequirementExportPackage {
+  export_id: string;
+  conversation_id: number;
+  package_root: string;
+  readme_path: string;
+  manifest_path: string;
+  image_paths: string[];
+  codex_prompt: string;
+  selected_image_count: number;
+  missing_image_count: number;
+  package_complete: boolean;
+  redaction_count: number;
+}
+
 export interface RequirementImportPreview {
   token: string;
   expires_at: string;
@@ -828,12 +886,13 @@ export interface OperationsSummary {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(path, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
+    headers,
   });
   const body = await response.json().catch(() => null) as { detail?: string | { message?: string } } | null;
   if (!response.ok) {
@@ -863,6 +922,17 @@ export const localPlatformService = {
   analyzeSales: (conversationId: number, refresh = false, provider?: DraftProvider) => api<SalesAnalysis>(`/api/conversations/${conversationId}/sales/analyze?refresh=${refresh ? "true" : "false"}${provider ? `&provider=${encodeURIComponent(provider)}` : ""}`, { method: "POST" }),
   confirmSales: (conversationId: number, analysisRunId: string) => api<SalesConfirmation>(`/api/conversations/${conversationId}/sales/confirm`, { method: "POST", body: JSON.stringify({ confirmed: true, analysis_run_id: analysisRunId }) }),
   requirementExport: (conversationId: number) => api<RequirementExport>(`/api/conversations/${conversationId}/requirement-export`),
+  requirementExportPreview: (conversationId: number) => api<RequirementExportPreview>(`/api/conversations/${conversationId}/requirement-export-preview`),
+  uploadRequirementAttachment: (conversationId: number, file: File, messageId?: number | null) => {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("source", "manual");
+    if (messageId) body.append("message_id", String(messageId));
+    return api<RequirementAttachment>(`/api/conversations/${conversationId}/requirement-attachments`, { method: "POST", body });
+  },
+  updateRequirementAttachmentPrivacy: (conversationId: number, attachmentId: string, privacyStatus: "pending" | "reviewed" | "excluded") => api<RequirementAttachment>(`/api/conversations/${conversationId}/requirement-attachments/${encodeURIComponent(attachmentId)}`, { method: "PATCH", body: JSON.stringify({ privacy_status: privacyStatus }) }),
+  deleteRequirementAttachment: (conversationId: number, attachmentId: string) => api<void>(`/api/conversations/${conversationId}/requirement-attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" }),
+  createRequirementExportPackage: (conversationId: number, attachmentIds: string[], allowIncomplete: boolean) => api<RequirementExportPackage>(`/api/conversations/${conversationId}/requirement-export-package`, { method: "POST", body: JSON.stringify({ confirmed: true, attachment_ids: attachmentIds, allow_incomplete: allowIncomplete }) }),
   previewRequirementImport: (payload: { conversation_id: number; customer_id: string; case_id?: string | null; case_title?: string | null; source_label?: string; document: string | Record<string, unknown> }) => api<RequirementImportPreview>("/api/requirements/import/preview", { method: "POST", body: JSON.stringify(payload) }),
   commitRequirementImport: (token: string, expectedVersion: number) => api<{ case: RequirementCaseDetail; version_id: number; version: number; idempotent: boolean }>("/api/requirements/import/commit", { method: "POST", body: JSON.stringify({ token, expected_version: expectedVersion }) }),
   customerRequirements: (customerId: string) => api<RequirementCaseSummary[]>(`/api/customers/${encodeURIComponent(customerId)}/requirements`),
