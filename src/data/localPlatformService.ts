@@ -329,6 +329,61 @@ export interface RequirementCaseDetail extends RequirementCaseSummary {
   sources: Array<{ conversation_id: number; last_exported_message_id: number | null; channel: string; customer_name: string; item_external_id: string | null; item_title: string | null }>;
 }
 
+export interface CodexRepositoryBinding {
+  id: string;
+  requirement_case_id: string | null;
+  project_id: string | null;
+  repository_name: string;
+  default_branch: string;
+  current_head_sha: string;
+  enabled: boolean;
+  updated_at: string;
+  idempotent: boolean;
+}
+
+export interface CodexPlanDocument {
+  schema_version: "1.0";
+  title: string;
+  summary: string;
+  repository_snapshot: { mode: "requirement_only" | "repository"; head_sha: string; branch: string; dirty: boolean };
+  estimate: { low_hours: number; expected_hours: number; high_hours: number; confidence: "low" | "medium" | "high" };
+  assumptions: string[];
+  risks: string[];
+  deliverables: Array<{ deliverable_key: string; title: string; description: string; acceptance_criteria: string[] }>;
+  stages: Array<{ stage_key: string; title: string; estimated_hours: number; depends_on: string[]; deliverable_keys: string[] }>;
+  tasks: Array<{
+    task_key: string; stage_key: string; title: string; description: string; estimated_hours: number;
+    depends_on: string[]; expected_paths: string[];
+    acceptance_points: Array<{ point_key: string; title: string; verification_type: "automated_test" | "manual_test" | "visual_review" | "document_review" }>;
+    test_commands: string[]; risks: string[]; included: boolean; note: string;
+  }>;
+}
+
+export interface CodexDevelopmentPlan {
+  id: string;
+  requirement_case_id: string;
+  requirement_version_id: number;
+  requirement_version: number;
+  project_id: string | null;
+  binding_id: string | null;
+  version: number;
+  status: "draft" | "confirmed" | "superseded" | "cancelled";
+  source: string;
+  repository_name: string | null;
+  repository_mode: "requirement_only" | "repository";
+  repository_head_sha: string;
+  repository_branch: string;
+  repository_dirty: boolean;
+  raw_document: CodexPlanDocument;
+  document: CodexPlanDocument;
+  model: string;
+  reasoning_effort: string | null;
+  created_at: string;
+  updated_at: string;
+  confirmed_at: string | null;
+  idempotent: boolean;
+}
+
 export interface QuoteView {
   id: string;
   lead_id: string;
@@ -939,6 +994,12 @@ export const localPlatformService = {
   requirementCase: (caseId: string, version?: number) => api<RequirementCaseDetail>(`/api/requirement-cases/${encodeURIComponent(caseId)}${version ? `?version=${version}` : ""}`),
   editRequirementCase: (caseId: string, payload: { expected_version: number; change_summary: string; document: RequirementBlueprint }) => api<{ case: RequirementCaseDetail; version_id: number; version: number; idempotent: boolean }>(`/api/requirement-cases/${encodeURIComponent(caseId)}/edit`, { method: "POST", body: JSON.stringify(payload) }),
   transferRequirementCase: (caseId: string, payload: { request_id: string; expected_customer_id: string; expected_version: number; expected_revision: number; target_customer_id?: string | null; new_customer_name?: string | null }) => api<{ revision: number; snapshot: LedgerSnapshot; target_customer_id: string; case: RequirementCaseDetail; idempotent: boolean }>(`/api/requirement-cases/${encodeURIComponent(caseId)}/transfer`, { method: "POST", body: JSON.stringify(payload) }),
+  codexBindings: (caseId: string) => api<CodexRepositoryBinding[]>(`/api/requirement-cases/${encodeURIComponent(caseId)}/codex-bindings`, { headers: { "X-Yuda-Desktop": "1" } }),
+  bindCodexRepository: (payload: { request_id: string; requirement_case_id: string; project_id?: string | null; repository_path: string }) => api<CodexRepositoryBinding>("/api/codex/repository-bindings", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  latestCodexPlanForCase: (caseId: string) => api<CodexDevelopmentPlan | null>(`/api/requirement-cases/${encodeURIComponent(caseId)}/codex-plan`, { headers: { "X-Yuda-Desktop": "1" } }),
+  generateCodexPlan: (payload: { request_id: string; requirement_case_id: string; expected_requirement_version: number; binding_id?: string | null }) => api<CodexDevelopmentPlan>("/api/codex/plans/generate", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  updateCodexPlan: (planId: string, payload: { request_id: string; expected_updated_at: string; document: CodexPlanDocument }) => api<CodexDevelopmentPlan>(`/api/codex/plans/${encodeURIComponent(planId)}/draft`, { method: "PUT", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  confirmCodexPlan: (planId: string, payload: { request_id: string; expected_updated_at: string; expected_requirement_version: number; expected_revision: number; confirmed: true }) => api<{ plan: CodexDevelopmentPlan; project_id: string; task_ids: string[]; revision: number; idempotent: boolean }>(`/api/codex/plans/${encodeURIComponent(planId)}/confirm`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   quotes: (leadId: string) => api<QuoteView[]>(`/api/leads/${leadId}/quotes`),
   generateQuote: (leadId: string, hourlyRate?: number) => api<QuoteView>(`/api/leads/${leadId}/quote/generate`, { method: "POST", body: JSON.stringify({ hourly_rate: hourlyRate || null, risk_buffer: 0.15 }) }),
   convertLead: (leadId: string, quoteId: string, projectName?: string) => api<{ project_id: string; revision: number }>(`/api/leads/${leadId}/convert`, { method: "POST", body: JSON.stringify({ quote_id: quoteId, confirmed: true, project_name: projectName || null }) }),

@@ -19,6 +19,7 @@ from .services.ai_models import AIModelSettingsService
 from .services.automation import AutoReplyService
 from .services.business_analysis import BusinessAnalysisService
 from .services.business_recommendations import BusinessRecommendationService
+from .services.codex_plans import CodexPlanService
 from .services.customer_relationships import CustomerRelationshipService
 from .services.event_hub import EventHub
 from .services.listener import ListenerService
@@ -63,6 +64,7 @@ class Runtime:
     requirements: RequirementAnalysisService
     requirement_exchange: RequirementExchangeService
     requirement_materials: RequirementMaterialsService
+    codex_plans: CodexPlanService
     sales_agent: SalesAgent
     api_limiter: SlidingWindowRateLimiter
     send_limiter: SlidingWindowRateLimiter
@@ -193,6 +195,7 @@ def build_runtime(settings: Settings) -> Runtime:
         event_hub=event_hub,
     )
     requirement_exchange = RequirementExchangeService(database, ledger)
+    codex_plans = CodexPlanService(database, ledger, ai, settings)
     requirement_materials = RequirementMaterialsService(
         database,
         requirement_exchange,
@@ -256,6 +259,7 @@ def build_runtime(settings: Settings) -> Runtime:
         automation=automation,
         requirements=requirements,
         requirement_exchange=requirement_exchange,
+        codex_plans=codex_plans,
         requirement_materials=requirement_materials,
         sales_agent=sales_agent,
         api_limiter=SlidingWindowRateLimiter(settings.api_rate_limit_per_minute),

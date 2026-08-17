@@ -6,6 +6,51 @@ from uuid import uuid4
 from sqlalchemy.engine import Connection
 
 
+def migrate_codex_plan_schema(connection: Connection) -> bool:
+    """Add stable plan-sync identifiers to legacy business task rows."""
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "business_tasks" not in tables:
+        return False
+    columns = {
+        str(row[1])
+        for row in connection.exec_driver_sql("PRAGMA table_info(business_tasks)")
+    }
+    additions = (
+        ("task_key", "VARCHAR(128)"),
+        ("stage_key", "VARCHAR(128)"),
+        ("codex_plan_id", "VARCHAR(128) REFERENCES codex_development_plans(id)"),
+        ("acceptance_points_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("test_commands_json", "TEXT NOT NULL DEFAULT '[]'"),
+    )
+    changed = False
+    for name, definition in additions:
+        if name not in columns:
+            connection.exec_driver_sql(
+                f"ALTER TABLE business_tasks ADD COLUMN {name} {definition}"
+            )
+            changed = True
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_business_tasks_task_key ON business_tasks(task_key)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_business_tasks_stage_key ON business_tasks(stage_key)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_business_tasks_codex_plan_id ON business_tasks(codex_plan_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_business_task_project_task_key "
+        "ON business_tasks(project_id, task_key) WHERE task_key IS NOT NULL"
+    )
+    return changed
+
+
 def migrate_business_recommendation_feedback_schema(connection: Connection) -> bool:
     """Add the recommendation execution-loop columns to legacy SQLite data."""
 

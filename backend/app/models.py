@@ -646,6 +646,99 @@ class BusinessTask(Base):
     estimated_hours: Mapped[float] = mapped_column(Float, default=0)
     actual_hours: Mapped[float] = mapped_column(Float, default=0)
     stage_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    task_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    stage_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    codex_plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("codex_development_plans.id"), nullable=True, index=True
+    )
+    acceptance_points_json: Mapped[str] = mapped_column(Text, default="[]")
+    test_commands_json: Mapped[str] = mapped_column(Text, default="[]")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "task_key", name="uq_business_task_project_task_key"),
+    )
+
+
+class CodexProjectBinding(Base):
+    """A user-approved local Git repository available to read-only planning."""
+
+    __tablename__ = "codex_project_bindings"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("business_projects.id"), nullable=True, index=True
+    )
+    requirement_case_id: Mapped[str | None] = mapped_column(
+        ForeignKey("requirement_cases.id"), nullable=True, index=True
+    )
+    repository_path: Mapped[str] = mapped_column(Text)
+    default_branch: Mapped[str] = mapped_column(String(255), default="")
+    planning_worktree_path: Mapped[str] = mapped_column(Text, default="")
+    current_head_sha: Mapped[str] = mapped_column(String(64), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "requirement_case_id", "repository_path", name="uq_codex_binding_case_repository"
+        ),
+    )
+
+
+class CodexDevelopmentPlan(Base):
+    """Immutable Codex output plus a separately editable human-confirmation copy."""
+
+    __tablename__ = "codex_development_plans"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    requirement_case_id: Mapped[str] = mapped_column(
+        ForeignKey("requirement_cases.id"), index=True
+    )
+    requirement_version_id: Mapped[int] = mapped_column(
+        ForeignKey("requirement_document_versions.id"), index=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("business_projects.id"), nullable=True, index=True
+    )
+    binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("codex_project_bindings.id"), nullable=True, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    source: Mapped[str] = mapped_column(String(32), default="codex_cli")
+    repository_mode: Mapped[str] = mapped_column(String(32), default="requirement_only")
+    repository_head_sha: Mapped[str] = mapped_column(String(64), default="")
+    repository_branch: Mapped[str] = mapped_column(String(255), default="")
+    repository_dirty: Mapped[bool] = mapped_column(Boolean, default=False)
+    raw_structured_json: Mapped[str] = mapped_column(Text)
+    structured_json: Mapped[str] = mapped_column(Text)
+    estimate_low_hours: Mapped[float] = mapped_column(Float)
+    estimate_expected_hours: Mapped[float] = mapped_column(Float)
+    estimate_high_hours: Mapped[float] = mapped_column(Float)
+    model: Mapped[str] = mapped_column(String(128), default="")
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+    confirmed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "requirement_case_id", "version", name="uq_codex_plan_case_version"
+        ),
+    )
+
+
+class CodexPlanMutationRequest(Base):
+    """Idempotency audit for repository bindings and plan mutations."""
+
+    __tablename__ = "codex_plan_mutation_requests"
+
+    request_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(64), index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
 
 
 class ProjectChangeOrderRecord(Base):

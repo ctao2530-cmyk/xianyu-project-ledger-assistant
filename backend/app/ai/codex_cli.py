@@ -250,6 +250,8 @@ class CodexCliProvider(AIProvider):
         schema_file: Path,
         output_file: Path,
         model_selection: AIModelSelection | None = None,
+        *,
+        repository_scope: Path | None = None,
     ) -> list[str]:
         assert self._command_path
         args = [
@@ -257,17 +259,42 @@ class CodexCliProvider(AIProvider):
             "exec",
             "--ephemeral",
             "--skip-git-repo-check",
-            "--sandbox",
-            "read-only",
             "--color",
             "never",
             "--cd",
             str(workdir),
         ]
-        if self.settings.codex_ignore_user_config:
+        if repository_scope is None:
+            args.extend(["--sandbox", "read-only"])
+        if self.settings.codex_ignore_user_config or repository_scope is not None:
             args.append("--ignore-user-config")
-        if self.settings.codex_ignore_rules:
+        if self.settings.codex_ignore_rules or repository_scope is not None:
             args.append("--ignore-rules")
+        if repository_scope is not None:
+            # Permission profiles and the legacy --sandbox flag are mutually
+            # exclusive. Deny the filesystem by default, reopen only Codex's
+            # minimal runtime paths and the explicitly approved repository,
+            # and keep command network access disabled.
+            scope = json.dumps(str(repository_scope))
+            args.extend(
+                [
+                    "--strict-config",
+                    "--config",
+                    'default_permissions="repository_planning"',
+                    "--config",
+                    (
+                        'permissions.repository_planning.filesystem={'
+                        '":root"="deny",'
+                        '":minimal"="read",'
+                        '":workspace_roots"={"."="read"}'
+                        "}"
+                    ),
+                    "--config",
+                    f"permissions.repository_planning.workspace_roots={{{scope}=true}}",
+                    "--config",
+                    "permissions.repository_planning.network={enabled=false}",
+                ]
+            )
         selection = model_selection or self.model_selection
         if selection.model:
             args.extend(["--model", selection.model])
@@ -297,6 +324,26 @@ class CodexCliProvider(AIProvider):
                 model_selection=model_selection,
             )
 
+    async def _invoke_in_workspace(
+        self,
+        prompt: str,
+        *,
+        workspace: Path,
+        schema: dict[str, Any],
+        task_key: str,
+        timeout: float | None = None,
+        model_selection: AIModelSelection | None = None,
+    ) -> str:
+        async with self._process_slots:
+            return await self._invoke_process(
+                prompt,
+                schema=schema,
+                task_key=task_key,
+                timeout=timeout,
+                model_selection=model_selection,
+                workspace=workspace,
+            )
+
     async def _invoke_process(
         self,
         prompt: str,
@@ -305,6 +352,7 @@ class CodexCliProvider(AIProvider):
         task_key: str,
         timeout: float | None = None,
         model_selection: AIModelSelection | None = None,
+        workspace: Path | None = None,
     ) -> str:
         if not self._command_path:
             raise AIProviderError(
@@ -315,15 +363,17 @@ class CodexCliProvider(AIProvider):
         started = time.monotonic()
         selection = model_selection or self.model_selection
         with tempfile.TemporaryDirectory(prefix="xianyu-codex-") as temp_dir:
-            workdir = Path(temp_dir)
-            schema_file = workdir / "reply-schema.json"
-            output_file = workdir / "reply.json"
+            artifact_dir = Path(temp_dir)
+            workdir = workspace or artifact_dir
+            schema_file = artifact_dir / "reply-schema.json"
+            output_file = artifact_dir / "reply.json"
             schema_file.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
             args = self._command_args(
                 workdir,
                 schema_file,
                 output_file,
                 model_selection=model_selection,
+                repository_scope=workspace,
             )
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -544,6 +594,56 @@ class CodexCliProvider(AIProvider):
                 model_selection=model_selection,
                 timeout=timeout,
             )
+
+    async def generate_structured_in_workspace(
+        self,
+        prompt: str,
+        *,
+        workspace: Path,
+        result_type: type[BaseModel],
+        task_key: str,
+        model_selection: AIModelSelection | None = None,
+        timeout: float | None = None,
+    ) -> BaseModel:
+        """Run one schema-constrained planning job in an approved read-only repo."""
+        resolved = workspace.expanduser().resolve(strict=True)
+        if not resolved.is_dir():
+            raise AIProviderError("codex_workspace_invalid", "绑定的代码仓库目录不存在")
+        async with self._structured_slots:
+            last_error: AIProviderError | None = None
+            for attempt in range(2):
+                attempt_prompt = prompt
+                if attempt:
+                    attempt_prompt += (
+                        "\n\n上次输出未通过 JSON Schema 校验。"
+                        "请重新输出完整 JSON，不得省略任何必填字段。"
+                    )
+                try:
+                    output = await self._invoke_in_workspace(
+                        attempt_prompt,
+                        workspace=resolved,
+                        schema=result_type.model_json_schema(),
+                        task_key=task_key,
+                        timeout=timeout,
+                        model_selection=model_selection,
+                    )
+                    return result_type.model_validate(self._extract_json(output))
+                except ValidationError:
+                    last_error = AIProviderError(
+                        "codex_invalid_response",
+                        "Codex 返回 JSON 字段不符合开发计划结构",
+                        retryable=True,
+                    )
+                except AIProviderError as exc:
+                    last_error = exc
+                    if exc.code not in {
+                        "codex_invalid_json",
+                        "codex_empty_output",
+                        "codex_invalid_response",
+                    }:
+                        break
+            assert last_error
+            raise last_error
 
     async def _generate_structured_inner(
         self,

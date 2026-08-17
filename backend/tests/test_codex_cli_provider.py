@@ -164,6 +164,47 @@ async def test_codex_exec_uses_supported_isolation_flags(tmp_path: Path) -> None
     assert args[-1] == "-"
 
 
+def test_codex_workspace_plan_uses_repository_only_permission_profile(
+    tmp_path: Path,
+) -> None:
+    provider = CodexCliProvider(Settings(_env_file=None, codex_command="codex"))
+    provider._command_path = "codex"
+    repository = tmp_path / "customer repository"
+    repository.mkdir()
+
+    args = provider._command_args(
+        repository,
+        tmp_path / "schema.json",
+        tmp_path / "output.json",
+        repository_scope=repository,
+    )
+
+    config_values = [
+        args[index + 1]
+        for index, value in enumerate(args)
+        if value == "--config"
+    ]
+    assert "--sandbox" not in args
+    assert "--ignore-user-config" in args
+    assert "--ignore-rules" in args
+    assert "--strict-config" in args
+    assert 'default_permissions="repository_planning"' in config_values
+    assert (
+        'permissions.repository_planning.filesystem={'
+        '":root"="deny",'
+        '":minimal"="read",'
+        '":workspace_roots"={"."="read"}'
+        "}"
+    ) in config_values
+    assert (
+        "permissions.repository_planning.workspace_roots="
+        f"{{{json.dumps(str(repository))}=true}}"
+    ) in config_values
+    assert (
+        "permissions.repository_planning.network={enabled=false}" in config_values
+    )
+
+
 def test_codex_provider_reports_network_failure_without_exposing_stderr() -> None:
     provider = CodexCliProvider(Settings(_env_file=None, codex_command="codex"))
 

@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .api import router
 from .business_analysis_api import business_analysis_router
 from .config import get_settings
+from .codex_plan_api import codex_plan_router
 from .customer_relationship_api import customer_relationship_router
 from .events import event_router
 from .ledger_api import ledger_router
@@ -125,6 +126,7 @@ async def rate_limit(request: Request, call_next):
 
 
 app.include_router(router)
+app.include_router(codex_plan_router)
 app.include_router(business_analysis_router)
 app.include_router(customer_relationship_router)
 app.include_router(ledger_router)

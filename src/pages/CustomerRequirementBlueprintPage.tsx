@@ -32,6 +32,7 @@ import type { LedgerSnapshot } from "../types";
 import { acceptMigratedLedger, getLedgerRevision } from "../data/mockService";
 import type { CustomerRequirementRoute } from "../App";
 import type { ProjectRouteMode } from "./BusinessAssistantPages";
+import { CodexPlanWorkbench } from "../components/CodexPlanWorkbench";
 import "./customer-requirement-blueprint.css";
 import "./customer-requirement-editor.css";
 
@@ -197,6 +198,7 @@ export function CustomerRequirementBlueprintPage({
       setSelectedVersion(null);
       setCases((rows) => rows.map((item) => item.id === value.id ? value : item));
     }}
+    onSnapshotChange={onSnapshotChange}
     onTransferred={(value) => {
       acceptMigratedLedger(value.revision);
       onSnapshotChange(value.snapshot);
@@ -205,7 +207,7 @@ export function CustomerRequirementBlueprintPage({
   />;
 }
 
-function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersion, onBack, onDetailChange, onTransferred }: { customer: Customer; detail: RequirementCaseDetail; selectedVersion: number | null; onVersion: (version: number | null) => void; onBack: () => void; onDetailChange: (detail: RequirementCaseDetail) => void; onTransferred: (result: { revision: number; snapshot: LedgerSnapshot; target_customer_id: string; case: RequirementCaseDetail }) => void }) {
+function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersion, onBack, onDetailChange, onTransferred, onSnapshotChange }: { customer: Customer; detail: RequirementCaseDetail; selectedVersion: number | null; onVersion: (version: number | null) => void; onBack: () => void; onDetailChange: (detail: RequirementCaseDetail) => void; onTransferred: (result: { revision: number; snapshot: LedgerSnapshot; target_customer_id: string; case: RequirementCaseDetail }) => void; onSnapshotChange: (snapshot: LedgerSnapshot) => void }) {
   const visual = useMemo(() => normalizeBlueprint(detail.document), [detail.document]);
   const allNodes = useMemo(() => Object.values(visual.nodes).flat(), [visual.nodes]);
   const defaultNode = visual.nodes.stages[0] || allNodes[0];
@@ -349,6 +351,7 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
       <article className="blueprint-timeline"><header><span><FlowArrow size={18} />实施时间线</span><b>{totalHours} 小时</b></header><div>{blueprint.stages.map((stage, index) => <button onClick={() => setSelectedId(stage.id)} key={stage.id}><i>{index + 1}</i><span><b>{stage.title}</b><small>{stage.estimated_hours}h · {stage.deliverables.length} 项交付</small></span><em style={{ flexGrow: Math.max(stage.estimated_hours, 1) }} /></button>)}</div></article>
       <article className="blueprint-checklist"><header><span><CheckCircle size={18} />交付 Checklist</span><b>{blueprint.acceptance_gates.reduce((sum, gate) => sum + gate.criteria.length, 0)} 项</b></header>{blueprint.acceptance_gates.flatMap((gate) => gate.criteria.map((criterion) => <p key={`${gate.id}-${criterion}`}><CheckCircle size={16} weight="duotone" /><span>{criterion}</span><small>{gate.title}</small></p>))}</article>
     </section>}
+    <CodexPlanWorkbench detail={detail} historical={Boolean(selectedVersion && selectedVersion !== detail.current_version)} onSnapshotChange={onSnapshotChange} />
     {editing && blueprint && <BlueprintEditorDrawer caseId={detail.id} expectedVersion={detail.current_version} initial={blueprint} onClose={() => setEditing(false)} onSaved={(value) => { setEditing(false); onDetailChange(value); }} />}
     {transferring && <RequirementTransferModal customer={customer} detail={detail} onClose={() => setTransferring(false)} onTransferred={(value) => { setTransferring(false); onTransferred(value); }} />}
   </div>;

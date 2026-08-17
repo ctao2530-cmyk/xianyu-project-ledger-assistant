@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import datetime
+import hashlib
 from pathlib import Path
 import sqlite3
 import shutil
@@ -58,10 +59,12 @@ class Database:
             self._backup_before_settlement_issue_upgrade()
             self._backup_before_project_change_order_upgrade()
             self._backup_before_business_recommendation_feedback_upgrade()
+            self._backup_before_codex_plan_upgrade()
             self._migrate_channel_columns()
             # Existing analysis tables must gain the additive feedback columns
             # before SQLAlchemy creates indexes declared by the current model.
             self._migrate_business_recommendation_feedback_schema()
+            self._migrate_codex_plan_schema()
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             self._migrate_personal_project_schema()
@@ -101,6 +104,67 @@ class Database:
                 raise RuntimeError(
                     f"personal project schema migration left foreign-key violations: {violations[:3]}"
                 )
+
+    def _migrate_codex_plan_schema(self) -> None:
+        from .schema_migrations import migrate_codex_plan_schema
+
+        with self.engine.begin() as connection:
+            migrate_codex_plan_schema(connection)
+
+    def _backup_before_codex_plan_upgrade(self) -> None:
+        """Create one private, verified backup before the phase-one planning schema."""
+
+        database_path = self.engine.url.database
+        if not database_path or database_path == ":memory:":
+            return
+        path = Path(database_path)
+        if not path.is_file():
+            return
+        with self.engine.connect() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            task_columns = (
+                {
+                    str(row[1])
+                    for row in connection.exec_driver_sql(
+                        "PRAGMA table_info(business_tasks)"
+                    )
+                }
+                if "business_tasks" in tables
+                else set()
+            )
+        expected_tables = {
+            "codex_project_bindings",
+            "codex_development_plans",
+            "codex_plan_mutation_requests",
+        }
+        if expected_tables.issubset(tables) and "task_key" in task_columns:
+            return
+        if "business_tasks" not in tables:
+            return
+        backup_dir = path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.chmod(0o700)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / f"{path.stem}-before-codex-plans-{stamp}{path.suffix}"
+        with sqlite3.connect(path) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+            result = destination.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError("Codex plan backup failed SQLite integrity check")
+            violations = list(destination.execute("PRAGMA foreign_key_check"))
+            if violations:
+                raise RuntimeError(
+                    f"Codex plan backup has foreign-key violations: {violations[:3]}"
+                )
+        target.chmod(0o600)
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if len(digest) != 64:
+            raise RuntimeError("Codex plan backup failed SHA-256 verification")
 
     def _backup_before_requirement_upgrade(self) -> None:
         database_path = self.engine.url.database
