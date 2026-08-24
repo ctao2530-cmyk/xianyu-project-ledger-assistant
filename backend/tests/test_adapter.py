@@ -8,13 +8,15 @@ import stat
 import time
 from datetime import timezone
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import httpx
 import msgpack
 import pytest
 from pydantic import SecretStr
 
-from backend.app.adapters import AdapterAccessVerificationError
+from backend.app.adapters import AdapterAccessVerificationError, AdapterError
+from backend.app.channels.base import ChannelMedia
 from backend.app.adapters.xianyu import (
     XianyuAdapter,
     _verification_url,
@@ -101,6 +103,62 @@ def test_legacy_nested_live_message_shape_is_still_supported() -> None:
     assert event.external_id == "message-legacy"
     assert event.conversation_id == "conversation-legacy"
     assert event.content == "旧结构消息"
+
+
+def test_live_image_message_keeps_only_ephemeral_trusted_media_reference() -> None:
+    payload = {
+        1: {
+            2: "conversation-image@goofish",
+            5: 1_750_000_000_000,
+            10: {
+                "senderUserId": "buyer-image",
+                "reminderTitle": "图片客户",
+                "reminderContent": "[图片]",
+                "extJson": json.dumps(
+                    {
+                        "messageId": "message-image",
+                        "contentType": 2,
+                        "image": {"url": "https://img.alicdn.com/customer/original.jpg"},
+                        "avatarUrl": "https://img.alicdn.com/avatar/should-not-capture.jpg",
+                    }
+                ),
+            },
+        }
+    }
+
+    event = parse_live_message(payload, own_user_id="seller-1")
+
+    assert event is not None
+    assert event.message_type == "image"
+    assert event.content == "[图片]"
+    assert len(event.media) == 1
+    assert event.media[0].locator == "https://img.alicdn.com/customer/original.jpg"
+    assert "should-not-capture" not in event.media[0].locator
+
+
+@pytest.mark.asyncio
+async def test_xianyu_media_download_accepts_only_trusted_image_hosts() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "img.alicdn.com"
+        return httpx.Response(200, content=b"trusted-image-bytes", headers={"content-type": "image/jpeg"})
+
+    adapter = XianyuAdapter(
+        Settings(_env_file=None, xianyu_cookie=SecretStr("unb=seller; _m_h5_tk=token_suffix"))
+    )
+    await adapter.http.aclose()
+    adapter.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        content = await adapter.fetch_media(
+            ChannelMedia("remote_url", "https://img.alicdn.com/customer/original.jpg")
+        )
+        assert content.data == b"trusted-image-bytes"
+        assert content.mime_type == "image/jpeg"
+        with pytest.raises(AdapterError, match="来源不可信"):
+            await adapter.fetch_media(
+                ChannelMedia("remote_url", "https://evil.example/customer.jpg")
+            )
+    finally:
+        await adapter.close()
 
 
 def test_batched_live_message_shape_returns_every_distinct_message() -> None:
@@ -413,6 +471,59 @@ def test_item_detail_uses_item_page_context_and_current_browser_headers() -> Non
         assert item is not None
         assert item.title == "测试商品"
         assert item.seller_id == "seller"
+
+    asyncio.run(scenario())
+
+
+def test_owned_listing_discovery_uses_current_account_and_maps_safe_fields() -> None:
+    async def scenario() -> None:
+        adapter = XianyuAdapter(
+            Settings(
+                _env_file=None,
+                xianyu_cookie=SecretStr(
+                    "unb=seller; _m_h5_tk=token_suffix; _m_h5_tk_enc=enc"
+                ),
+            )
+        )
+        await adapter.http.aclose()
+        calls: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content.decode().removeprefix("data=") or "{}") if False else None
+            body = parse_qs(request.content.decode())
+            data = json.loads(body["data"][0])
+            calls.append(data)
+            return httpx.Response(
+                200,
+                json={
+                    "ret": ["SUCCESS::调用成功"],
+                    "data": {
+                        "topItem": {"cardData": {"id": "owned-1", "title": "置顶商品", "priceInfo": {"price": "88"}, "itemStatus": 0}},
+                        "cardList": [
+                            {"cardData": {"id": "owned-1", "title": "重复置顶", "priceInfo": {"price": "88"}, "itemStatus": "0"}},
+                            {"cardData": {"id": "owned-2", "title": "普通商品", "priceInfo": {"price": "199"}, "itemStatus": "0"}},
+                            {"cardData": {"id": "down-1", "title": "已下架商品", "priceInfo": {"price": "66"}, "itemStatus": 1}},
+                        ],
+                        "nextPage": False,
+                    },
+                },
+            )
+
+        adapter.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            cookies=adapter.cookies,
+            headers=adapter.http.headers,
+        )
+        try:
+            items = await adapter.list_owned_items()
+        finally:
+            await adapter.close()
+
+        assert calls == [{"needGroupInfo": True, "pageNumber": 1, "userId": "seller", "pageSize": 20}]
+        assert [item.external_id for item in items] == ["owned-1", "owned-2", "down-1"]
+        assert [item.status for item in items] == ["在售", "在售", "已下架"]
+        assert items[1].title == "普通商品"
+        assert items[1].price == "¥199"
 
     asyncio.run(scenario())
 

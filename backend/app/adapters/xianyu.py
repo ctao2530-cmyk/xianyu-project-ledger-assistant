@@ -14,14 +14,20 @@ from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from http.cookies import SimpleCookie
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 import msgpack
 import websockets
+from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection
 
-from ..channels.base import ChannelConversationInfo, ChannelMessage
+from ..channels.base import (
+    ChannelConversationInfo,
+    ChannelMedia,
+    ChannelMediaContent,
+    ChannelMessage,
+)
 from ..config import PROJECT_ROOT, Settings
 from .base import (
     AdapterAccessVerificationError,
@@ -30,6 +36,7 @@ from .base import (
     IncomingMessage,
     ItemInfo,
     LoginExpiredError,
+    OwnedListingInfo,
 )
 
 
@@ -40,6 +47,7 @@ IM_APP_KEY = "444e9908a51d1cb236a27862abc769c9"
 LOGIN_TOKEN_API = "mtop.taobao.idlemessage.pc.login.token"
 LOGIN_USER_API = "mtop.taobao.idlemessage.pc.loginuser.get"
 ITEM_DETAIL_API = "mtop.taobao.idle.pc.detail"
+OWNED_ITEM_LIST_API = "mtop.idle.web.xyh.item.list"
 MTOP_BASE = "https://h5api.m.goofish.com/h5"
 ITEM_DETAIL_SPM = "a21ybx.item.0.0"
 IM_SPM = "a21ybx.im.0.0"
@@ -49,6 +57,13 @@ USER_AGENT = (
 )
 SESSION_COOKIE_NAMES = ("_m_h5_tk", "_m_h5_tk_enc")
 VERIFICATION_HOST_SUFFIXES = (".taobao.com", ".goofish.com", ".alibaba.com")
+IMAGE_HOST_SUFFIXES = (
+    ".alicdn.com",
+    ".taobaocdn.com",
+    ".tbcdn.cn",
+    ".goofish.com",
+    ".taobao.com",
+)
 
 
 def parse_cookie_string(raw: str) -> dict[str, str]:
@@ -133,6 +148,120 @@ def _parse_extension_json(extension: dict) -> dict:
         return {}
 
 
+def _safe_image_url(value: str) -> str | None:
+    candidate = value.strip().replace("\\/", "/")
+    if candidate.startswith("//"):
+        candidate = f"https:{candidate}"
+    if not candidate.startswith("https://"):
+        return None
+    parsed = urlparse(candidate)
+    hostname = (parsed.hostname or "").lower()
+    if not any(hostname == suffix[1:] or hostname.endswith(suffix) for suffix in IMAGE_HOST_SUFFIXES):
+        return None
+    return candidate
+
+
+def _decode_nested_json(value: object) -> object | None:
+    if not isinstance(value, str) or not value or len(value) > 1_500_000:
+        return None
+    stripped = value.strip()
+    try:
+        decoded = json.loads(stripped)
+        if isinstance(decoded, (dict, list)):
+            return decoded
+    except json.JSONDecodeError:
+        pass
+    try:
+        decoded_text = base64.b64decode(stripped, validate=True).decode("utf-8")
+        decoded = json.loads(decoded_text)
+        return decoded if isinstance(decoded, (dict, list)) else None
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def _iter_image_urls(value: object, *, image_context: bool = False, depth: int = 0):
+    if depth > 12:
+        return
+    if isinstance(value, dict):
+        content_type = value.get("contentType", value.get("content_type"))
+        local_image_context = image_context or str(content_type).lower() in {
+            "2",
+            "image",
+            "picture",
+            "pic",
+        }
+        for key, nested in value.items():
+            lowered = str(key).lower()
+            if any(token in lowered for token in ("avatar", "head", "icon", "logo")):
+                continue
+            nested_image_context = local_image_context or any(
+                token in lowered for token in ("image", "picture", "photo", "pic")
+            )
+            if isinstance(nested, str):
+                if nested_image_context:
+                    url = _safe_image_url(nested)
+                    if url:
+                        yield url
+                if lowered in {"data", "content", "custom", "extjson"}:
+                    decoded = _decode_nested_json(nested)
+                    if decoded is not None:
+                        yield from _iter_image_urls(
+                            decoded,
+                            image_context=nested_image_context,
+                            depth=depth + 1,
+                        )
+            elif isinstance(nested, (dict, list)):
+                yield from _iter_image_urls(
+                    nested,
+                    image_context=nested_image_context,
+                    depth=depth + 1,
+                )
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _iter_image_urls(
+                nested,
+                image_context=image_context,
+                depth=depth + 1,
+            )
+
+
+def _media_name_and_mime(url: str) -> tuple[str | None, str | None]:
+    name = Path(urlparse(url).path).name or None
+    suffix = Path(name or "").suffix.lower()
+    mime = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".avif": "image/avif",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
+    }.get(suffix)
+    return name, mime
+
+
+def _extract_xianyu_media(*values: object) -> tuple[ChannelMedia, ...]:
+    result: list[ChannelMedia] = []
+    seen: set[str] = set()
+    for value in values:
+        for url in _iter_image_urls(value):
+            if url in seen:
+                continue
+            seen.add(url)
+            name, mime = _media_name_and_mime(url)
+            result.append(
+                ChannelMedia(
+                    locator_type="remote_url",
+                    locator=url,
+                    media_index=len(result),
+                    mime_type=mime,
+                    original_name=name,
+                )
+            )
+    return tuple(result)
+
+
 def _named_values(value, name: str, *, depth: int = 0):
     """Yield named nested values from an RPC response with a depth guard."""
     if depth > 12:
@@ -204,6 +333,10 @@ def _parse_live_message_candidate(
         or "[暂不支持的消息类型]"
     ).strip()
     ext_json = _parse_extension_json(extension)
+    media = _extract_xianyu_media(message, extension, ext_json)
+    image_placeholder = content in {"[图片]", "图片"} or "发送了图片" in content
+    if media:
+        content = "[图片]"
     external_id = str(ext_json.get("messageId") or "")
     if not external_id:
         external_id = _deterministic_message_id(
@@ -220,10 +353,15 @@ def _parse_live_message_candidate(
         sender_id=sender_id,
         sender_name=str(extension.get("reminderTitle") or "闲鱼客户"),
         content=content,
-        message_type="text" if content != "[暂不支持的消息类型]" else "unsupported",
+        message_type=(
+            "image"
+            if media or image_placeholder
+            else "text" if content != "[暂不支持的消息类型]" else "unsupported"
+        ),
         received_at=received_at,
         item_id=_item_id_from_url(extension.get("reminderUrl")),
         direction="outbound" if sender_id == own_user_id else "inbound",
+        media=media,
     )
 
 
@@ -266,6 +404,10 @@ def parse_history_message(model: dict, own_user_id: str) -> IncomingMessage | No
         else None
     )
     text = text or extension.get("reminderContent") or "[暂不支持的历史消息类型]"
+    media = _extract_xianyu_media(decoded_content, content_block, extension)
+    image_placeholder = str(text).strip() in {"[图片]", "图片"} or "发送了图片" in str(text)
+    if media:
+        text = "[图片]"
     sender_id = str(extension.get("senderUserId") or "")
     conversation_id = str(message.get("cid") or message.get("conversationId") or "").split("@")[0]
     if not conversation_id:
@@ -294,10 +436,15 @@ def parse_history_message(model: dict, own_user_id: str) -> IncomingMessage | No
         sender_id=sender_id,
         sender_name=str(extension.get("reminderTitle") or "闲鱼客户"),
         content=str(text),
-        message_type="text" if text != "[暂不支持的历史消息类型]" else "unsupported",
+        message_type=(
+            "image"
+            if media or image_placeholder
+            else "text" if text != "[暂不支持的历史消息类型]" else "unsupported"
+        ),
         received_at=received_at,
         item_id=_item_id_from_url(extension.get("reminderUrl")),
         direction="outbound" if sender_id == own_user_id else "inbound",
+        media=media,
     )
 
 
@@ -331,6 +478,7 @@ class XianyuAdapter:
         self.settings = settings
         self.cookies = parse_cookie_string(settings.xianyu_cookie.get_secret_value())
         self.own_user_id = self.cookies.get("unb", "")
+        self._credential_lock = asyncio.Lock()
         self._session_cache_path = self._resolve_session_cache_path(
             settings.xianyu_session_cache_path
         )
@@ -338,10 +486,26 @@ class XianyuAdapter:
         self._session_cache_warning_emitted = False
         self._load_session_cache()
         self.device_id = f"{uuid.uuid4()}-{self.own_user_id}"
-        self.http = httpx.AsyncClient(
-            cookies=self.cookies,
+        self.http = self._build_http_client(self.cookies)
+        self.ws: ClientConnection | None = None
+        self.connected = False
+        self._send_lock = asyncio.Lock()
+        self._pending: dict[str, asyncio.Future[dict]] = {}
+        self._fatal_error: Exception | None = None
+        self.subscription_confirmed = False
+        self.last_frame_at: datetime | None = None
+        self.last_decoded_at: datetime | None = None
+        self.last_live_message_at: datetime | None = None
+        self.frames_received = 0
+        self.decode_failures = 0
+        self.parse_dropped = 0
+        self.live_messages_received = 0
+
+    def _build_http_client(self, cookies: dict[str, str]) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            cookies=cookies,
             timeout=httpx.Timeout(20),
-            trust_env=settings.xianyu_use_system_proxy,
+            trust_env=self.settings.xianyu_use_system_proxy,
             headers={
                 "User-Agent": USER_AGENT,
                 "Origin": "https://www.goofish.com",
@@ -363,19 +527,46 @@ class XianyuAdapter:
                 "Sec-Fetch-Site": "same-site",
             },
         )
-        self.ws: ClientConnection | None = None
-        self.connected = False
-        self._send_lock = asyncio.Lock()
-        self._pending: dict[str, asyncio.Future[dict]] = {}
-        self._fatal_error: Exception | None = None
-        self.subscription_confirmed = False
-        self.last_frame_at: datetime | None = None
-        self.last_decoded_at: datetime | None = None
-        self.last_live_message_at: datetime | None = None
-        self.frames_received = 0
-        self.decode_failures = 0
-        self.parse_dropped = 0
-        self.live_messages_received = 0
+
+    async def fetch_media(self, media: ChannelMedia) -> ChannelMediaContent:
+        """Download one trusted Xianyu image without persisting its signed URL."""
+        if media.locator_type != "remote_url":
+            raise AdapterError("闲鱼图片引用类型无效")
+        current = _safe_image_url(media.locator)
+        if not current:
+            raise AdapterError("闲鱼图片来源不可信")
+        response: httpx.Response | None = None
+        for _ in range(4):
+            request = self.http.build_request(
+                "GET",
+                current,
+                headers={
+                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                    "Sec-Fetch-Dest": "image",
+                    "Sec-Fetch-Mode": "no-cors",
+                },
+            )
+            if "content-type" in request.headers:
+                del request.headers["content-type"]
+            response = await self.http.send(request, follow_redirects=False)
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                break
+            location = response.headers.get("location") or ""
+            current = _safe_image_url(urljoin(current, location))
+            if not current:
+                raise AdapterError("闲鱼图片跳转来源不可信")
+        if response is None:
+            raise AdapterError("闲鱼图片读取失败")
+        response.raise_for_status()
+        if len(response.content) > 25 * 1024 * 1024:
+            raise AdapterError("闲鱼原图超过本地保存上限")
+        content_type = response.headers.get("content-type")
+        name = media.original_name or Path(urlparse(current).path).name or None
+        return ChannelMediaContent(
+            data=response.content,
+            mime_type=content_type,
+            original_name=name,
+        )
 
     @staticmethod
     def _resolve_session_cache_path(raw_path: str) -> Path | None:
@@ -533,6 +724,22 @@ class XianyuAdapter:
         spm_cnt: str = IM_SPM,
         retry: bool = True,
     ) -> dict:
+        async with self._credential_lock:
+            return await self._mtop_locked(
+                api,
+                data,
+                spm_cnt=spm_cnt,
+                retry=retry,
+            )
+
+    async def _mtop_locked(
+        self,
+        api: str,
+        data: dict,
+        *,
+        spm_cnt: str = IM_SPM,
+        retry: bool = True,
+    ) -> dict:
         token = self._cookie_token()
         if not token:
             raise LoginExpiredError("Cookie 中缺少 _m_h5_tk")
@@ -579,8 +786,33 @@ class XianyuAdapter:
                 verification_url=_verification_url(payload),
             )
         if "令牌过期" in ret and retry:
-            return await self._mtop(api, data, spm_cnt=spm_cnt, retry=False)
+            return await self._mtop_locked(api, data, spm_cnt=spm_cnt, retry=False)
         return payload
+
+    async def probe_login(self) -> str:
+        """Validate the cookie and return its refreshed local-only snapshot.
+
+        The returned string is credential material for the recovery service. It
+        must never be logged or returned through an API response.
+        """
+        await self._access_token()
+        async with self._credential_lock:
+            return self._cookie_header()
+
+    async def replace_cookie(self, raw_cookie: str) -> None:
+        """Update credentials on the shared adapter without replacing its identity."""
+        cookies = parse_cookie_string(raw_cookie)
+        new_http = self._build_http_client(cookies)
+        async with self._credential_lock:
+            old_http = self.http
+            self.cookies = cookies
+            self.own_user_id = cookies.get("unb", "")
+            self.settings.xianyu_cookie = SecretStr(raw_cookie)
+            self.device_id = f"{uuid.uuid4()}-{self.own_user_id}"
+            self._persisted_session_snapshot = None
+            self._session_cache_warning_emitted = False
+            self.http = new_http
+            await old_http.aclose()
 
     async def _access_token(self) -> str:
         payload = await self._mtop(
@@ -887,6 +1119,62 @@ class XianyuAdapter:
             seller_id=seller_id or None,
         )
 
+    async def list_owned_items(self, limit: int = 100) -> list[OwnedListingInfo]:
+        """Read the current account's own listing page without item mutations."""
+
+        target = min(max(int(limit), 1), 100)
+        page_size = 20
+        page_number = 1
+        seen: set[str] = set()
+        result: list[OwnedListingInfo] = []
+
+        def add(card: object) -> None:
+            if not isinstance(card, dict):
+                return
+            data = card.get("cardData") if isinstance(card.get("cardData"), dict) else card
+            external_id = str(data.get("id") or "").strip()
+            if not external_id or external_id in seen:
+                return
+            seen.add(external_id)
+            price_info = data.get("priceInfo") if isinstance(data.get("priceInfo"), dict) else {}
+            price_value = str(price_info.get("price") or "").strip()
+            raw_status = data.get("itemStatus")
+            status_code = "" if raw_status is None else str(raw_status).strip()
+            result.append(
+                OwnedListingInfo(
+                    external_id=external_id,
+                    title=str(data.get("title") or "未知商品"),
+                    price=f"¥{price_value}" if price_value else None,
+                    status={"0": "在售", "1": "已下架"}.get(
+                        status_code, status_code or "状态未知"
+                    ),
+                )
+            )
+
+        while len(result) < target and page_number <= 5:
+            payload = await self._mtop(
+                OWNED_ITEM_LIST_API,
+                {
+                    "needGroupInfo": True,
+                    "pageNumber": page_number,
+                    "userId": self.own_user_id,
+                    "pageSize": page_size,
+                },
+                spm_cnt=ITEM_DETAIL_SPM,
+            )
+            data = payload.get("data") or {}
+            if not isinstance(data, dict):
+                break
+            before = len(result)
+            if page_number == 1:
+                add(data.get("topItem"))
+            for card in data.get("cardList") or []:
+                add(card)
+            if len(result) == before or not data.get("nextPage"):
+                break
+            page_number += 1
+        return result[:target]
+
     async def send_text(
         self,
         conversation_id: str,
@@ -931,4 +1219,5 @@ class XianyuAdapter:
     async def close(self) -> None:
         if self.ws:
             await self.ws.close()
-        await self.http.aclose()
+        async with self._credential_lock:
+            await self.http.aclose()

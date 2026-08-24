@@ -5,7 +5,11 @@ import logging
 import random
 from datetime import datetime, timezone
 
-from ..adapters import LoginExpiredError, XianyuAdapterProtocol
+from ..adapters import (
+    AdapterAccessVerificationError,
+    LoginExpiredError,
+    XianyuAdapterProtocol,
+)
 from ..config import Settings
 from .notifier import MacOSNotifier
 from .processor import MessageProcessor
@@ -100,6 +104,20 @@ class ListenerService:
                         )
                         self._login_notified = True
                     await self._sleep_or_stop(self.settings.xianyu_reconnect_max_seconds)
+                except AdapterAccessVerificationError:
+                    # Access verification is a human-action boundary, not a
+                    # transient transport failure. Retrying here can generate
+                    # repeated platform requests and prolong the verification
+                    # state, so stop this listener run until the user performs
+                    # one explicit recovery action.
+                    self._set_status(
+                        "verification_required",
+                        "闲鱼要求完成人工访问验证，自动重连已暂停",
+                        error_type="AdapterAccessVerificationError",
+                    )
+                    self.status.realtime_delivery = "paused"
+                    self.status.realtime_detail = "等待在 Ego Lite 完成验证后手动恢复"
+                    return
                 except Exception as exc:
                     attempt += 1
                     cap = min(

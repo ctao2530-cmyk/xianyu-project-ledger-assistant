@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     product_traffic_batch_max_items: int = Field(default=5, ge=1, le=20)
     product_traffic_cooldown_hours: int = Field(default=72, ge=1, le=720)
     product_traffic_reminder_minutes: int = Field(default=30, ge=0, le=1_440)
+    # A T0 snapshot older than this remains auditable but is excluded from
+    # mature exposure conclusions. Refreshing a listing stays an explicit,
+    # user-triggered read; starting a batch never performs a hidden request.
+    product_traffic_baseline_max_age_minutes: int = Field(
+        default=30, ge=5, le=1_440
+    )
     # Market-reference collection is user-triggered. At the configured Beijing
     # time the service only reminds; it never opens a browser or starts a crawl.
     product_market_reminder_hour: int = Field(default=20, ge=0, le=23)
@@ -111,13 +117,29 @@ class Settings(BaseSettings):
     # Sales Agent runs independently from reply drafting. It performs only
     # read-only analysis until the user explicitly confirms saving a customer
     # and lead in the UI.
+    # Both customer-message workbench capabilities are paused by default. The
+    # flags keep existing drafts, analyses and quotes intact while preventing
+    # new background work until the user deliberately enables them again.
+    customer_reply_drafts_enabled: bool = False
+    customer_quote_conversion_enabled: bool = False
     sales_agent_enabled: bool = True
     sales_agent_auto_analyze: bool = True
     sales_agent_timeout_seconds: float = Field(default=15, ge=3, le=120)
     sales_agent_history_limit: int = Field(default=30, ge=5, le=60)
 
     codex_command: str = "codex"
-    codex_timeout_seconds: float = Field(default=120, ge=10, le=600)
+    # Shared only by the loopback event receiver, MCP bridge and Hook reporter.
+    # It must remain in the mode-0600 local .env and is never returned by an API.
+    xunying_codex_event_secret: SecretStr = SecretStr("")
+    xunying_codex_api_base: str = "http://127.0.0.1:8877"
+    # Managed development Worktrees live outside every bound customer repo.
+    xunying_codex_worktree_root: str = str(
+        Path.home() / "Library" / "Application Support" / "循营" / "codex-worktrees"
+    )
+    codex_app_server_request_timeout_seconds: float = Field(default=30, ge=5, le=120)
+    # Codex handles deliberate deep work and must not inherit the 12–20 second
+    # deadlines used by fast providers or lightweight business orchestration.
+    codex_timeout_seconds: float = Field(default=300, ge=10, le=900)
     codex_max_concurrency: int = Field(default=2, ge=1, le=8)
     codex_max_context_messages: int = Field(default=20, ge=1, le=100)
     codex_max_context_chars: int = Field(default=12_000, ge=1_000, le=100_000)
@@ -125,6 +147,25 @@ class Settings(BaseSettings):
     codex_reasoning_effort: str = ""
     codex_ignore_user_config: bool = True
     codex_ignore_rules: bool = True
+
+    # Global 小策 Agent is local-only.  The Vault path and allowlist are
+    # configuration, never model-controlled input; indexing is manual and no
+    # directory outside these roots can enter retrieval.
+    global_agent_vault_root: str = str(
+        Path.home() / "Documents" / "Codex" / "Agent-Knowledge"
+    )
+    global_agent_knowledge_directories: str = (
+        "10-Projects,20-Decisions,30-Patterns,40-Cross-Domain,60-Playbooks"
+    )
+    global_agent_timeout_seconds: float = Field(default=300, ge=30, le=900)
+    global_agent_max_context_messages: int = Field(default=16, ge=1, le=50)
+    global_agent_max_prompt_chars: int = Field(default=50_000, ge=5_000, le=200_000)
+    global_agent_max_tool_calls: int = Field(default=5, ge=1, le=10)
+    global_agent_max_tool_result_chars: int = Field(
+        default=12_000, ge=1_000, le=50_000
+    )
+    global_agent_rag_top_k: int = Field(default=5, ge=1, le=12)
+    global_agent_chunk_chars: int = Field(default=2_400, ge=500, le=8_000)
 
     reply_speed_mode: str = "balanced"
     reply_fast_model: str = "gpt-5.4-mini"
@@ -198,6 +239,22 @@ class Settings(BaseSettings):
             and self.deepseek_base_url.strip()
             and self.deepseek_reply_model.strip()
         )
+
+    @property
+    def openai_compatible_configured(self) -> bool:
+        return bool(
+            self.ai_api_key.get_secret_value().strip()
+            and self.ai_base_url.strip()
+            and self.ai_model.strip()
+        )
+
+    @property
+    def global_agent_knowledge_directory_list(self) -> list[str]:
+        return [
+            part.strip()
+            for part in self.global_agent_knowledge_directories.split(",")
+            if part.strip()
+        ]
 
     @property
     def wecom_configured(self) -> bool:

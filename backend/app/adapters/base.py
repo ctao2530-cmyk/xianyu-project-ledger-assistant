@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from ..channels.base import ChannelMessage
+from ..channels.base import ChannelMedia, ChannelMediaContent, ChannelMessage
 
 
 class AdapterError(RuntimeError):
@@ -40,6 +40,14 @@ class ItemInfo:
     seller_id: str | None = None
 
 
+@dataclass(slots=True)
+class OwnedListingInfo:
+    external_id: str
+    title: str
+    price: str | None
+    status: str
+
+
 class XianyuAdapterProtocol(Protocol):
     connected: bool
     own_user_id: str
@@ -56,7 +64,15 @@ class XianyuAdapterProtocol(Protocol):
         self, limit: int
     ) -> list[IncomingMessage]: ...
 
+    async def fetch_media(self, media: ChannelMedia) -> ChannelMediaContent: ...
+
     async def fetch_item(self, item_id: str) -> ItemInfo | None: ...
+
+    async def list_owned_items(self, limit: int = 100) -> list[OwnedListingInfo]: ...
+
+    async def probe_login(self) -> str: ...
+
+    async def replace_cookie(self, raw_cookie: str) -> None: ...
 
     async def send_text(
         self,

@@ -16,6 +16,7 @@ import {
   Database,
   Eye,
   Flask,
+  Gauge,
   Info,
   Lightning,
   Play,
@@ -29,7 +30,7 @@ import {
   X,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   BusinessAnalysisApiError,
   businessAnalysisRequestId,
@@ -54,6 +55,15 @@ import {
   localPlatformService,
   type ProductModificationExperimentView,
 } from "../data/localPlatformService";
+import {
+  predictionFact,
+  predictionRiskLabel,
+  predictionService,
+  predictionSufficiencyLabel,
+  type CalibrationSummaryView,
+  type PredictionLatestView,
+  type PredictionResult,
+} from "../data/predictionService";
 import "./business-analysis.css";
 
 const money = new Intl.NumberFormat("zh-CN", {
@@ -109,7 +119,6 @@ const navigablePages = new Set([
   "支出记录",
   "客户管理",
   "数据统计",
-  "目标计划",
   "设置中心",
 ]);
 
@@ -510,6 +519,209 @@ function HistoryStatus({ item, currentId }: { item: BusinessAnalysisHistoryItem;
   return <span className="history-finished">反馈已处理</span>;
 }
 
+function predictionNumber(value: number | string | boolean | null, fallback = 0) {
+  return typeof value === "number" ? value : fallback;
+}
+
+function predictionScore(value: PredictionResult | null | undefined) {
+  return Math.round(value?.score ?? 0);
+}
+
+function predictionDate(value: string | null | undefined) {
+  if (!value) return "待生成";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Shanghai",
+  }).format(date);
+}
+
+function PredictionForecastWorkbench({
+  predictions,
+  generatedAt,
+  onNavigate,
+}: {
+  predictions: PredictionResult[];
+  generatedAt: string;
+  onNavigate: (page: string) => void;
+}) {
+  const workload = predictions.find((item) => item.target === "workload_14d") || null;
+  const cashflow = predictions.find((item) => item.target === "cashflow_30d") || null;
+  const projects = predictions
+    .filter((item) => item.target === "project_delay_risk")
+    .sort((left, right) => predictionScore(right) - predictionScore(left));
+  const customers = predictions
+    .filter((item) => item.target === "customer_followup_priority")
+    .sort((left, right) => predictionScore(right) - predictionScore(left));
+  const topProject = projects[0] || null;
+  const topCustomer = customers[0] || null;
+  const remainingHours = predictionNumber(predictionFact(workload, "remaining_hours"));
+  const availableHours = predictionNumber(predictionFact(workload, "available_hours"));
+  const activeProjectCount = predictionNumber(predictionFact(workload, "active_project_count"));
+  const knownInflow = predictionNumber(predictionFact(cashflow, "known_inflow"));
+  const knownOutflow = predictionNumber(predictionFact(cashflow, "known_outflow"));
+  const todayAction = topProject && predictionScore(topProject) >= 70
+    ? {
+        title: `先处理项目「${topProject.entity_label || "高风险项目"}」`,
+        detail: topProject.drivers[0]?.detail || "先核对剩余工时与交付安排。",
+        page: "项目管理",
+        button: "前往项目",
+      }
+    : topCustomer
+      ? {
+          title: `优先跟进客户「${topCustomer.entity_label || "待跟进客户"}」`,
+          detail: topCustomer.drivers[0]?.detail || "先核对最近沟通和我方待办。",
+          page: "客户管理",
+          button: "前往客户",
+        }
+      : {
+          title: "保持当前节奏，继续补齐真实记录",
+          detail: "当前没有需要立即提升优先级的预测对象。",
+          page: "首页概览",
+          button: "返回首页",
+        };
+
+  if (!workload && !cashflow && !topProject && !topCustomer) {
+    return <section className="prediction-window-shell is-empty">
+      <Database size={28} weight="duotone" />
+      <span><b>预测引擎等待真实数据</b><small>系统不会为了填满页面而生成不存在的趋势或评分。</small></span>
+    </section>;
+  }
+
+  return <section className="prediction-window-shell" aria-label="未来经营窗口">
+    <header className="prediction-window-header">
+      <div><span>PREDICTION ENGINE</span><h2>未来窗口编排台</h2><p>把已发生事实、透明规则预测与人工行动建议放在同一条时间线上。</p></div>
+      <div><small>数据更新 {formatAnalysisTime(generatedAt)}</small><small>本地规则引擎 v1.0</small><b>规则评分 ≠ 概率</b></div>
+    </header>
+
+    <div className="prediction-window-grid">
+      <main className="prediction-runway-card">
+        <header><span><CalendarBlank size={17} weight="duotone" />事实 · 未来 14 天经营跑道</span><small>从今天开始</small></header>
+        <div className="prediction-runway-axis" aria-hidden="true">
+          <span><i />今天<b>{predictionDate(workload?.horizon_start || generatedAt)}</b></span>
+          <span><i />第 7 天<b>中间检查</b></span>
+          <span><i />第 14 天<b>{predictionDate(workload?.horizon_end)}</b></span>
+        </div>
+        <div className="prediction-runway-rows">
+          <article className="runway-project">
+            <span><WarningCircle size={17} weight="fill" />交付压力</span>
+            <div><b>{topProject ? `项目「${topProject.entity_label}」· 延期风险分 ${predictionScore(topProject)} / 100` : "当前没有纳入延期风险项目"}</b><small>{topProject?.drivers[0]?.detail || "等待项目交付数据"}</small></div>
+            {topProject && <em>{predictionRiskLabel(topProject.risk_level)}</em>}
+          </article>
+          <article className="runway-workload">
+            <span><Gauge size={17} weight="fill" />工作负载</span>
+            <div><b>{workload?.prediction_value ?? 0}% · {predictionRiskLabel(workload?.risk_level || null)}</b><small>剩余 {remainingHours}h · 可用 {availableHours}h · {activeProjectCount} 个项目</small></div>
+            {workload && <em>充分度 {predictionSufficiencyLabel(workload.data_sufficiency)}</em>}
+          </article>
+          <article className="runway-customer">
+            <span><UsersThree size={17} weight="fill" />跟进节奏</span>
+            <div><b>{topCustomer ? `客户「${topCustomer.entity_label}」· 优先级 ${predictionScore(topCustomer)} / 100` : "当前没有高优先级客户"}</b><small>{topCustomer?.drivers[0]?.detail || "等待客户沟通数据"}</small></div>
+            {topCustomer && <em>充分度 {predictionSufficiencyLabel(topCustomer.data_sufficiency)}</em>}
+          </article>
+        </div>
+        <footer><span><i className="fact" />事实（已发生）</span><span><i className="prediction" />预测（基于已有信息推演）</span><span><i className="advice" />建议（人工判断与行动）</span></footer>
+      </main>
+
+      <aside className="prediction-today-card">
+        <header><span>建议</span><h3>今天只做什么</h3><small>1 件事</small></header>
+        <section><small>主要建议 · 手动执行</small><h4>{todayAction.title}</h4><p>{todayAction.detail}</p></section>
+        <dl>
+          <div><dt>反方意见</dt><dd>业务记录可能尚未及时回填；先核对真实进度，避免机械执行规则排序。</dd></div>
+          <div><dt>失效条件</dt><dd>如果进度、交付时间或客户等待状态已变化，应重新生成预测。</dd></div>
+          <div><dt>证据与链接 · 只读</dt><dd>{topProject ? `项目风险分 ${predictionScore(topProject)} / 100` : "无高风险项目"} · {topCustomer ? `客户优先级 ${predictionScore(topCustomer)} / 100` : "无高优先级客户"} · 负载 {workload?.prediction_value ?? 0}%</dd></div>
+        </dl>
+        <button type="button" onClick={() => onNavigate(todayAction.page)}>{todayAction.button}<ArrowRight size={15} /></button>
+        <footer><ShieldCheck size={14} weight="fill" />所有建议均为人工执行，不会自动修改业务数据。</footer>
+      </aside>
+    </div>
+
+    <section className="prediction-cashflow-strip">
+      <header><span>预测</span><h3>未来 30 天 · 现金流</h3><small>仅依据已知应收 / 应付</small></header>
+      <strong>¥{Math.round(cashflow?.prediction_value ?? 0)}</strong>
+      <div><span><small>确定性流入</small><b>¥{Math.round(knownInflow)}</b></span><span><small>已知计划支出</small><b>¥{Math.round(knownOutflow)}</b></span><span className={cashflow?.data_sufficiency === "low" ? "is-unavailable" : ""}><small>基线新增收入</small><b>{cashflow?.data_sufficiency === "low" ? "暂不可用" : "已纳入"}</b></span></div>
+      <p>{cashflow?.summary || "历史数据不足，不生成虚假趋势。"}</p>
+    </section>
+
+    <div className="prediction-lists-grid">
+      <section><header><span>事实</span><h3>项目风险清单</h3></header>{projects.length ? projects.slice(0, 4).map((item) => <article key={item.id}><WarningCircle size={15} weight="fill" /><span><b>{item.entity_label || "未命名项目"}</b><small>{item.drivers[0]?.detail || item.summary}</small></span><strong>{predictionScore(item)} / 100<small>{predictionRiskLabel(item.risk_level)}</small></strong></article>) : <p>当前没有纳入预测的项目。</p>}</section>
+      <section><header><span>事实</span><h3>客户跟进清单</h3></header>{customers.length ? customers.slice(0, 4).map((item) => <article key={item.id}><UsersThree size={15} weight="fill" /><span><b>{item.entity_label || "未命名客户"}</b><small>{item.drivers[0]?.detail || item.summary}</small></span><strong>{predictionScore(item)} / 100<small>{predictionRiskLabel(item.risk_level)}</small></strong></article>) : <p>当前没有纳入预测的客户。</p>}</section>
+    </div>
+
+    <footer className="prediction-boundary-note"><Info size={15} weight="fill" /><span><b>解释边界</b>：事实是账本记录；预测是透明规则对未来窗口的推演；建议始终由你人工判断和执行。</span></footer>
+  </section>;
+}
+
+function EstimateCalibrationWorkbench({
+  summary,
+  running,
+  error,
+  onRun,
+}: {
+  summary: CalibrationSummaryView | null;
+  running: boolean;
+  error: string;
+  onRun: () => void;
+}) {
+  if (!summary && !error) {
+    return <section className="estimate-calibration-shell is-loading" aria-label="正在读取估算校准">
+      <span /><span /><span />
+    </section>;
+  }
+  if (!summary) {
+    return <section className="estimate-calibration-shell is-error" role="status">
+      <WarningCircle size={24} weight="duotone" />
+      <span><b>估算校准暂时无法读取</b><small>{error}</small></span>
+    </section>;
+  }
+  const labels = {
+    insufficient: "收集期 · 不生成校准值",
+    exploratory: "探索期 · 仅展示偏差",
+    actionable: "样本已达到人工采用门槛",
+  } as const;
+  const metrics = [
+    ["可用校准样本", String(summary.sample_count), "已验证且已冻结的项目结果"],
+    ["估算平均绝对误差", summary.metrics.mae_hours == null ? "—" : `${summary.metrics.mae_hours.toFixed(1)}h`, summary.metrics.mae_hours == null ? "样本不足，不计算 MAE" : "实际工时与原始估算的平均偏差"],
+    ["超时项目比例", summary.metrics.overrun_rate == null ? "—" : `${Math.round(summary.metrics.overrun_rate * 100)}%`, summary.metrics.overrun_rate == null ? "样本不足，不生成比例" : "实际工时高于原始估算"],
+    ["建议区间覆盖率", summary.metrics.interval_coverage == null ? "—" : `${Math.round(summary.metrics.interval_coverage * 100)}%`, summary.metrics.interval_coverage == null ? "至少 6 个样本后做留一法评估" : "留一法历史覆盖结果"],
+  ];
+  const excluded = summary.candidates.filter((item) => !item.eligible);
+  return <section className="estimate-calibration-shell" aria-label="估算校准与报价辅助">
+    <header className="estimate-calibration-hero">
+      <div><span>ESTIMATE CALIBRATION</span><h2>把“预计工时”变成可复盘的经营资产</h2><p>只读取已验证交付结果，按结果可用时间冻结样本；建议与原始估算并存，最终采用值始终由你决定。</p></div>
+      <div><small>本地计算 · 不调用模型</small><b>{labels[summary.sufficiency]}</b></div>
+    </header>
+    <div className="estimate-calibration-metrics">
+      {metrics.map(([label, value, detail]) => <article key={label}><small>{label}</small><strong>{value}</strong><p>{detail}</p></article>)}
+    </div>
+    <div className="estimate-calibration-grid">
+      <main>
+        <header><div><span>SAMPLE READINESS</span><h3>校准样本准备度</h3><p>只纳入可追溯、已验证、时间切点完整的项目结果。</p></div><em>{labels[summary.sufficiency]}</em></header>
+        <div className="estimate-calibration-threshold">
+          <div><span>当前 <b>{summary.sample_count}</b> 个样本</span><span>正式建议门槛 <b>{summary.thresholds.actionable_min}</b> 个</span></div>
+          <i style={{ "--calibration-progress": `${Math.min(100, summary.sample_count / summary.thresholds.actionable_min * 100)}%` } as CSSProperties}><u /></i>
+          <footer><span>0–2 · 仅收集</span><span>3–4 · 探索性展示</span><span>5+ · 可供人工采用</span></footer>
+        </div>
+        {summary.sample_count === 0 ? <div className="estimate-calibration-empty"><Database size={25} weight="duotone" /><span><b>还没有满足条件的真实结果样本</b><small>现有项目继续保留预计工时与实际工时；只有验收完成、结果冻结且时间切点完整后，才会进入校准计算。</small></span></div> : <div className="estimate-calibration-evidence"><CheckCircle size={21} weight="fill" /><span><b>{summary.sample_count} 个样本已通过时间因果检查</b><small>{summary.sample_start_at && summary.sample_end_at ? `${predictionDate(summary.sample_start_at)} – ${predictionDate(summary.sample_end_at)}` : "等待样本时间窗口"}</small></span></div>}
+        <div className="estimate-calibration-conditions">
+          <span><i>1</i><b>原始估算可追溯</b><small>保留计划版本与预计工时</small></span>
+          <span><i>2</i><b>交付已经 verified</b><small>implemented 不能替代验收</small></span>
+          <span><i>3</i><b>实际工时已冻结</b><small>保存 finalized_at 时间切点</small></span>
+          <span><i>4</i><b>结果状态可用</b><small>取消 / 终止合作不污染样本</small></span>
+        </div>
+        {excluded.slice(0, 3).map((item) => <div className="estimate-calibration-candidate" key={item.project_id}><span><b>{item.project_name}</b><small>预计 {item.estimated_hours}h · 实际 {item.actual_hours}h · verified {item.verified_progress}% · {item.freeze_version ? `冻结 v${item.freeze_version}${item.freeze_stale ? " 已过期" : ""}` : "尚未冻结"}</small>{item.readiness_actions[0] && <small>下一步：{item.readiness_actions[0]}</small>}</span><em>{item.exclusion_reason || "暂不可纳入"}</em><button type="button" onClick={() => { window.location.hash = encodeURIComponent(`项目管理/${item.project_id}/codex`); }}>打开项目</button></div>)}
+      </main>
+      <aside>
+        <span>CALIBRATION SNAPSHOT</span><h3>冻结一次可重放快照</h3><p>这是显式分析写入，不会改变项目、报价、任务或交付日期。</p>
+        <dl><div><dt>算法版本</dt><dd>{summary.algorithm_version}</dd></div><div><dt>记录状态</dt><dd>{summary.record_status === "completed" ? "已持久化" : "实时预览"}</dd></div><div><dt>当前快照</dt><dd>{summary.is_stale ? "事实已变化" : "与当前事实一致"}</dd></div></dl>
+        <button type="button" disabled={running} onClick={onRun}>{running ? <><ArrowClockwise className="analysis-spin" size={16} />正在冻结</> : <><ClipboardText size={16} />生成校准快照</>}</button>
+        <small><ShieldCheck size={14} weight="fill" />打开页面和普通读取不会写入数据库。</small>
+      </aside>
+    </div>
+  </section>;
+}
+
 export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string) => void }) {
   const [analysis, setAnalysis] = useState<BusinessAnalysisOverview | null>(null);
   const [history, setHistory] = useState<BusinessAnalysisHistoryItem[]>([]);
@@ -539,6 +751,10 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
   const [selectedModel, setSelectedModel] = useState("");
   const [modelLoading, setModelLoading] = useState(true);
   const [modelError, setModelError] = useState("");
+  const [latestPredictions, setLatestPredictions] = useState<PredictionLatestView | null>(null);
+  const [estimateCalibration, setEstimateCalibration] = useState<CalibrationSummaryView | null>(null);
+  const [calibrationRunning, setCalibrationRunning] = useState(false);
+  const [calibrationError, setCalibrationError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -566,6 +782,44 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
       });
     return () => { active = false; };
   }, [reloadVersion]);
+
+  useEffect(() => {
+    let active = true;
+    void predictionService.latest()
+      .then((value) => { if (active) setLatestPredictions(value); })
+      .catch(() => { if (active) setLatestPredictions(null); });
+    return () => { active = false; };
+  }, [reloadVersion]);
+
+  useEffect(() => {
+    let active = true;
+    setCalibrationError("");
+    void predictionService.calibration()
+      .then((value) => { if (active) setEstimateCalibration(value); })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setEstimateCalibration(null);
+        setCalibrationError(errorMessage(reason));
+      });
+    return () => { active = false; };
+  }, [reloadVersion]);
+
+  async function runEstimateCalibration() {
+    if (!window.confirm("确认冻结当前估算校准快照？这只会写入分析证据，不会修改项目、报价、任务或交付日期。")) return;
+    setCalibrationRunning(true);
+    setCalibrationError("");
+    try {
+      const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}`;
+      const value = await predictionService.runCalibration(`calibration-ui:${suffix}`);
+      setEstimateCalibration(value);
+      setNotice({ message: value.sample_count ? `已冻结 ${value.sample_count} 个真实校准样本` : "已保存零样本校准快照，未生成虚假指标", tone: "success" });
+    } catch (reason) {
+      setCalibrationError(errorMessage(reason));
+      setNotice({ message: errorMessage(reason), tone: "error" });
+    } finally {
+      setCalibrationRunning(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -926,6 +1180,19 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
   ];
 
   return <div className="business-analysis-page">
+    <PredictionForecastWorkbench
+      predictions={analysis.predictions?.length || viewingHistory ? analysis.predictions || [] : latestPredictions?.run.results || []}
+      generatedAt={analysis.predictions?.length || viewingHistory ? analysis.snapshot_time || analysis.generated_at : latestPredictions?.run.generated_at || analysis.snapshot_time || analysis.generated_at}
+      onNavigate={onNavigate}
+    />
+
+    <EstimateCalibrationWorkbench
+      summary={estimateCalibration}
+      running={calibrationRunning}
+      error={calibrationError}
+      onRun={() => void runEstimateCalibration()}
+    />
+
     <section className="analysis-command-bar">
       <div className="analysis-command-copy">
         <span><ChartLineUp size={18} weight="duotone" />主动经营分析</span>

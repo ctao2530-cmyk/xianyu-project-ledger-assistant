@@ -12,6 +12,8 @@ from ..adapters import IncomingMessage, XianyuAdapterProtocol
 from ..database import Database
 from ..models import Conversation, Message, OperationLog
 from .ai_queue import AIJobQueue
+from .customer_images import CustomerImageArchiveService, MediaFetcher
+from .event_hub import EventHub
 from .notifier import MacOSNotifier
 from .repository import hydrate_conversation_context, ingest_message
 
@@ -34,7 +36,12 @@ class MessageProcessor:
         context_hydration_timeout_seconds: float = 1.5,
         item_cache_ttl_seconds: int = 1800,
         reply_burst_coalesce_seconds: float = 0,
+        reply_drafts_enabled: bool = True,
+        sales_analysis_enabled: bool = True,
         sales_agent: SalesAnalysisScheduler | None = None,
+        customer_images: CustomerImageArchiveService | None = None,
+        media_fetchers: dict[str, MediaFetcher] | None = None,
+        event_hub: EventHub | None = None,
     ) -> None:
         self.database = database
         self.adapter = adapter
@@ -44,7 +51,12 @@ class MessageProcessor:
         self.context_hydration_timeout_seconds = context_hydration_timeout_seconds
         self.item_cache_ttl_seconds = item_cache_ttl_seconds
         self.reply_burst_coalesce_seconds = reply_burst_coalesce_seconds
+        self.reply_drafts_enabled = reply_drafts_enabled
+        self.sales_analysis_enabled = sales_analysis_enabled
         self.sales_agent = sales_agent
+        self.customer_images = customer_images
+        self.media_fetchers = media_fetchers or {}
+        self.event_hub = event_hub
         self._ingest_lock = asyncio.Lock()
         self._hydration_tasks: set[asyncio.Task[None]] = set()
         self._reply_debounce_lock = asyncio.Lock()
@@ -183,11 +195,51 @@ class MessageProcessor:
             self._reply_debounce_tasks[conversation_key] = (message_id, task)
 
     async def _enqueue_ai_services(self, message_id: int) -> None:
-        await self.ai_queue.enqueue(message_id, automatic=True)
-        if self.sales_agent is not None:
+        if self.reply_drafts_enabled:
+            await self.ai_queue.enqueue(message_id, automatic=True)
+        if self.sales_analysis_enabled and self.sales_agent is not None:
             # Sales analysis is independent: scheduling it never blocks or
             # changes the existing reply-draft task and it cannot send.
             self.sales_agent.schedule(message_id)
+
+    async def _archive_customer_images(
+        self,
+        event: IncomingMessage,
+        message_id: int,
+        *,
+        source: str,
+    ) -> None:
+        if not self.customer_images or event.direction != "inbound":
+            return
+        if not (event.media or event.message_type == "image"):
+            return
+        try:
+            result = await self.customer_images.capture_message(
+                event,
+                message_id,
+                self.media_fetchers.get(event.channel),
+                capture_source=(
+                    "history"
+                    if source == "image_history"
+                    else "wecom" if source == "wecom_callback" else "live"
+                ),
+            )
+            logger.info(
+                "客户原图归档完成 channel=%s message_id=%s stored=%s failed=%s",
+                event.channel,
+                message_id,
+                result["stored"],
+                result["failed"],
+            )
+        except Exception as exc:
+            # Message ingestion has already committed.  Image failures remain
+            # visible in the archive status and must never roll back chat data.
+            logger.warning(
+                "客户原图归档失败 channel=%s message_id=%s error=%s",
+                event.channel,
+                message_id,
+                type(exc).__name__,
+            )
 
     async def process(self, event: IncomingMessage, *, source: str = "live") -> int:
         started = time.monotonic()
@@ -197,12 +249,36 @@ class MessageProcessor:
                     session, event, [], None, source=source
                 )
         if not result.is_new:
+            await self._archive_customer_images(
+                event,
+                result.message_id,
+                source=source,
+            )
             logger.info(
                 "忽略重复渠道消息 channel=%s platform_message_id=%s",
                 event.channel,
                 event.platform_message_id,
             )
             return result.message_id
+
+        if self.event_hub is not None and event.message_type == "text":
+            # ingest_message commits before returning.  The event deliberately
+            # carries no body and never schedules model work.
+            with self.database.session() as session:
+                persisted = session.get(Message, result.message_id)
+                conversation_id = persisted.conversation_id if persisted else None
+            if conversation_id is not None:
+                self.event_hub.publish_nowait(
+                    {
+                        "type": "customer_context_updated",
+                        "conversation_id": conversation_id,
+                        "message_id": result.message_id,
+                        "channel": event.channel,
+                        "direction": event.direction,
+                    }
+                )
+
+        await self._archive_customer_images(event, result.message_id, source=source)
 
         # Official channel sync APIs also return messages sent by a human
         # agent.  Persist them as conversation/style context, but never create
@@ -228,24 +304,37 @@ class MessageProcessor:
                 name=f"hydrate-context-{result.message_id}",
             )
             self._track_hydration(hydration_task)
-        await self._schedule_ai_generation(
-            f"{event.channel}:{event.conversation_id}", result.message_id
-        )
-        logger.info(
-            "渠道消息已入库并安排 AI 任务 channel=%s source=%s message_id=%s "
-            "cached_context=%s coalesce_ms=%s elapsed_ms=%s",
-            event.channel,
-            source,
-            result.message_id,
-            self._cached_context_ready(event),
-            int(self.reply_burst_coalesce_seconds * 1000),
-            int((time.monotonic() - started) * 1000),
-        )
+        if self.reply_drafts_enabled or self.sales_analysis_enabled:
+            await self._schedule_ai_generation(
+                f"{event.channel}:{event.conversation_id}", result.message_id
+            )
+            logger.info(
+                "渠道消息已入库并安排可用分析任务 channel=%s source=%s message_id=%s "
+                "drafts_enabled=%s sales_enabled=%s cached_context=%s coalesce_ms=%s elapsed_ms=%s",
+                event.channel,
+                source,
+                result.message_id,
+                self.reply_drafts_enabled,
+                self.sales_analysis_enabled,
+                self._cached_context_ready(event),
+                int(self.reply_burst_coalesce_seconds * 1000),
+                int((time.monotonic() - started) * 1000),
+            )
+        else:
+            logger.info(
+                "渠道消息已入库，客户消息 AI 功能已暂停 channel=%s source=%s message_id=%s elapsed_ms=%s",
+                event.channel,
+                source,
+                result.message_id,
+                int((time.monotonic() - started) * 1000),
+            )
         return result.message_id
 
     async def regenerate(
         self, message_id: int, *, provider_name: str | None = None
     ) -> int | None:
+        if not self.reply_drafts_enabled:
+            return None
         task = await self.ai_queue.enqueue(
             message_id,
             automatic=False,

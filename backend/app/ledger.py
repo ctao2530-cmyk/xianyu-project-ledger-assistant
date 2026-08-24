@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import Database
@@ -20,10 +21,12 @@ from .models import (
     BusinessProject,
     BusinessSetting,
     BusinessTask,
+    Item,
     LedgerState,
     PaymentNode,
     ProjectChangeOrderRecord,
     ProjectSettlementIssueRecord,
+    ProductMonitor,
     ProjectDevelopmentLog,
     utcnow,
 )
@@ -75,6 +78,7 @@ def default_snapshot() -> dict[str, Any]:
             "colorMode": "light",
             "targetHourlyRate": None,
             "quoteRiskBuffer": 0.15,
+            "defaultDailyAvailableHours": 8,
         },
         "completedOrderCount": 0,
     }
@@ -99,6 +103,14 @@ def normalize_snapshot(value: dict[str, Any]) -> dict[str, Any]:
 
 def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _safe_json_object(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _same(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -165,6 +177,12 @@ class ProjectChangeOrderError(RuntimeError):
 
 class SettlementIssueError(RuntimeError):
     def __init__(self, message: str, *, code: str = "invalid_settlement_issue") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class LedgerValidationError(RuntimeError):
+    def __init__(self, message: str, *, code: str = "invalid_ledger_data") -> None:
         super().__init__(message)
         self.code = code
 
@@ -925,17 +943,109 @@ class LedgerService:
         session: Session,
         snapshot: dict[str, Any],
         expected_revision: int,
+        *,
+        trusted_delivery_sync: bool = False,
     ) -> tuple[int, dict[str, Any]]:
         state = self._state(session)
         if state.revision != expected_revision:
             raise RevisionConflict(state.revision)
         normalized = normalize_snapshot(snapshot)
+        if not trusted_delivery_sync:
+            self._preserve_derived_delivery_fields(session, normalized)
         state.revision += 1
         state.snapshot_json = canonical_json(normalized)
         state.updated_at = utcnow()
         self._sync_normalized(session, normalized)
         session.flush()
         return state.revision, normalized
+
+    @staticmethod
+    def _preserve_derived_delivery_fields(
+        session: Session,
+        snapshot: dict[str, Any],
+    ) -> None:
+        """Reject legacy snapshot overwrites of phase-four derived values."""
+
+        project_ids = [
+            str(row.get("id") or "")
+            for row in snapshot.get("projects", [])
+            if str(row.get("id") or "")
+        ]
+        existing_projects = (
+            {
+                row.id: row
+                for row in session.scalars(
+                    select(BusinessProject).where(BusinessProject.id.in_(project_ids))
+                )
+            }
+            if project_ids
+            else {}
+        )
+        for row in snapshot.get("projects", []):
+            project_id = str(row.get("id") or "")
+            existing = existing_projects.get(project_id)
+            row["progress"] = int(existing.progress) if existing else 0
+            row["progressSource"] = (
+                str(existing.progress_source or "verified") if existing else "verified"
+            )
+            if existing and existing.legacy_progress is not None:
+                row["legacyProgress"] = int(existing.legacy_progress)
+
+        task_ids = [
+            str(row.get("id") or "")
+            for row in snapshot.get("tasks", [])
+            if str(row.get("id") or "")
+        ]
+        existing_tasks = (
+            {
+                row.id: row
+                for row in session.scalars(
+                    select(BusinessTask).where(BusinessTask.id.in_(task_ids))
+                )
+            }
+            if task_ids
+            else {}
+        )
+        for row in snapshot.get("tasks", []):
+            task_id = str(row.get("id") or "")
+            existing = existing_tasks.get(task_id)
+            row["actualHours"] = (
+                round(float(existing.actual_hours), 6) if existing else 0.0
+            )
+
+        # Old clients used physical removal as "delete". Phase four keeps
+        # delivery history and requires an explicit retirement operation, so an
+        # ordinary ledger save cannot silently erase an active task from the
+        # canonical snapshot.
+        snapshot_task_ids = {
+            str(row.get("id") or "") for row in snapshot.get("tasks", [])
+        }
+        snapshot_project_ids = {
+            str(row.get("id") or "") for row in snapshot.get("projects", [])
+        }
+        missing_active_tasks = list(
+            session.scalars(
+                select(BusinessTask).where(
+                    BusinessTask.project_id.in_(snapshot_project_ids),
+                    BusinessTask.delivery_scope_active.is_(True),
+                    BusinessTask.id.not_in(snapshot_task_ids),
+                )
+            )
+        ) if snapshot_project_ids else []
+        for task in missing_active_tasks:
+            snapshot["tasks"].append(
+                {
+                    "id": task.id,
+                    "projectId": task.project_id,
+                    "title": task.title,
+                    "status": task.status,
+                    "startDate": task.start_date,
+                    "dueDate": task.due_date,
+                    "estimatedHours": float(task.estimated_hours),
+                    "actualHours": round(float(task.actual_hours), 6),
+                    "stage": _safe_json_object(task.stage_payload_json),
+                }
+            )
 
     def _sync_normalized(self, session: Session, snapshot: dict[str, Any]) -> None:
         def put(model, record_id: str, values: dict[str, Any]):
@@ -958,23 +1068,56 @@ class LedgerService:
                 "last_contact_at": str(row.get("lastContactAt") or ""),
                 "level": str(row.get("level") or "C"),
                 "tags_json": canonical_json(row.get("tags") or []),
+                "current_need": str(row.get("currentNeed") or ""),
+                "price_type": str(row.get("priceType") or ""),
+                "price_amount": (
+                    float(row["priceAmount"])
+                    if row.get("priceAmount") is not None
+                    else None
+                ),
+                "next_action": str(row.get("nextAction") or ""),
+                "notes": str(row.get("notes") or ""),
             })
         for row in snapshot["projects"]:
             if not _row_id(row):
                 continue
             project_kind = "personal" if row.get("projectKind") == "personal" else "client"
+            item_external_id = str(row.get("itemExternalId") or "").strip()
+            item_id = None
+            if item_external_id:
+                item_id = session.scalar(
+                    select(Item.id)
+                    .join(ProductMonitor, ProductMonitor.item_id == Item.id)
+                    .where(
+                        Item.external_id == item_external_id,
+                        ProductMonitor.ownership_status == "owned",
+                    )
+                    .limit(1)
+                )
+                if item_id is None:
+                    raise LedgerValidationError(
+                        "来源商品必须是当前账号已确认的本人商品",
+                        code="owned_product_required",
+                    )
             put(BusinessProject, _row_id(row), {
                 "name": str(row.get("name") or "未命名项目"),
                 "customer_id": str(row["customerId"]) if row.get("customerId") else None,
                 "project_kind": project_kind,
                 "lead_id": row.get("leadId"),
                 "conversation_id": row.get("conversationId"),
+                "item_id": item_id,
                 "requirement_version_id": row.get("requirementVersionId"),
                 "quote_id": row.get("quoteId"),
                 "total_amount": float(row.get("totalAmount") or 0),
                 "start_date": str(row.get("startDate") or ""),
                 "due_date": str(row.get("dueDate") or ""),
                 "progress": int(row.get("progress") or 0),
+                "legacy_progress": (
+                    int(row["legacyProgress"])
+                    if row.get("legacyProgress") is not None
+                    else None
+                ),
+                "progress_source": str(row.get("progressSource") or "verified"),
                 "status": str(row.get("status") or "pending"),
                 "type": str(row.get("type") or "定制开发"),
                 "estimated_hours": float(row.get("estimatedHours") or 0),

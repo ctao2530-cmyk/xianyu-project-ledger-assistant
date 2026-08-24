@@ -34,6 +34,7 @@ import {
   ShieldCheck,
   Sparkle,
   Stack,
+  Storefront,
   Target,
   Timer,
   TrendUp,
@@ -53,12 +54,18 @@ import {
   getCustomerBusiness,
   getProjectFinancials,
 } from "../data/businessMetrics";
-import { localPlatformService, type BusinessQuote, type BusinessRequirementAnalysis, type BusinessReview } from "../data/localPlatformService";
+import { localPlatformService, type BusinessQuote, type BusinessRequirementAnalysis, type BusinessReview, type CodexProjectVerificationView } from "../data/localPlatformService";
 import {
   LedgerRevisionConflictError,
   mockLedgerService,
 } from "../data/mockService";
 import { projectKindOf } from "../data/projectKinds";
+import {
+  predictionService,
+  predictionSufficiencyLabel,
+  type CalibrationQuoteAssistView,
+  type PredictionResult,
+} from "../data/predictionService";
 import { hasTerminalSettlementIssue, latestSettlementIssue, settlementIssueLabels } from "../data/settlementIssues";
 import type {
   Customer,
@@ -76,6 +83,9 @@ import type {
 } from "../types";
 import { ImmersiveTaskFlow } from "./ImmersiveTaskFlow";
 import { ProjectTaskEditor } from "./ProjectTaskEditor";
+import { PredictionSummaryStrip } from "../components/PredictionSummaryStrip";
+import { CodexSyncWorkbench } from "../components/CodexSyncWorkbench";
+import { CodexVerificationWorkbench } from "../components/CodexVerificationWorkbench";
 import "./business-assistant.css";
 import "./customer-classification.css";
 
@@ -118,7 +128,7 @@ const projectStatusLabel: Record<Project["status"], string> = {
   overdue: "已逾期",
 };
 
-export type ProjectDetailTab = "overview" | "tasks" | "gantt" | "immersive" | "communication" | "quote" | "logs" | "files";
+export type ProjectDetailTab = "overview" | "tasks" | "gantt" | "immersive" | "codex" | "verification" | "communication" | "quote" | "logs" | "files" | "edit";
 
 export interface ProjectPageRoute {
   projectId: string;
@@ -128,11 +138,22 @@ export interface ProjectPageRoute {
 export type ProjectRouteMode = "push" | "replace" | "back";
 
 const followLabel: Record<CustomerFollowUpStatus, string> = {
-  new: "新线索",
-  contacted: "已联系",
-  proposal: "报价中",
+  new: "跟进中",
+  contacted: "跟进中",
+  proposal: "跟进中",
   won: "已成交",
-  inactive: "暂缓跟进",
+  inactive: "已流失",
+};
+
+const editableFollowStatuses: Array<[CustomerFollowUpStatus, string]> = [
+  ["contacted", "跟进中"],
+  ["won", "已成交"],
+  ["inactive", "已流失"],
+];
+
+const normalizeEditableFollowStatus = (status: CustomerFollowUpStatus): CustomerFollowUpStatus => {
+  if (status === "won" || status === "inactive") return status;
+  return "contacted";
 };
 
 function Surface({ className = "", children }: { className?: string; children: ReactNode }) {
@@ -204,11 +225,86 @@ function BarProgress({ value, tone = "purple" }: { value: number; tone?: string 
   return <div className="business-progress"><i className={`business-progress-${tone}`} style={{ width: `${Math.min(100, Math.max(0, value))}%` }} /></div>;
 }
 
+function ProjectEstimateCalibration({
+  value,
+  loading,
+  error,
+  busy,
+  adoptedHours,
+  targetHourlyRate,
+  riskBuffer,
+  dailyHours,
+  onAdoptedHoursChange,
+  onDecision,
+}: {
+  value: CalibrationQuoteAssistView | null;
+  loading: boolean;
+  error: string;
+  busy: boolean;
+  adoptedHours: string;
+  targetHourlyRate: number | null;
+  riskBuffer: number;
+  dailyHours: number;
+  onAdoptedHoursChange: (value: string) => void;
+  onDecision: (action: "adopt" | "reject") => void;
+}) {
+  if (loading) return <Surface className="project-estimate-calibration is-loading" aria-label="正在读取工时校准建议"><span /><span /><span /></Surface>;
+  if (!value) return <Surface className="project-estimate-calibration is-error"><WarningCircle size={22} weight="duotone" /><span><b>工时校准建议暂时不可用</b><small>{error || "请稍后重新进入需求报价页"}</small></span></Surface>;
+
+  const statusLabel = value.status === "adopted"
+    ? "已人工采用"
+    : value.status === "rejected"
+      ? "已人工拒绝"
+      : value.status === "pending"
+        ? "等待人工决定"
+        : value.status === "preview"
+          ? "实时预览 · 尚未冻结"
+          : value.sufficiency === "exploratory"
+            ? "探索样本 · 仅展示偏差"
+            : "样本收集中";
+  const suggestionReady = value.suggested_hours != null;
+  const decisionReady = value.sufficiency === "actionable" && Boolean(value.suggestion_id);
+  const adopted = value.status === "adopted" ? value.adopted_hours : null;
+  const appliedHours = adopted ?? value.original_estimated_hours;
+  const quoteAmount = targetHourlyRate ? appliedHours * targetHourlyRate * (1 + riskBuffer) : null;
+  const suggestedQuote = targetHourlyRate && value.suggested_hours != null
+    ? value.suggested_hours * targetHourlyRate * (1 + riskBuffer)
+    : null;
+  const scheduleText = value.lower_hours != null && value.upper_hours != null
+    ? `${Math.max(1, Math.ceil(value.lower_hours / dailyHours))}–${Math.max(1, Math.ceil(value.upper_hours / dailyHours))} 个工作日`
+    : `${Math.max(1, Math.ceil(value.original_estimated_hours / dailyHours))} 个工作日`;
+
+  return <Surface className="project-estimate-calibration">
+    <header>
+      <div><span>VERIFIED OUTCOME CALIBRATION</span><h2>工时校准与报价 / 排期辅助</h2><p>只读取已验证且已冻结的项目结果；建议不会覆盖项目原始预计工时。</p></div>
+      <em className={`status-${value.status}`}>{statusLabel}</em>
+    </header>
+    <div className="project-estimate-layers" aria-label="原始估算、校准建议与人工采用值">
+      <article className="is-original"><small>01 · 原始估算</small><strong>{value.original_estimated_hours}h</strong><p>项目创建时保存，始终保留且不被校准覆盖。</p></article>
+      <article className={suggestionReady ? "is-suggested" : "is-unavailable"}><small>02 · 校准建议</small><strong>{suggestionReady ? `${value.suggested_hours}h` : "暂不生成"}</strong><p>{suggestionReady && value.lower_hours != null && value.upper_hours != null ? `历史 P25–P75 区间 ${value.lower_hours}–${value.upper_hours}h${suggestedQuote == null ? "" : ` · 约 ${money.format(suggestedQuote)}`}` : `${value.sample_count} 个可用样本；达到 5 个后才可供人工采用。`}</p></article>
+      <article className={adopted != null ? "is-adopted" : "is-unavailable"}><small>03 · 人工采用值</small><strong>{adopted != null ? `${adopted}h` : "尚未采用"}</strong><p>{value.status === "rejected" ? "本轮建议已拒绝，报价仍以原始估算为基准。" : adopted != null ? "这是人工决定投影；原始估算和决策审计均保留。" : "未确认前不会进入报价或排期辅助基准。"}</p></article>
+    </div>
+    <div className="project-estimate-assist">
+      <span><small>当前报价辅助基准</small><b>{appliedHours}h</b><em>{quoteAmount == null ? "请先在设置中心填写目标时薪" : `约 ${money.format(quoteAmount)}`}</em></span>
+      <span><small>风险缓冲</small><b>{Math.round(riskBuffer * 100)}%</b><em>{targetHourlyRate ? `${money.format(targetHourlyRate)}/小时` : "目标时薪未设置"}</em></span>
+      <span><small>排期辅助</small><b>{scheduleText}</b><em>按每日 {dailyHours}h 计算，不修改交付日期</em></span>
+    </div>
+    {decisionReady && <div className="project-estimate-decision">
+      <label><span>人工采用工时</span><input type="number" min="0.5" max="10000" step="0.5" value={adoptedHours} disabled={busy} onChange={(event) => onAdoptedHoursChange(event.target.value)} /></label>
+      <button type="button" className="is-adopt" disabled={busy || !(Number(adoptedHours) > 0)} onClick={() => onDecision("adopt")}><CheckCircle size={16} weight="fill" />{busy ? "正在保存" : "人工采用"}</button>
+      <button type="button" className="is-reject" disabled={busy} onClick={() => onDecision("reject")}><X size={16} />拒绝建议</button>
+    </div>}
+    {value.status === "preview" && <p className="project-estimate-preview-note"><ShieldCheck size={15} weight="fill" />已有 5 个以上样本，但尚未生成持久化校准快照；请先在经营分析中心显式冻结快照，随后才能人工采用或拒绝。</p>}
+    <footer><ShieldCheck size={15} weight="fill" /><span><b>{value.formula}</b><small>当前仅提供计算辅助；不会创建或修改 QuoteProposal、项目、任务、交付日期或客户消息。</small></span></footer>
+  </Surface>;
+}
+
 export function ProjectDetail({
   snapshot,
   projectId,
   tab,
   onBack,
+  onEdit,
   onTabChange,
   onCreatePaymentPlan,
   onCreateChangeOrder,
@@ -220,6 +316,7 @@ export function ProjectDetail({
   projectId: string;
   tab: ProjectDetailTab;
   onBack: () => void;
+  onEdit: () => void;
   onTabChange: (tab: ProjectDetailTab) => void;
   onCreatePaymentPlan: (projectId: string) => void;
   onCreateChangeOrder: (projectId: string) => void;
@@ -263,6 +360,12 @@ export function ProjectDetail({
   const [taskEditor, setTaskEditor] = useState<
     { mode: "create" } | { mode: "edit"; task: ProjectTask } | null
   >(null);
+  const [verificationView, setVerificationView] = useState<CodexProjectVerificationView | null>(null);
+  const [estimateCalibration, setEstimateCalibration] = useState<CalibrationQuoteAssistView | null>(null);
+  const [estimateCalibrationLoading, setEstimateCalibrationLoading] = useState(false);
+  const [estimateCalibrationError, setEstimateCalibrationError] = useState("");
+  const [estimateCalibrationBusy, setEstimateCalibrationBusy] = useState(false);
+  const [adoptedHours, setAdoptedHours] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const duration = daysBetween(project.startDate, project.dueDate);
   const projectKind = projectKindOf(project);
@@ -273,24 +376,9 @@ export function ProjectDetail({
   const healthScore = Math.max(28, Math.min(98, 92 - overdueTasks * 14 - (project.status === "overdue" ? 18 : 0) - projectIssues.length * 18));
   const totalTimeline = Math.max(1, new Date(`${project.dueDate}T00:00:00`).getTime() - new Date(`${project.startDate}T00:00:00`).getTime());
   const persistTasks = (nextTasks: ProjectTask[]) => {
-    const projectTasks = nextTasks.filter((item) => item.projectId === project.id);
-    const progress = projectTasks.length
-      ? Math.round(projectTasks.filter((item) => item.status === "done").length / projectTasks.length * 100)
-      : 0;
-    const dueAt = new Date(`${project.dueDate}T23:59:59`).getTime();
-    const nextStatus: Project["status"] = progress === 100
-      ? project.status === "completed" ? "completed" : "delivered"
-      : dueAt < Date.now()
-        ? "overdue"
-        : progress > 0
-          ? "in_progress"
-          : "pending";
     onSnapshotChange({
       ...snapshot,
       tasks: nextTasks,
-      projects: snapshot.projects.map((item) => item.id === project.id
-        ? { ...item, progress, status: nextStatus }
-        : item),
     });
   };
   const updateTask = (taskId: string) => {
@@ -343,28 +431,92 @@ export function ProjectDetail({
     event.target.value = "";
   };
   const tabs = [
-    ["overview", "经营总览", Gauge], ["tasks", "任务列表", ListChecks], ["gantt", "甘特图", ChartLineUp],
-    ["immersive", "沉浸任务流", Stack],
-    ["communication", "客户沟通", ChatCircleDots], ["quote", "需求报价", FileText],
-    ["logs", "开发日志", NotePencil], ["files", "项目附件", Paperclip],
+    ["overview", "总览", Gauge], ["tasks", "任务", ListChecks], ["gantt", "甘特图", ChartLineUp],
+    ["codex", "Codex 同步", Code], ["quote", "需求报价", FileText],
+    ["logs", "日志", NotePencil], ["files", "附件", Paperclip], ["verification", "交付核验", ShieldCheck],
   ] as const;
-  const visibleTabs = tabs.filter(([key]) => !isPersonal || (key !== "communication" && key !== "quote"));
+  const visibleTabs = tabs.filter(([key]) => !isPersonal || key !== "quote");
 
   useEffect(() => {
-    if (isPersonal && (tab === "communication" || tab === "quote")) onTabChange("immersive");
+    if (isPersonal && (tab === "communication" || tab === "quote")) onTabChange("overview");
   }, [isPersonal, onTabChange, tab]);
 
   useEffect(() => setTaskEditor(null), [projectId]);
+
+  useEffect(() => {
+    let active = true;
+    setVerificationView(null);
+    void localPlatformService.projectVerification(projectId)
+      .then((next) => { if (active) setVerificationView(next); })
+      .catch(() => { if (active) setVerificationView(null); });
+    return () => { active = false; };
+  }, [projectId]);
+
+  useEffect(() => {
+    if (isPersonal || tab !== "quote") return;
+    let active = true;
+    setEstimateCalibrationLoading(true);
+    setEstimateCalibrationError("");
+    void predictionService.projectCalibration(projectId)
+      .then((next) => {
+        if (!active) return;
+        setEstimateCalibration(next);
+        setAdoptedHours(String(next.adopted_hours ?? next.suggested_hours ?? next.original_estimated_hours));
+        setEstimateCalibrationLoading(false);
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setEstimateCalibration(null);
+        setEstimateCalibrationError(reason instanceof Error ? reason.message : "工时校准建议读取失败");
+        setEstimateCalibrationLoading(false);
+      });
+    return () => { active = false; };
+  }, [isPersonal, projectId, tab]);
+
+  const decideEstimateCalibration = async (action: "adopt" | "reject") => {
+    if (!estimateCalibration?.suggestion_id) return;
+    const nextHours = Number(adoptedHours);
+    if (action === "adopt" && !(nextHours > 0)) {
+      setEstimateCalibrationError("请输入大于 0 的人工采用工时");
+      return;
+    }
+    const verb = action === "adopt" ? `采用 ${nextHours} 小时` : "拒绝本轮校准建议";
+    if (!window.confirm(`确认${verb}？该决定会追加审计记录，但不会修改项目原始预计工时、报价或交付日期。`)) return;
+    setEstimateCalibrationBusy(true);
+    setEstimateCalibrationError("");
+    try {
+      const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}`;
+      const next = await predictionService.decideCalibration(
+        projectId,
+        estimateCalibration.suggestion_id,
+        {
+          request_id: `calibration-decision-ui:${suffix}`,
+          expected_revision: estimateCalibration.suggestion_revision,
+          action,
+          ...(action === "adopt" ? { adopted_hours: nextHours } : {}),
+          note: "项目需求报价页人工决定",
+        },
+      );
+      setEstimateCalibration(next);
+      setAdoptedHours(String(next.adopted_hours ?? next.suggested_hours ?? next.original_estimated_hours));
+    } catch (reason) {
+      setEstimateCalibrationError(reason instanceof Error ? reason.message : "人工决定保存失败");
+    } finally {
+      setEstimateCalibrationBusy(false);
+    }
+  };
+
+  const verifiedProgress = verificationView?.progress.verified_delivery.percent ?? 0;
 
   return <div className="business-page project-detail-page">
     <section className="project-workspace-shell project-detail-workspace">
       <header className="project-detail-workspace-head">
         <button className="business-back" onClick={onBack}><ArrowLeft size={17} />返回项目列表</button>
-        <span className={`project-kind-badge kind-${projectKind}`}>{isPersonal ? <Code size={15} /> : <Briefcase size={15} />}{projectKindLabel[projectKind]}</span>
+        <div className="project-detail-head-actions"><span className={`project-kind-badge kind-${projectKind}`}>{isPersonal ? <Code size={15} /> : <Briefcase size={15} />}{projectKindLabel[projectKind]}</span><button type="button" onClick={onEdit}><PencilSimple size={15} />编辑项目</button></div>
       </header>
       <div className="project-detail-hero">
         <div className="project-detail-heading"><span className={`project-avatar project-${project.accent}`}>{isPersonal ? <Code size={27} weight="duotone" /> : <Briefcase size={27} weight="duotone" />}</span><div><small>{project.type || (isPersonal ? "个人开发" : "定制开发")}{!isPersonal && customer ? ` · ${customer.name}` : ""}</small><h2>{project.name}</h2><p>{project.notes || (isPersonal ? "聚焦个人产品、开源计划与长期能力沉淀。" : "围绕交付目标推进开发、验收与回款。")}</p></div><span className="project-health"><i />项目健康度 {healthScore}</span></div>
-        <div className="project-detail-summary"><span><small>自动工期</small><b>{duration} 天</b></span><span><small>计划进度</small><b>{project.progress}%</b></span><span><small>实际投入</small><b>{financial.actualHours} 小时</b></span><span><small>{isPersonal ? "距离里程碑" : "距离交付"}</small><b>{remainingDays} 天</b></span></div>
+        <div className="project-detail-summary"><span><small>自动工期</small><b>{duration} 天</b></span><span><small>已验证交付进度</small><b>{verifiedProgress}%</b></span><span><small>实际投入</small><b>{verificationView ? verificationView.time.total_hours : financial.actualHours} 小时</b></span><span><small>{isPersonal ? "距离里程碑" : "距离交付"}</small><b>{remainingDays} 天</b></span></div>
       </div>
       <section className="project-detail-kpis" aria-label="项目核心数据">
         {isPersonal ? <>
@@ -398,6 +550,7 @@ export function ProjectDetail({
       </Surface>
       <Surface><SurfaceTitle eyebrow="PROJECT PULSE" title="项目执行脉搏" /><div className="project-pulse"><div><span>开发进度</span><b>{project.progress}%</b><BarProgress value={project.progress} tone="purple" /></div><div><span>任务完成</span><b>{taskCompletion}%</b><BarProgress value={taskCompletion} tone="green" /></div><div><span>工时消耗</span><b>{project.estimatedHours ? Math.round(financial.actualHours / project.estimatedHours * 100) : 0}%</b><BarProgress value={project.estimatedHours ? financial.actualHours / project.estimatedHours * 100 : 0} tone="orange" /></div></div><div className="project-customer-brief"><UserCircle size={38} weight="duotone" /><span><small>关联客户</small><b>{customer?.name}</b><em>{customer?.phone}</em></span><span><small>客户等级</small><b>{customer?.level} 级客户</b><em>{followLabel[customer?.followUpStatus || "new"]}</em></span></div></Surface>
       <Surface className="project-next-action"><SurfaceTitle eyebrow="NEXT ACTION" title="本地经营建议" /><div><Sparkle size={25} weight="fill" /><span><b>{latestIssue ? "先确认异常处理边界" : "优先检查临近交付任务"}</b><p>{latestIssue ? `已记录“${settlementIssueLabels[latestIssue.type]}”。建议保留沟通证据，明确退款、核销和仍可收金额后再继续催收。` : `当前工时已使用 ${project.estimatedHours ? Math.round(financial.actualHours / project.estimatedHours * 100) : 0}%，建议冻结新增需求，并在验收前主动发送阶段款提醒。`}</p></span></div><button onClick={() => latestIssue ? onRecordSettlementIssue(project.id) : onTabChange("tasks")}>{latestIssue ? "更新异常记录" : "查看任务安排"} <ArrowRight size={15} /></button></Surface>
+      <Surface className="project-relations-summary"><SurfaceTitle eyebrow="RELATIONSHIPS" title="客户与商品关系" action={<button type="button" onClick={onEdit}>管理关系 <ArrowRight size={14} /></button>} /><div><article><UserCircle size={23} weight="duotone" /><span><small>关联客户</small><b>{customer?.name || "未关联客户"}</b></span></article><article><Storefront size={23} weight="duotone" /><span><small>来源商品</small><b>{project.itemExternalId ? `商品 ${project.itemExternalId}` : "未关联来源商品"}</b></span></article></div><p>关系变更必须进入影响预览，并使用 revision 与 request-id 单独确认。</p></Surface>
       <Surface className="project-settlement-history"><SurfaceTitle eyebrow="EXCEPTION HISTORY" title={`项目异常记录 · ${projectIssues.length}`} action={<button type="button" onClick={() => onRecordSettlementIssue(project.id)}><Plus size={14} />记录异常</button>} />{projectIssues.length ? <div>{projectIssues.map((issue) => <article key={issue.id}><i><WarningCircle size={18} weight="duotone" /></i><span><small>{shortDate(issue.occurredAt)} · {settlementIssueLabels[issue.type]}</small><b>{issue.reason}</b>{issue.notes && <em>{issue.notes}</em>}</span><dl><div><dt>无法收回</dt><dd>{money.format(issue.receivableImpact)}</dd></div><div><dt>实际退款</dt><dd>{money.format(issue.refundAmount)}</dd></div></dl></article>)}</div> : <div className="project-settlement-empty"><CheckCircle size={23} weight="duotone" /><span><b>暂无客户或回款异常</b><small>客户不满意、退款、取消合作或拒付时，可从这里留下原因和金额影响。</small></span></div>}</Surface>
     </section>)}
 
@@ -407,9 +560,31 @@ export function ProjectDetail({
 
     {tab === "immersive" && <ImmersiveTaskFlow project={project} tasks={tasks} onCreateTask={addTask} onEditTask={editTask} onAdvanceTask={updateTask} />}
 
+    {tab === "codex" && <CodexSyncWorkbench projectId={project.id} />}
+
+    {tab === "verification" && <CodexVerificationWorkbench projectId={project.id} onProgressChange={setVerificationView} />}
+
     {tab === "communication" && <section className="project-detail-grid"><Surface className="project-module"><SurfaceTitle eyebrow="CUSTOMER CONVERSATION" title="客户沟通记录" /><div className="project-link-panel"><i><ChatCircleDots size={34} weight="duotone" /></i><span><small>来源会话</small><b>{project.conversationId ? `会话 #${project.conversationId}` : "当前项目未关联客户会话"}</b><p>{project.conversationId ? "项目由客户消息工作台人工确认转化，可返回原会话继续跟进需求与交付。" : "从客户消息完成“人工确认并转项目”后，这里会保留原会话关联。"}</p></span></div>{project.conversationId && <button className="business-primary" onClick={() => { window.location.hash = encodeURIComponent("客户消息"); }}>返回客户消息</button>}</Surface><Surface><SurfaceTitle eyebrow="CUSTOMER" title="关联客户" /><div className="project-customer-brief"><UserCircle size={38} weight="duotone" /><span><small>客户名称</small><b>{customer?.name || "未关联"}</b><em>{customer?.source === "wechat" ? "微信客户" : customer?.source === "xianyu" ? "闲鱼客户" : "经营客户"}</em></span><span><small>最近联系</small><b>{customer?.lastContactAt ? shortDate(customer.lastContactAt) : "暂无"}</b><em>{customer ? followLabel[customer.followUpStatus] : "待补充"}</em></span></div></Surface></section>}
 
-    {tab === "quote" && <section className="project-detail-grid"><Surface className="project-module"><SurfaceTitle eyebrow="REQUIREMENT VERSION" title="采用的需求与报价" /><div className="project-source-links"><article><FileText size={24} weight="duotone" /><span><small>需求版本</small><b>{project.requirementVersionId ? `需求文档 #${project.requirementVersionId}` : "未关联需求版本"}</b></span></article><article><Coins size={24} weight="duotone" /><span><small>报价版本</small><b>{project.quoteId || "未关联报价版本"}</b></span></article><article><Target size={24} weight="duotone" /><span><small>成交金额</small><b>{money.format(project.totalAmount)}</b></span></article></div><p className="business-note">从会话转化的项目会固定保存采用的需求和报价版本，后续变更不会覆盖历史确认依据。</p></Surface><Surface><SurfaceTitle eyebrow="PAYMENT PLAN" title="已生成付款节点" /><div className="payment-node-list">{snapshot.payments.filter((item) => item.projectId === project.id).map((payment, index) => <article className={payment.status === "confirmed" ? "done" : ""} key={payment.id}><i>{payment.status === "confirmed" ? <CheckCircle size={19} weight="fill" /> : index + 1}</i><span><b>{paymentLabel[payment.type]}</b><small>{payment.notes}</small></span><strong>{money.format(payment.amount)}</strong><time>{payment.dueAt ? `${shortDate(payment.dueAt)} 应收` : "待排期"}</time></article>)}</div></Surface></section>}
+    {tab === "quote" && <section className="project-quote-calibration-layout">
+      <ProjectEstimateCalibration
+        value={estimateCalibration}
+        loading={estimateCalibrationLoading}
+        error={estimateCalibrationError}
+        busy={estimateCalibrationBusy}
+        adoptedHours={adoptedHours}
+        targetHourlyRate={snapshot.settings.targetHourlyRate ?? null}
+        riskBuffer={snapshot.settings.quoteRiskBuffer ?? .15}
+        dailyHours={Math.max(1, snapshot.settings.defaultDailyAvailableHours ?? 6)}
+        onAdoptedHoursChange={setAdoptedHours}
+        onDecision={(action) => void decideEstimateCalibration(action)}
+      />
+      {estimateCalibrationError && estimateCalibration && <p className="project-estimate-inline-error" role="alert"><WarningCircle size={15} />{estimateCalibrationError}</p>}
+      <section className="project-detail-grid">
+        <Surface className="project-module"><SurfaceTitle eyebrow="REQUIREMENT VERSION" title="采用的需求与报价" /><div className="project-source-links"><article><FileText size={24} weight="duotone" /><span><small>需求版本</small><b>{project.requirementVersionId ? `需求文档 #${project.requirementVersionId}` : "未关联需求版本"}</b></span></article><article><Coins size={24} weight="duotone" /><span><small>报价版本</small><b>{project.quoteId || "未关联报价版本"}</b></span></article><article><Target size={24} weight="duotone" /><span><small>成交金额</small><b>{money.format(project.totalAmount)}</b></span></article></div><p className="business-note">从会话转化的项目会固定保存采用的需求和报价版本，后续变更不会覆盖历史确认依据；工时校准只提供旁路辅助，不会改写这些记录。</p></Surface>
+        <Surface><SurfaceTitle eyebrow="PAYMENT PLAN" title="已生成付款节点" /><div className="payment-node-list">{snapshot.payments.filter((item) => item.projectId === project.id).map((payment, index) => <article className={payment.status === "confirmed" ? "done" : ""} key={payment.id}><i>{payment.status === "confirmed" ? <CheckCircle size={19} weight="fill" /> : index + 1}</i><span><b>{paymentLabel[payment.type]}</b><small>{payment.notes}</small></span><strong>{money.format(payment.amount)}</strong><time>{payment.dueAt ? `${shortDate(payment.dueAt)} 应收` : "待排期"}</time></article>)}</div></Surface>
+      </section>
+    </section>}
 
     {tab === "logs" && <section className="project-detail-grid"><Surface className="project-module"><SurfaceTitle eyebrow="DAILY LOG" title="开发日志" /><form className="log-composer" onSubmit={addLog}><textarea value={logText} onChange={(event) => setLogText(event.target.value)} placeholder="记录今天完成的功能、客户沟通或风险变化…" rows={3} /><button className="business-primary" type="submit"><NotePencil size={16} />发布日志</button></form><div className="dev-log-list">{logs.map((log) => <article key={log.id}><i><NotePencil size={17} /></i><span><b>{log.content}</b><small>{new Date(log.createdAt).toLocaleString("zh-CN")} · {log.hours} 小时 · {log.category === "development" ? "开发" : log.category === "communication" ? "沟通" : "交付"}</small></span></article>)}</div></Surface><Surface className="log-insight"><Lightbulb size={31} weight="duotone" /><h3>本周投入 {logs.reduce((sum, item) => sum + item.hours, 0)} 小时</h3><p>沟通记录和开发日志完整，当前最大风险是验收前新增需求。建议所有变更进入下期报价。</p></Surface></section>}
 
@@ -431,7 +606,7 @@ function LegacyEnhancedProjectManagementPage({ snapshot, onCreateProject, onSnap
     return `${project.name} ${customer?.name || ""}`.toLowerCase().includes(query) && (status === "all" || project.status === status);
   }).sort((a, b) => sort === "amount" ? b.project.totalAmount - a.project.totalAmount : a.project.dueDate.localeCompare(b.project.dueDate));
   const selectedProject = projectRoute && snapshot.projects.some((item) => item.id === projectRoute.projectId) ? projectRoute.projectId : null;
-  if (selectedProject) return <ProjectDetail snapshot={snapshot} projectId={selectedProject} tab={projectRoute!.tab} onBack={() => onProjectRouteChange(null, "back")} onTabChange={(tab) => onProjectRouteChange({ projectId: selectedProject, tab }, "replace")} onCreatePaymentPlan={() => {}} onCreateChangeOrder={() => {}} onConfirmPayment={() => {}} onRecordSettlementIssue={() => {}} onSnapshotChange={onSnapshotChange} />;
+  if (selectedProject) return <ProjectDetail snapshot={snapshot} projectId={selectedProject} tab={projectRoute!.tab} onBack={() => onProjectRouteChange(null, "back")} onEdit={() => onProjectRouteChange({ projectId: selectedProject, tab: "edit" }, "push")} onTabChange={(tab) => onProjectRouteChange({ projectId: selectedProject, tab }, "replace")} onCreatePaymentPlan={() => {}} onCreateChangeOrder={() => {}} onConfirmPayment={() => {}} onRecordSettlementIssue={() => {}} onSnapshotChange={onSnapshotChange} />;
   const active = snapshot.projects.filter((item) => item.status === "in_progress");
   const averageDuration = snapshot.projects.length
     ? snapshot.projects.reduce((sum, item) => sum + daysBetween(item.startDate, item.dueDate), 0) / snapshot.projects.length
@@ -591,6 +766,13 @@ const customerSourceLabel: Record<Customer["source"], string> = {
   other: "其他",
 };
 
+const customerPriceTypeLabel = {
+  "": "暂未记录",
+  customer_budget: "客户预算",
+  operator_quote: "我的报价",
+  agreed_price: "双方确认价",
+} as const;
+
 function customerMutationRequestId(scope: "update" | "rebind") {
   const unique = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -622,10 +804,15 @@ function CustomerEditorDrawer({
     name: customer.name,
     source: customer.source,
     phone: customer.phone,
-    followUpStatus: customer.followUpStatus,
+    followUpStatus: normalizeEditableFollowStatus(customer.followUpStatus),
     lastContactAt: toLocalDateTimeInput(customer.lastContactAt),
     level: customer.level,
     tags: (customer.tags || []).join("，"),
+    currentNeed: customer.currentNeed || "",
+    priceType: (customer.priceType || "") as NonNullable<Customer["priceType"]>,
+    priceAmount: customer.priceAmount === null || customer.priceAmount === undefined ? "" : String(customer.priceAmount),
+    nextAction: customer.nextAction || "",
+    notes: customer.notes || "",
   });
   const [relationProjectId, setRelationProjectId] = useState("");
   const [preview, setPreview] = useState<CustomerRelationPreview | null>(null);
@@ -676,6 +863,15 @@ function CustomerEditorDrawer({
       setError("请输入客户名称");
       return;
     }
+    const priceAmount = draft.priceAmount.trim() ? Number(draft.priceAmount) : null;
+    if (priceAmount !== null && (!Number.isFinite(priceAmount) || priceAmount <= 0)) {
+      setError("价格金额必须大于 0");
+      return;
+    }
+    if (priceAmount !== null && !draft.priceType) {
+      setError("填写金额时请选择价格类型");
+      return;
+    }
     setBusy(true);
     setError("");
     setNotice("");
@@ -689,6 +885,11 @@ function CustomerEditorDrawer({
         lastContactAt: draft.lastContactAt ? new Date(draft.lastContactAt).toISOString() : "",
         level: draft.level,
         tags: draft.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
+        currentNeed: draft.currentNeed.trim(),
+        priceType: draft.priceType,
+        priceAmount,
+        nextAction: draft.nextAction.trim(),
+        notes: draft.notes.trim(),
       });
       onPersistedSnapshot(next);
       setNotice("客户资料已保存到 SQLite");
@@ -760,10 +961,15 @@ function CustomerEditorDrawer({
           <label className="customer-editor-wide"><span>客户名称</span><input value={draft.name} maxLength={255} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} /></label>
           <label><span>来源</span><select value={draft.source} onChange={(event) => setDraft((value) => ({ ...value, source: event.target.value as Customer["source"] }))}>{(Object.entries(customerSourceLabel) as Array<[Customer["source"], string]>).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           <label><span>客户等级</span><select value={draft.level} onChange={(event) => setDraft((value) => ({ ...value, level: event.target.value as CustomerLevel }))}><option value="A">A · 高价值</option><option value="B">B · 重点培养</option><option value="C">C · 普通客户</option></select></label>
-          <label><span>关系状态</span><select value={draft.followUpStatus} onChange={(event) => setDraft((value) => ({ ...value, followUpStatus: event.target.value as CustomerFollowUpStatus }))}>{(Object.entries(followLabel) as Array<[CustomerFollowUpStatus, string]>).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          <label className="customer-status-field"><span>关系状态</span><select value={draft.followUpStatus} onChange={(event) => setDraft((value) => ({ ...value, followUpStatus: event.target.value as CustomerFollowUpStatus }))}>{editableFollowStatuses.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><small>原新线索、已联系、报价中统一归为跟进中</small></label>
           <label><span>最近联系</span><input type="datetime-local" value={draft.lastContactAt} onChange={(event) => setDraft((value) => ({ ...value, lastContactAt: event.target.value }))} /></label>
           <label className="customer-editor-wide"><span>联系方式</span><input value={draft.phone} maxLength={100} placeholder="选填" onChange={(event) => setDraft((value) => ({ ...value, phone: event.target.value }))} /></label>
           <label className="customer-editor-wide"><span>客户标签</span><input value={draft.tags} placeholder="使用逗号分隔，最多 20 个" onChange={(event) => setDraft((value) => ({ ...value, tags: event.target.value }))} /></label>
+          <label className="customer-editor-wide"><span>当前需求</span><textarea rows={3} maxLength={4000} value={draft.currentNeed} placeholder="记录已确认或仍需核对的需求" onChange={(event) => setDraft((value) => ({ ...value, currentNeed: event.target.value }))} /></label>
+          <label><span>价格类型</span><select value={draft.priceType} onChange={(event) => setDraft((value) => ({ ...value, priceType: event.target.value as NonNullable<Customer["priceType"]> }))}>{Object.entries(customerPriceTypeLabel).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          <label><span>金额</span><input type="number" min="0.01" step="0.01" value={draft.priceAmount} placeholder="暂未记录" onChange={(event) => setDraft((value) => ({ ...value, priceAmount: event.target.value }))} /></label>
+          <label className="customer-editor-wide"><span>下一步行动</span><input value={draft.nextAction} maxLength={2000} placeholder="记录需要由你继续完成的动作" onChange={(event) => setDraft((value) => ({ ...value, nextAction: event.target.value }))} /></label>
+          <label className="customer-editor-wide"><span>补充备注</span><textarea rows={2} maxLength={4000} value={draft.notes} placeholder="仅记录需要长期保留的信息" onChange={(event) => setDraft((value) => ({ ...value, notes: event.target.value }))} /></label>
           <div className="customer-editor-inline-actions customer-editor-wide"><small>清空“最近联系”可修正误录的联系时间。</small><button className="customer-editor-secondary" type="submit" disabled={busy}><PencilSimple size={15} />{busy ? "保存中…" : "保存客户资料"}</button></div>
         </form>
 
@@ -790,19 +996,20 @@ function CustomerEditorDrawer({
   </div>;
 }
 
-export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onSnapshotChange, onPersistedSnapshot, globalSearch, onOpenRequirements }: { snapshot: LedgerSnapshot; onCreateCustomer: () => void; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onPersistedSnapshot: (snapshot: LedgerSnapshot) => void; globalSearch: string; onOpenRequirements: (customerId: string) => void }) {
+export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onSnapshotChange, onPersistedSnapshot, onNavigate, globalSearch, onOpenRequirements }: { snapshot: LedgerSnapshot; onCreateCustomer: () => void; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onPersistedSnapshot: (snapshot: LedgerSnapshot) => void; onNavigate: (page: string) => void; globalSearch: string; onOpenRequirements: (customerId: string) => void }) {
   const [selected, setSelected] = useState(snapshot.customers[0]?.id || "");
   const [lifecycle, setLifecycle] = useState<"following" | "won" | "lost">("following");
   const [channel, setChannel] = useState<"all" | "xianyu" | "wechat">("all");
   const [requirementCount, setRequirementCount] = useState(0);
   const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
+  const [customerPredictions, setCustomerPredictions] = useState<PredictionResult[]>([]);
   const customerRows = useMemo(() => snapshot.customers.map((item) => {
-    const business = getCustomerBusiness(snapshot, item.id);
     const lifecycleValue: "following" | "won" | "lost" = item.followUpStatus === "inactive"
       ? "lost"
-      : business.orderCount > 0 || business.totalSpend > 0 || item.followUpStatus === "won"
+      : item.followUpStatus === "won"
       ? "won"
       : "following";
+    const business = getCustomerBusiness(snapshot, item.id);
     const channels = new Set([item.source, ...(item.channelIdentities || []).map((identity) => identity.channel)]);
     return { item, business, lifecycle: lifecycleValue, channels };
   }), [snapshot]);
@@ -817,6 +1024,14 @@ export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onS
   const selectedId = visibleRows.some((row) => row.item.id === selected) ? selected : visibleRows[0]?.item.id || "";
   const customer = snapshot.customers.find((item) => item.id === selectedId);
   const editingCustomer = snapshot.customers.find((item) => item.id === editingCustomerId);
+  const selectedPrediction = customerPredictions.find((row) => row.entity_id === selectedId);
+  useEffect(() => {
+    let active = true;
+    void predictionService.target("customer_followup_priority")
+      .then((rows) => { if (active) setCustomerPredictions(rows); })
+      .catch(() => { if (active) setCustomerPredictions([]); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     if (!selectedId) { setRequirementCount(0); return; }
     let active = true;
@@ -828,27 +1043,26 @@ export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onS
   const selectedBusiness = getCustomerBusiness(snapshot, selectedId);
   const nextStatus = () => {
     if (!customer) return;
-    const flow: CustomerFollowUpStatus[] = ["new", "contacted", "proposal", "won"];
-    const current = customer.followUpStatus;
-    const index = flow.indexOf(current);
-    const followUpStatus = current === "inactive" ? "contacted" : flow[Math.min(flow.length - 1, Math.max(0, index + 1))];
+    const followUpStatus = customer.followUpStatus === "inactive"
+      ? "contacted"
+      : normalizeEditableFollowStatus(customer.followUpStatus);
     onSnapshotChange({ ...snapshot, customers: snapshot.customers.map((item) => item.id === customer.id ? { ...item, followUpStatus, lastContactAt: new Date().toISOString() } : item) });
   };
   const totalSpend = snapshot.customers.reduce((sum, item) => sum + getCustomerBusiness(snapshot, item.id).totalSpend, 0);
-  if (!snapshot.customers.length) return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid"><BusinessMetric label="客户总数" value="0 位" detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} /><BusinessMetric label="累计消费" value={money.format(0)} detail="按退款后的净到账统计" tone="green" icon={Wallet} /><BusinessMetric label="A级客户" value="0 位" detail="高价值与高复购潜力" tone="orange" icon={Sparkle} /><BusinessMetric label="跟进中" value="0 位" detail="需要继续联系的客户" tone="blue" icon={BellRinging} /></section><BusinessEmptyState icon={UsersThree} title="还没有客户资料" description="客户示例数据已经清空，可以录入自己的第一位客户。" action={<button className="business-primary" onClick={onCreateCustomer}><Plus size={16} />新增客户</button>} /></div>;
+  if (!snapshot.customers.length) return <div className="business-page enhanced-crm-page"><section className="business-metrics-grid"><BusinessMetric label="客户总数" value="0 位" detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} /><BusinessMetric label="累计消费" value={money.format(0)} detail="按退款后的净到账统计" tone="green" icon={Wallet} /><BusinessMetric label="A级客户" value="0 位" detail="高价值与高复购潜力" tone="orange" icon={Sparkle} /><BusinessMetric label="跟进中" value="0 位" detail="需要继续联系的客户" tone="blue" icon={BellRinging} /></section><PredictionSummaryStrip context="customers" onNavigate={onNavigate} /><BusinessEmptyState icon={UsersThree} title="还没有客户资料" description="客户示例数据已经清空，可以录入自己的第一位客户。" action={<button className="business-primary" onClick={onCreateCustomer}><Plus size={16} />新增客户</button>} /></div>;
   return <><div className="business-page enhanced-crm-page"><section className="business-metrics-grid">
     <BusinessMetric label="客户总数" value={`${snapshot.customers.length} 位`} detail="项目、订单与联系记录已关联" tone="purple" icon={UsersThree} />
     <BusinessMetric label="累计消费" value={money.format(totalSpend)} detail="按退款后的净到账统计" tone="green" icon={Wallet} />
     <BusinessMetric label="A级客户" value={`${snapshot.customers.filter((item) => item.level === "A").length} 位`} detail="高价值与高复购潜力" tone="orange" icon={Sparkle} />
     <BusinessMetric label="跟进中" value={`${lifecycleCounts.following} 位`} detail="尚未形成真实成交的客户" tone="blue" icon={BellRinging} />
-  </section><section className="crm-layout"><main><Surface>
+  </section><PredictionSummaryStrip context="customers" onNavigate={onNavigate} /><section className="crm-layout"><main><Surface>
     <SurfaceTitle eyebrow="CUSTOMER PIPELINE" title={globalSearch ? `客户搜索结果 · ${visibleRows.length}` : "客户经营列表"} action={<button className="business-primary" onClick={onCreateCustomer}><Plus size={16} />新增客户</button>} />
     <div className="crm-classification" aria-label="客户生命周期分类">
       <div role="tablist">{([ ["following", "跟进中"], ["won", "已成交"], ["lost", "已流失"] ] as const).map(([value, label]) => <button type="button" role="tab" aria-selected={lifecycle === value} className={lifecycle === value ? "active" : ""} onClick={() => setLifecycle(value)} key={value}>{label}<b>{lifecycleCounts[value]}</b></button>)}</div>
       <nav aria-label="客户渠道筛选">{([ ["all", "全部"], ["xianyu", "闲鱼"], ["wechat", "微信"] ] as const).map(([value, label]) => <button type="button" aria-pressed={channel === value} className={channel === value ? "active" : ""} onClick={() => setChannel(value)} key={value}>{label}</button>)}</nav>
     </div>
-    {visibleRows.length ? <div className="crm-table"><div><span>客户</span><span>跟进状态</span><span>最近联系</span><span>历史订单</span><span>消费金额</span><span>客户等级</span></div>{visibleRows.map(({ item, business }) => { const status = item.followUpStatus; return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelected(item.id)} key={item.id}><span><i>{item.name.slice(0, 1)}</i><b>{item.name}<small>{item.phone || (item.source === "xianyu" ? "闲鱼客户" : "暂无联系方式")}</small></b></span><em className={`follow-${status}`}>{followLabel[status]}</em><time>{shortDate(item.lastContactAt)}</time><strong>{business.orderCount} 单</strong><strong>{money.format(business.totalSpend)}</strong><i className={`customer-level level-${item.level}`}>{item.level}</i></button>; })}</div> : <div className="crm-filter-empty"><MagnifyingGlass size={28} weight="duotone" /><b>当前分类没有客户</b><small>{globalSearch ? "尝试清除搜索词或切换分类、渠道。" : "切换生命周期或渠道查看其他客户。"}</small></div>}
-  </Surface></main>{customer ? <aside><Surface className="customer-profile"><div className="customer-profile-head"><i>{customer.name.slice(0, 1)}</i><span><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : customer.source === "referral" ? "转介绍" : "其他来源"}</small><h3>{customer.name}</h3><p>{customer.phone || "暂无联系方式"}</p></span><b className={`customer-level level-${customer.level}`}>{customer.level}</b></div><div className="customer-profile-stats"><span><small>历史订单</small><b>{selectedBusiness.orderCount}</b></span><span><small>累计消费</small><b>{money.format(selectedBusiness.totalSpend)}</b></span><span><small>最近联系</small><b>{shortDate(customer.lastContactAt)}</b></span></div><div className="customer-tags">{customer.tags?.map((tag) => <i key={tag}>{tag}</i>)}</div><button className="customer-edit-entry" onClick={() => setEditingCustomerId(customer.id)}><PencilSimple size={17} weight="duotone" /><span><b>编辑客户</b><small>资料、状态与订单关系修正</small></span><ArrowRight size={15} /></button><button className="customer-blueprint-entry" onClick={() => onOpenRequirements(customer.id)}><FileText size={17} weight="duotone" /><span><b>需求蓝图</b><small>{requirementCount ? `${requirementCount} 个需求案例` : "查看或导入客户需求"}</small></span><ArrowRight size={15} /></button><button className="business-primary wide" onClick={nextStatus}><NotePencil size={16} />{customer.followUpStatus === "inactive" ? "重新开始跟进" : "记录本次跟进"}</button></Surface><Surface><SurfaceTitle eyebrow="ORDER HISTORY" title="历史订单" /><div className="customer-order-list">{selectedBusiness.projects.length ? selectedBusiness.projects.map((project) => { const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!; return <article key={project.id}><i><Briefcase size={17} /></i><span><b>{project.name}</b><small>{shortDate(project.startDate)} · {project.status === "completed" ? "已完成" : "进行中"}</small></span><strong>{money.format(project.totalAmount)}<small>净到账 {money.format(financial.income)}</small></strong></article>; }) : <div className="customer-order-empty">暂无成交项目，需求蓝图可在成交前独立存在。</div>}</div></Surface></aside> : null}</section></div>{editingCustomer && <CustomerEditorDrawer key={editingCustomer.id} customer={editingCustomer} snapshot={snapshot} onPersistedSnapshot={onPersistedSnapshot} onClose={() => setEditingCustomerId(null)} />}</>;
+    {visibleRows.length ? <div className="crm-table"><div><span>客户</span><span>跟进状态</span><span>最近联系</span><span>历史订单</span><span>消费金额</span><span>客户等级</span></div>{visibleRows.map(({ item, business }) => { const status = item.followUpStatus; const priority = customerPredictions.find((row) => row.entity_id === item.id); return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelected(item.id)} key={item.id}><span><i>{item.name.slice(0, 1)}</i><b>{item.name}<small>{item.phone || (item.source === "xianyu" ? "闲鱼客户" : "暂无联系方式")}{priority ? ` · 优先级 ${Math.round(priority.score || 0)}/100` : ""}</small></b></span><em className={`follow-${status}`}>{followLabel[status]}</em><time>{shortDate(item.lastContactAt)}</time><strong>{business.orderCount} 单</strong><strong>{money.format(business.totalSpend)}</strong><i className={`customer-level level-${item.level}`}>{item.level}</i></button>; })}</div> : <div className="crm-filter-empty"><MagnifyingGlass size={28} weight="duotone" /><b>当前分类没有客户</b><small>{globalSearch ? "尝试清除搜索词或切换分类、渠道。" : "切换生命周期或渠道查看其他客户。"}</small></div>}
+  </Surface></main>{customer ? <aside><Surface className="customer-profile"><div className="customer-profile-head"><i>{customer.name.slice(0, 1)}</i><span><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : customer.source === "referral" ? "转介绍" : "其他来源"}</small><h3>{customer.name}</h3><p>{customer.phone || "暂无联系方式"}</p></span><b className={`customer-level level-${customer.level}`}>{customer.level}</b></div>{selectedPrediction && <section className={`customer-priority-card priority-${selectedPrediction.risk_level || "normal"}`}><header><span><Gauge size={16} weight="duotone" />今日跟进优先级</span><strong>{Math.round(selectedPrediction.score || 0)} / 100</strong></header><p>{selectedPrediction.drivers[0]?.detail || "当前没有明显的优先跟进信号。"}</p><small>数据充分度 {predictionSufficiencyLabel(selectedPrediction.data_sufficiency)} · 规则评分不是成交概率</small></section>}<div className="customer-profile-stats"><span><small>历史订单</small><b>{selectedBusiness.orderCount}</b></span><span><small>累计消费</small><b>{money.format(selectedBusiness.totalSpend)}</b></span><span><small>最近联系</small><b>{shortDate(customer.lastContactAt)}</b></span></div><div className="customer-tags">{customer.tags?.map((tag) => <i key={tag}>{tag}</i>)}</div><button className="customer-edit-entry" onClick={() => setEditingCustomerId(customer.id)}><PencilSimple size={17} weight="duotone" /><span><b>编辑客户</b><small>资料、状态与订单关系修正</small></span><ArrowRight size={15} /></button><button className="customer-blueprint-entry" onClick={() => onOpenRequirements(customer.id)}><FileText size={17} weight="duotone" /><span><b>需求蓝图</b><small>{requirementCount ? `${requirementCount} 个需求案例` : "查看或导入客户需求"}</small></span><ArrowRight size={15} /></button><button className="business-primary wide" onClick={nextStatus}><NotePencil size={16} />{customer.followUpStatus === "inactive" ? "重新开始跟进" : "记录本次跟进"}</button></Surface><Surface><SurfaceTitle eyebrow="ORDER HISTORY" title="历史订单" /><div className="customer-order-list">{selectedBusiness.projects.length ? selectedBusiness.projects.map((project) => { const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!; return <article key={project.id}><i><Briefcase size={17} /></i><span><b>{project.name}</b><small>{shortDate(project.startDate)} · {project.status === "completed" ? "已完成" : "进行中"}</small></span><strong>{money.format(project.totalAmount)}<small>净到账 {money.format(financial.income)}</small></strong></article>; }) : <div className="customer-order-empty">暂无成交项目，需求蓝图可在成交前独立存在。</div>}</div></Surface></aside> : null}</section></div>{editingCustomer && <CustomerEditorDrawer key={editingCustomer.id} customer={editingCustomer} snapshot={snapshot} onPersistedSnapshot={onPersistedSnapshot} onClose={() => setEditingCustomerId(null)} />}</>;
 }
 
 interface RequirementResult {

@@ -10,15 +10,25 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import router
 from .business_analysis_api import business_analysis_router
+from .customer_image_api import customer_image_router
 from .config import get_settings
 from .codex_plan_api import codex_plan_router
+from .codex_sync_api import codex_sync_router
+from .codex_runtime_api import codex_runtime_router
+from .codex_verification_api import codex_verification_router
 from .customer_relationship_api import customer_relationship_router
+from .customer_intake_api import customer_intake_router
 from .events import event_router
 from .ledger_api import ledger_router
+from .global_agent_api import global_agent_router
 from .logging_config import configure_logging
 from .product_api import product_router
+from .prediction_api import prediction_router
+from .phrase_library_api import phrase_library_router
+from .project_product_api import project_product_router
 from .runtime import build_runtime
 from .sales_api import sales_router
+from .traffic_growth_api import traffic_growth_router
 from .wechat_api import wechat_router
 
 
@@ -32,6 +42,7 @@ configure_logging(
         settings.wecom_corp_secret.get_secret_value(),
         settings.wecom_callback_token.get_secret_value(),
         settings.wecom_encoding_aes_key.get_secret_value(),
+        settings.xunying_codex_event_secret.get_secret_value(),
     ),
     file_path=settings.log_file,
     max_bytes=settings.log_max_bytes,
@@ -47,6 +58,7 @@ async def lifespan(app: FastAPI):
     await runtime.requirements.start()
     await runtime.product_intelligence.start()
     await runtime.listener_supervisor.start()
+    await runtime.codex_development.start()
     # WeCom credential validation uses an external API and must never delay or
     # prevent the existing Xianyu listener from starting.
     wecom_health_task = asyncio.create_task(runtime.wecom.start())
@@ -75,6 +87,8 @@ async def lifespan(app: FastAPI):
     await runtime.sales_agent.stop()
     await runtime.ai_queue.stop()
     await runtime.product_intelligence.stop()
+    await runtime.global_agent.shutdown()
+    await runtime.codex_development.close()
 
 
 app = FastAPI(
@@ -88,7 +102,12 @@ app.add_middleware(
     allow_origin_regex=r"^http://(127\.0\.0\.1|localhost):\d+$",
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Yuda-Desktop"],
+    allow_headers=[
+        "Content-Type",
+        "X-Yuda-Desktop",
+        "X-Xunying-Timestamp",
+        "X-Xunying-Signature",
+    ],
 )
 
 
@@ -127,13 +146,23 @@ async def rate_limit(request: Request, call_next):
 
 app.include_router(router)
 app.include_router(codex_plan_router)
+app.include_router(codex_sync_router)
+app.include_router(codex_runtime_router)
+app.include_router(codex_verification_router)
 app.include_router(business_analysis_router)
 app.include_router(customer_relationship_router)
+app.include_router(customer_intake_router)
 app.include_router(ledger_router)
 app.include_router(product_router)
+app.include_router(traffic_growth_router)
+app.include_router(prediction_router)
+app.include_router(project_product_router)
 app.include_router(sales_router)
 app.include_router(event_router)
 app.include_router(wechat_router)
+app.include_router(customer_image_router)
+app.include_router(global_agent_router)
+app.include_router(phrase_library_router)
 
 # Local production uses one 127.0.0.1 origin. Hash routing keeps all frontend
 # navigation in index.html, while API and callback routes above remain FastAPI.

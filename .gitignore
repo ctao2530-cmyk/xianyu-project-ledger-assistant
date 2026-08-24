@@ -9,6 +9,17 @@ dist/
 __pycache__/
 .pytest_cache/
 *.py[cod]
+/.codex-staging/
+/artifacts/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 .asset-sources/
 logs/
 data/*.db
@@ -18,6 +29,7 @@ data/attachments/
 data/requirement-attachments/
 data/requirement-exports/
 data/backups/
+data/customer-images/
 data/private/
 qa/*.png
 qa/*.jpg

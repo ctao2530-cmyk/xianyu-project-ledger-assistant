@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
+from .adapters.base import AdapterAccessVerificationError, LoginExpiredError
 from .product_schemas import (
     ProductActionCreateRequest,
     ProductActionView,
@@ -18,15 +19,30 @@ from .product_schemas import (
     ProductModificationExperimentCreateRequest,
     ProductModificationExperimentUpdateRequest,
     ProductModificationExperimentView,
+    ProductMonitorBatchDisableRequest,
+    ProductMonitorBatchDisableView,
     ProductMonitorUpdateRequest,
     ProductOperatingPlanView,
     ProductPlanSlotUpdateRequest,
     ProductRecommendationUpdateRequest,
-    ProductRegisterRequest,
+    ProductReferenceResolveRequest,
+    ProductRegistrationCommitRequest,
+    ProductRegistrationCommitView,
+    ProductRegistrationPreviewView,
     ProductTrafficBatchCompleteRequest,
     ProductTrafficBatchCreateRequest,
+    ProductTrafficBatchRecordRequest,
+    ProductTrafficBaselineRequest,
+    ProductTrafficBatchPageView,
+    ProductTrafficReplanPreviewView,
+    ProductTrafficReplanRequest,
+    ProductTrafficStartPreviewView,
+    ProductTrafficStartRequest,
+    ProductTrafficActualStartRequest,
     ProductTrafficBatchView,
     ProductTrafficCheckpointCreateRequest,
+    ProductTrafficCheckpointRetryRequest,
+    ProductTrafficCollectionModeRequest,
     ProductView,
 )
 from .services.product_intelligence import (
@@ -45,6 +61,15 @@ product_router = APIRouter(prefix="/api/products", tags=["product-intelligence"]
 
 def service_from(request: Request):
     return request.app.state.runtime.product_intelligence
+
+
+def require_local_desktop(request: Request) -> None:
+    client = request.client.host if request.client else ""
+    if (
+        client not in {"127.0.0.1", "::1", "localhost", "testclient"}
+        or request.headers.get("x-yuda-desktop") != "1"
+    ):
+        raise HTTPException(status_code=403, detail="仅允许本机桌面助手控制")
 
 
 @product_router.get("/intelligence", response_model=ProductIntelligenceView)
@@ -219,6 +244,7 @@ async def create_traffic_batch(
             actual_cost=payload.actual_cost,
             plan_slot_id=payload.plan_slot_id,
             note=payload.note,
+            checkpoint_collection_mode=payload.checkpoint_collection_mode,
         )
     except ProductRecordNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
@@ -227,15 +253,170 @@ async def create_traffic_batch(
 
 
 @product_router.post(
-    "/traffic-batches/{batch_id}/start",
+    "/traffic-batches/recorded",
     response_model=ProductTrafficBatchView,
 )
-async def start_traffic_batch(batch_id: str, request: Request) -> ProductTrafficBatchView:
+async def record_traffic_batch_now(
+    payload: ProductTrafficBatchRecordRequest,
+    request: Request,
+) -> ProductTrafficBatchView:
+    """Atomically record a purchase using the server confirmation minute."""
+
     try:
-        return service_from(request).start_traffic_batch(batch_id)
+        return await service_from(request).record_traffic_batch_now(
+            request_id=payload.request_id,
+            item_external_ids=payload.item_external_ids,
+            actual_cost=payload.actual_cost,
+            plan_slot_id=payload.plan_slot_id,
+            note=payload.note,
+            confirmed_already_purchased=payload.confirmed_already_purchased,
+            checkpoint_collection_mode=payload.checkpoint_collection_mode,
+        )
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (
+        ProductCollectionUnavailable,
+        ProductTrafficConflict,
+        ProductOwnershipRestricted,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@product_router.get("/traffic-batches", response_model=ProductTrafficBatchPageView)
+async def list_traffic_batches(
+    request: Request,
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    status: str | None = Query(default=None, max_length=32),
+) -> ProductTrafficBatchPageView:
+    try:
+        return service_from(request).traffic_batches(
+            cursor=cursor,
+            limit=limit,
+            status=status,
+        )
+    except ProductTrafficConflict as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@product_router.get(
+    "/traffic-batches/{batch_id}/replan-preview",
+    response_model=ProductTrafficReplanPreviewView,
+)
+async def traffic_batch_replan_preview(
+    batch_id: str, request: Request
+) -> ProductTrafficReplanPreviewView:
+    try:
+        return service_from(request).traffic_replan_preview(batch_id)
     except ProductRecordNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except ProductTrafficConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@product_router.post(
+    "/traffic-batches/{batch_id}/replan",
+    response_model=ProductTrafficBatchView,
+)
+async def replan_traffic_batch(
+    batch_id: str,
+    payload: ProductTrafficReplanRequest,
+    request: Request,
+) -> ProductTrafficBatchView:
+    try:
+        return service_from(request).replan_traffic_batch(
+            batch_id,
+            request_id=payload.request_id,
+            expected_updated_at=payload.expected_updated_at,
+            preview_hash=payload.preview_hash,
+        )
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (ProductTrafficConflict, ProductOwnershipRestricted) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@product_router.get(
+    "/traffic-batches/{batch_id}/start-preview",
+    response_model=ProductTrafficStartPreviewView,
+)
+async def traffic_batch_start_preview(
+    batch_id: str, request: Request
+) -> ProductTrafficStartPreviewView:
+    try:
+        return service_from(request).traffic_start_preview(batch_id)
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
+@product_router.post(
+    "/traffic-batches/{batch_id}/baseline",
+    response_model=ProductTrafficBatchView,
+)
+async def prepare_traffic_batch_baseline(
+    batch_id: str,
+    payload: ProductTrafficBaselineRequest,
+    request: Request,
+) -> ProductTrafficBatchView:
+    try:
+        return await service_from(request).prepare_traffic_baseline(
+            batch_id,
+            request_id=payload.request_id,
+            expected_updated_at=payload.expected_updated_at,
+            mode=payload.mode,
+            items=[item.model_dump() for item in payload.items],
+        )
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ProductCollectionUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except (ProductTrafficConflict, ProductOwnershipRestricted) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@product_router.post(
+    "/traffic-batches/{batch_id}/start",
+    response_model=ProductTrafficBatchView,
+)
+async def start_traffic_batch(
+    batch_id: str,
+    payload: ProductTrafficStartRequest,
+    request: Request,
+) -> ProductTrafficBatchView:
+    try:
+        return service_from(request).start_traffic_batch(
+            batch_id,
+            request_id=payload.request_id,
+            expected_updated_at=payload.expected_updated_at,
+            expected_baseline_captured_at=payload.expected_baseline_captured_at,
+        )
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (ProductTrafficConflict, ProductOwnershipRestricted) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@product_router.post(
+    "/traffic-batches/{batch_id}/actual-start",
+    response_model=ProductTrafficBatchView,
+)
+async def record_actual_overlap_start(
+    batch_id: str,
+    payload: ProductTrafficActualStartRequest,
+    request: Request,
+) -> ProductTrafficBatchView:
+    try:
+        return service_from(request).record_actual_overlap_start(
+            batch_id,
+            request_id=payload.request_id,
+            expected_updated_at=payload.expected_updated_at,
+            actual_started_at=payload.actual_started_at,
+            confirmed_already_purchased=payload.confirmed_already_purchased,
+            items=[item.model_dump() for item in payload.items],
+        )
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (ProductTrafficConflict, ProductOwnershipRestricted) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
@@ -285,6 +466,51 @@ async def record_traffic_checkpoint(
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
+@product_router.put(
+    "/traffic-batches/{batch_id}/checkpoint-collection-mode",
+    response_model=ProductTrafficBatchView,
+)
+async def update_traffic_checkpoint_collection_mode(
+    batch_id: str,
+    payload: ProductTrafficCollectionModeRequest,
+    request: Request,
+) -> ProductTrafficBatchView:
+    try:
+        return service_from(request).update_traffic_checkpoint_collection_mode(
+            batch_id,
+            request_id=payload.request_id,
+            expected_updated_at=payload.expected_updated_at,
+            mode=payload.mode,
+        )
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ProductTrafficConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@product_router.post(
+    "/traffic-batches/{batch_id}/checkpoints/{checkpoint}/retry",
+    response_model=ProductTrafficBatchView,
+)
+async def retry_traffic_checkpoint_collection(
+    batch_id: str,
+    checkpoint: str,
+    payload: ProductTrafficCheckpointRetryRequest,
+    request: Request,
+) -> ProductTrafficBatchView:
+    try:
+        return await service_from(request).retry_traffic_checkpoint_collection(
+            batch_id,
+            checkpoint,
+            request_id=payload.request_id,
+            expected_updated_at=payload.expected_updated_at,
+        )
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (ProductTrafficConflict, ProductOwnershipRestricted) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 @product_router.post(
     "/traffic-batches/{batch_id}/cancel",
     response_model=ProductTrafficBatchView,
@@ -323,15 +549,79 @@ async def update_operating_plan_slot(
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
-@product_router.post("/register", response_model=ProductView)
-async def register_product(
-    payload: ProductRegisterRequest,
+@product_router.get(
+    "/owned-listings/discover",
+    response_model=ProductRegistrationPreviewView,
+)
+async def discover_owned_listings(
     request: Request,
-) -> ProductView:
+) -> ProductRegistrationPreviewView:
+    require_local_desktop(request)
     try:
-        return service_from(request).register(payload.item_reference)
+        return await service_from(request).discover_owned_listings()
+    except ProductCollectionUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except AdapterAccessVerificationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="闲鱼要求人工完成访问验证，请在现有 Ego Lite 登录页处理后再重试",
+        ) from None
+    except LoginExpiredError as exc:
+        raise HTTPException(status_code=409, detail="闲鱼登录已失效，请先恢复连接") from None
+
+
+@product_router.post(
+    "/references/resolve",
+    response_model=ProductRegistrationPreviewView,
+)
+async def resolve_product_reference(
+    payload: ProductReferenceResolveRequest,
+    request: Request,
+) -> ProductRegistrationPreviewView:
+    require_local_desktop(request)
+    try:
+        return await service_from(request).resolve_registration_reference(
+            payload.reference
+        )
     except ProductReferenceInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    except ProductCollectionUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except AdapterAccessVerificationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="闲鱼要求人工完成访问验证，请在现有 Ego Lite 登录页处理后再重试",
+        ) from None
+    except LoginExpiredError as exc:
+        raise HTTPException(status_code=409, detail="闲鱼登录已失效，请先恢复连接") from None
+
+
+@product_router.post(
+    "/register/batch",
+    response_model=ProductRegistrationCommitView,
+)
+async def register_products_batch(
+    payload: ProductRegistrationCommitRequest,
+    request: Request,
+) -> ProductRegistrationCommitView:
+    require_local_desktop(request)
+    try:
+        return await service_from(request).commit_registration(
+            request_id=payload.request_id,
+            preview_token=payload.preview_token,
+            external_ids=payload.external_ids,
+        )
+    except ProductReferenceInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except ProductCollectionUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except AdapterAccessVerificationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="闲鱼要求人工完成访问验证，请在现有 Ego Lite 登录页处理后再重试",
+        ) from None
+    except LoginExpiredError as exc:
+        raise HTTPException(status_code=409, detail="闲鱼登录已失效，请先恢复连接") from None
 
 
 @product_router.put("/{external_id}/monitor", response_model=ProductView)
@@ -346,6 +636,21 @@ async def update_product_monitor(
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except ProductOwnershipRestricted as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@product_router.post(
+    "/monitors/disable-batch",
+    response_model=ProductMonitorBatchDisableView,
+)
+async def disable_product_monitors_batch(
+    payload: ProductMonitorBatchDisableRequest,
+    request: Request,
+) -> ProductMonitorBatchDisableView:
+    require_local_desktop(request)
+    try:
+        return service_from(request).disable_monitors(payload.external_ids)
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 @product_router.post("/{external_id}/actions", response_model=ProductActionView)

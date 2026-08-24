@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timezone
 
@@ -20,6 +21,12 @@ from .models import (
 from .runtime import Runtime
 from .schemas import (
     ConversationDetail,
+    ConversationHistoryCommitRequest,
+    ConversationHistoryCommitView,
+    ConversationHistoryPreviewRequest,
+    ConversationHistoryPreviewView,
+    ConversationHistorySearchItem,
+    ConversationHistorySearchRequest,
     ConversationListItem,
     AutomationStatusView,
     AutomationUpdateRequest,
@@ -28,6 +35,9 @@ from .schemas import (
     AIModelSettingsView,
     AIModelUpdateRequest,
     AIProviderStatusView,
+    ConnectionRecoveryView,
+    ConnectionReloadRequest,
+    DeepSeekConnectionRecoverRequest,
     DraftView,
     DraftGenerateRequest,
     ItemView,
@@ -46,10 +56,16 @@ from .schemas import (
     StyleLearningUpdateRequest,
     StyleLearningView,
     StatusView,
+    XianyuConnectionRecoverRequest,
 )
 from .services.actions import ActionConflictError, MessageNotFoundError
 from .services.ai_models import AIModelSelectionError, AIModelSettingsSnapshot
 from .services.automation import ENABLE_CONFIRMATION, AutomationUnavailableError
+from .services.connection_recovery import (
+    ConnectionRecoveryError,
+    ConnectionRecoveryResult,
+)
+from .services.conversation_history_import import ConversationHistoryImportError
 from .services.requirements import RequirementAnalysisService, RequirementServiceError
 from .services.requirement_exchange import RequirementExchangeService
 from .services.reply_strategy import ReplyStrategyError
@@ -207,6 +223,31 @@ def _require_local(request: Request) -> None:
         raise HTTPException(status_code=403, detail="仅允许本机桌面助手控制")
 
 
+def _connection_view(result: ConnectionRecoveryResult) -> ConnectionRecoveryView:
+    return ConnectionRecoveryView(
+        provider=result.provider,
+        status=result.status,
+        detail=result.detail,
+        configured=result.configured,
+        persisted=result.persisted,
+        repair_command=result.repair_command,
+    )
+
+
+def _raise_connection_error(exc: ConnectionRecoveryError) -> None:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.safe_message},
+    ) from None
+
+
+def _raise_history_import_error(exc: ConversationHistoryImportError) -> None:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.safe_message},
+    ) from None
+
+
 @router.post("/desktop/listener/pause")
 async def pause_listener(request: Request) -> dict[str, bool]:
     _require_local(request)
@@ -226,6 +267,68 @@ async def reconnect_listener(request: Request) -> dict[str, bool]:
     _require_local(request)
     await runtime_from(request).listener_supervisor.reconnect()
     return {"ok": True}
+
+
+@router.post(
+    "/connections/xianyu/recover",
+    response_model=ConnectionRecoveryView,
+)
+async def recover_xianyu_connection(
+    payload: XianyuConnectionRecoverRequest,
+    request: Request,
+) -> ConnectionRecoveryView:
+    _require_local(request)
+    try:
+        result = await runtime_from(request).connection_recovery.recover_xianyu(
+            payload.cookie.get_secret_value()
+        )
+    except ConnectionRecoveryError as exc:
+        _raise_connection_error(exc)
+    return _connection_view(result)
+
+
+@router.post(
+    "/connections/deepseek/recover",
+    response_model=ConnectionRecoveryView,
+)
+async def recover_deepseek_connection(
+    payload: DeepSeekConnectionRecoverRequest,
+    request: Request,
+) -> ConnectionRecoveryView:
+    _require_local(request)
+    try:
+        result = await runtime_from(request).connection_recovery.recover_deepseek(
+            payload.api_key.get_secret_value()
+        )
+    except ConnectionRecoveryError as exc:
+        _raise_connection_error(exc)
+    return _connection_view(result)
+
+
+@router.post(
+    "/connections/reload",
+    response_model=ConnectionRecoveryView,
+)
+async def reload_connection(
+    payload: ConnectionReloadRequest,
+    request: Request,
+) -> ConnectionRecoveryView:
+    _require_local(request)
+    try:
+        result = await runtime_from(request).connection_recovery.reload(payload.provider)
+    except ConnectionRecoveryError as exc:
+        _raise_connection_error(exc)
+    return _connection_view(result)
+
+
+@router.post(
+    "/connections/codex/check",
+    response_model=ConnectionRecoveryView,
+)
+async def check_codex_connection(request: Request) -> ConnectionRecoveryView:
+    _require_local(request)
+    result = await runtime_from(request).connection_recovery.check_codex()
+    return _connection_view(result)
 
 
 @router.get("/status", response_model=StatusView)
@@ -309,6 +412,8 @@ async def get_status(request: Request) -> StatusView:
         ai_reasoning_effort=runtime.ai_models.selection.reasoning_effort,
         reply_mode=runtime.reply_strategy.mode,
         effective_reply_model=effective_strategy.model_selection.model,
+        customer_reply_drafts_enabled=runtime.settings.customer_reply_drafts_enabled,
+        customer_quote_conversion_enabled=runtime.settings.customer_quote_conversion_enabled,
         reply_high_risk_routing_enabled=(
             runtime.settings.reply_high_risk_routing_enabled
         ),
@@ -398,7 +503,10 @@ async def get_ai_providers(
     # Healthchecks return sanitized state only; API keys and prompts never cross
     # the backend boundary.
     if refresh:
-        await runtime.deepseek.healthcheck(validate_execution=True)
+        await asyncio.gather(
+            runtime.deepseek.healthcheck(validate_execution=True),
+            runtime.ai.healthcheck(validate_execution=False),
+        )
     codex_health = runtime.ai.health
     deepseek_health = runtime.deepseek.health
     deepseek_base_url = runtime.settings.deepseek_base_url.rstrip("/")
@@ -599,6 +707,65 @@ async def list_conversations(
         return result
 
 
+@router.post(
+    "/conversations/history-import/search",
+    response_model=list[ConversationHistorySearchItem],
+)
+async def search_conversation_history(
+    payload: ConversationHistorySearchRequest,
+    request: Request,
+) -> list[ConversationHistorySearchItem]:
+    _require_local(request)
+    try:
+        result = await runtime_from(request).conversation_history_import.search(
+            query=payload.query,
+            days=payload.days,
+            limit=payload.limit,
+        )
+    except ConversationHistoryImportError as exc:
+        _raise_history_import_error(exc)
+    return [ConversationHistorySearchItem(**row) for row in result]
+
+
+@router.post(
+    "/conversations/history-import/preview",
+    response_model=ConversationHistoryPreviewView,
+)
+async def preview_conversation_history(
+    payload: ConversationHistoryPreviewRequest,
+    request: Request,
+) -> ConversationHistoryPreviewView:
+    _require_local(request)
+    try:
+        result = await runtime_from(request).conversation_history_import.preview(
+            external_conversation_id=payload.external_conversation_id,
+            message_limit=payload.message_limit,
+        )
+    except ConversationHistoryImportError as exc:
+        _raise_history_import_error(exc)
+    return ConversationHistoryPreviewView(**result)
+
+
+@router.post(
+    "/conversations/history-import/commit",
+    response_model=ConversationHistoryCommitView,
+)
+async def commit_conversation_history(
+    payload: ConversationHistoryCommitRequest,
+    request: Request,
+) -> ConversationHistoryCommitView:
+    _require_local(request)
+    try:
+        result = await runtime_from(request).conversation_history_import.commit(
+            request_id=payload.request_id,
+            preview_token=payload.preview_token,
+            mark_latest_pending=payload.mark_latest_pending,
+        )
+    except ConversationHistoryImportError as exc:
+        _raise_history_import_error(exc)
+    return ConversationHistoryCommitView(**result)
+
+
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation(conversation_id: int, request: Request) -> ConversationDetail:
     runtime = runtime_from(request)
@@ -687,6 +854,11 @@ async def get_conversation(conversation_id: int, request: Request) -> Conversati
 @router.post("/messages/{message_id}/drafts/regenerate", status_code=status.HTTP_202_ACCEPTED)
 async def regenerate_drafts(message_id: int, request: Request) -> dict[str, object]:
     runtime = runtime_from(request)
+    if not runtime.settings.customer_reply_drafts_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="回复草稿功能已暂时停用",
+        )
     task_id = await runtime.processor.regenerate(message_id)
     if task_id is None:
         raise HTTPException(
@@ -706,6 +878,11 @@ async def generate_drafts_with_provider(
     request: Request,
 ) -> dict[str, object]:
     runtime = runtime_from(request)
+    if not runtime.settings.customer_reply_drafts_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="回复草稿功能已暂时停用",
+        )
     if payload.provider == "deepseek" and not runtime.settings.deepseek_configured:
         raise HTTPException(status_code=409, detail="DeepSeek API 尚未配置")
     try:

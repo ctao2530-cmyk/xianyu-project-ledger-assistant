@@ -109,6 +109,23 @@ class BusinessAnalysisReasoningService:
                 for row in baseline.data_sources
             ],
             "data_gaps": baseline.data_gaps,
+            "predictions": [
+                {
+                    "target": row.target,
+                    "entity_type": row.entity_type,
+                    "entity_id": row.entity_id,
+                    "horizon": row.horizon,
+                    "prediction_value": row.prediction_value,
+                    "score": row.score,
+                    "risk_level": row.risk_level,
+                    "data_sufficiency": row.data_sufficiency,
+                    "method": row.method,
+                    "summary": row.summary,
+                    "facts": [fact.model_dump(mode="json") for fact in row.facts],
+                    "evidence_refs": row.evidence_refs,
+                }
+                for row in baseline.predictions
+            ],
         }
 
     @staticmethod

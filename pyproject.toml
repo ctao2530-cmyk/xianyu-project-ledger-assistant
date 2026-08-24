@@ -13,6 +13,7 @@ dependencies = [
   "cryptography>=45,<47",
   "fastapi>=0.116,<1",
   "httpx[socks]>=0.28,<1",
+  "mcp>=1.13,<2",
   "msgpack>=1.1,<2",
   "pillow>=11,<13",
   "pydantic-settings>=2.10,<3",

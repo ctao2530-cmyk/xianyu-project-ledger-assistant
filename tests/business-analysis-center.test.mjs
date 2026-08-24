@@ -7,15 +7,14 @@ const pagePath = new URL("../src/pages/BusinessAnalysisPage.tsx", import.meta.ur
 const servicePath = new URL("../src/data/businessAnalysisService.ts", import.meta.url);
 const stylesPath = new URL("../src/pages/business-analysis.css", import.meta.url);
 
-test("AI经营分析中心 is an independent route after data statistics", async () => {
+test("AI经营分析中心 remains after data statistics without a standalone goal route", async () => {
   const app = await readFile(appPath, "utf8");
   const statisticsIndex = app.indexOf('{ label: "数据统计", icon: ChartBar }');
   const analysisIndex = app.indexOf('{ label: "经营分析中心", icon: ChartLineUp }');
-  const goalIndex = app.indexOf('{ label: "目标计划", icon: Target }');
 
   assert.ok(statisticsIndex >= 0);
   assert.ok(analysisIndex > statisticsIndex);
-  assert.ok(goalIndex > analysisIndex);
+  assert.doesNotMatch(app, /\{ label: "目标计划", icon: Target \}/);
   assert.match(app, /经营分析中心: \{ title: "AI经营分析中心"/);
 });
 

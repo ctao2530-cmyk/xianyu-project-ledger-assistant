@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import math
 import re
+import secrets
 from collections import Counter, defaultdict
 from datetime import datetime, time, timedelta, timezone
 from statistics import median
@@ -45,11 +47,15 @@ from ..models import (
     ProductMarketSampleResult,
     ProductModificationExperiment,
     ProductMonitor,
+    ProductRegistrationRequest,
     ProductOperatingPlan,
     ProductOperatingPlanSlot,
     ProductStrategyRecommendation,
     ProductTrafficBatch,
+    ProductTrafficBatchEvent,
     ProductTrafficBatchItem,
+    ProductTrafficCheckpointJob,
+    ProductTrafficCheckpointJobItem,
     ProductTrafficCheckpoint,
     ProductTrafficReminderLog,
     ProjectSettlementIssueRecord,
@@ -66,6 +72,7 @@ from ..product_schemas import (
     ProductIntelligenceView,
     ProductLaunchPlanView,
     ProductLaunchRecommendationView,
+    ProductLinkedProjectView,
     ProductMarketKeywordCandidateView,
     ProductMarketBenchmarkView,
     ProductMarketReferenceView,
@@ -83,9 +90,18 @@ from ..product_schemas import (
     ProductSnapshotView,
     ProductTrafficBatchItemView,
     ProductTrafficBatchView,
+    ProductTrafficBatchPageView,
     ProductTrafficCheckpointMetricsView,
+    ProductTrafficCheckpointJobItemView,
+    ProductTrafficCheckpointJobView,
+    ProductTrafficExploratoryPointView,
+    ProductTrafficItemCheckpointView,
     ProductTrafficSummaryView,
     ProductTrafficTimeBucketView,
+    ProductTrafficStartPreviewView,
+    ProductTrafficOverlapItemView,
+    ProductTrafficConflictingBatchView,
+    ProductTrafficReplanPreviewView,
     ProductView,
     ProductWindowMetricsView,
     PublishTimingView,
@@ -93,6 +109,10 @@ from ..product_schemas import (
 )
 from .event_hub import EventHub
 from .notifier import MacOSNotifier
+from .product_references import (
+    ProductReferenceResolutionError,
+    resolve_product_reference,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -142,10 +162,40 @@ DEMAND_THEMES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 TERMINATED_PROJECT_ISSUE_TYPES = ("project_cancelled", "cooperation_terminated")
-RULES_VERSION = "v2.2"
-CHECKPOINT_HOURS = {"h1": 1, "h6": 6, "h24": 24, "h72": 72}
+RULES_VERSION = "v2.4.3"
+CHECKPOINT_HOURS = {"h1": 1, "h6": 6, "h24": 24, "h48": 48, "h72": 72}
+LEGACY_CHECKPOINT_ORDER = ("h1", "h6", "h24", "h72")
+ACTUAL_CHECKPOINT_ORDER = ("h1", "h6", "h24", "h48")
 CHECKPOINT_ORDER = tuple(CHECKPOINT_HOURS)
+CHECKPOINT_MAX_DELAY_MINUTES = {
+    "h1": 30,
+    "h6": 60,
+    "h24": 180,
+    "h48": 360,
+    "h72": 360,
+}
+CHECKPOINT_SHORT_LABELS = {
+    "h1": "+1h",
+    "h6": "+6h",
+    "h24": "+24h",
+    "h48": "+48h",
+    "h72": "+72h",
+}
+INVALID_BASELINE_REASONS = {
+    "missing_baseline": "缺少投放前 T0",
+    "legacy_baseline": "使用不可靠的历史 T0",
+    "stale_baseline": "T0 与实际投放间隔超过 30 分钟",
+    "invalid_baseline_time": "T0 时间关系异常",
+}
 MODIFICATION_ACTIONS = {"title", "cover", "description", "price", "republish"}
+PLAN_ACTION_LABELS = {
+    "traffic": "安排曝光",
+    "measure": "补录观察",
+    "observe": "观察自然流量",
+    "optimize": "优化商品",
+    "rest": "暂停新增曝光",
+    "delivery_guard": "交付容量保护",
+}
 MARKET_RULES_VERSION = "market-v2"
 TECHNICAL_MARKET_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("网站与网页开发", "网站功能修改"),
@@ -288,6 +338,35 @@ def _seller_id(raw: dict) -> str:
 class ProductIntelligenceService:
     """Daily, read-only product monitoring plus deterministic local advice."""
 
+    @staticmethod
+    def _observation_window_hours(batch: ProductTrafficBatch) -> int:
+        """Return the immutable protocol window, defaulting legacy rows to 72h."""
+
+        return 48 if int(getattr(batch, "observation_window_hours", 72) or 72) == 48 else 72
+
+    def _checkpoint_order_for_batch(
+        self,
+        batch: ProductTrafficBatch,
+    ) -> tuple[str, ...]:
+        return (
+            ACTUAL_CHECKPOINT_ORDER
+            if self._observation_window_hours(batch) == 48
+            else LEGACY_CHECKPOINT_ORDER
+        )
+
+    def _terminal_checkpoint_for_batch(self, batch: ProductTrafficBatch) -> str:
+        return self._checkpoint_order_for_batch(batch)[-1]
+
+    def _observation_title(self, batch: ProductTrafficBatch) -> str:
+        anchor = self._local(batch.started_at or batch.planned_at)
+        window = self._observation_window_hours(batch)
+        if anchor is None:
+            return f"{window} 小时投流观察"
+        return (
+            f"{anchor.month}月{anchor.day}日 {anchor.hour:02d}:{anchor.minute:02d} "
+            f"投流后的 {window} 小时观察结论"
+        )
+
     def __init__(
         self,
         database: Database,
@@ -306,6 +385,402 @@ class ProductIntelligenceService:
         self.timezone = ZoneInfo(settings.product_collection_timezone)
         self._task: asyncio.Task | None = None
         self._collection_lock = asyncio.Lock()
+        self._registration_previews: dict[str, dict] = {}
+        self._traffic_replan_previews: dict[str, dict] = {}
+        # Wired after construction to avoid a service import cycle.  Growth
+        # experiments are advisory and may only relax the hero listing's
+        # cooldown inside an explicitly confirmed scale cohort.
+        self.traffic_growth = None
+
+    def _cleanup_registration_previews(self) -> None:
+        now = self._now().astimezone(timezone.utc)
+        expired = [
+            token
+            for token, preview in self._registration_previews.items()
+            if preview["expires_at"] < now
+        ]
+        for token in expired:
+            self._registration_previews.pop(token, None)
+
+    def _registration_preview(
+        self,
+        *,
+        source: str,
+        items: list[dict],
+        warnings: list[str] | None = None,
+    ) -> dict:
+        self._cleanup_registration_previews()
+        token = secrets.token_urlsafe(32)
+        expires_at = utcnow() + timedelta(minutes=15)
+        self._registration_previews[token] = {
+            "source": source,
+            "items": {str(item["external_id"]): item for item in items},
+            "expires_at": expires_at,
+            "result": None,
+        }
+        return {
+            "token": token,
+            "expires_at": expires_at,
+            "source": source,
+            "items": [self._registration_candidate_view(item) for item in items],
+            "warnings": warnings or [],
+        }
+
+    def _registration_candidate_view(self, item: dict) -> dict:
+        external_id = str(item["external_id"])
+        with self.database.session() as session:
+            existing = session.scalar(
+                select(Item).where(Item.external_id == external_id)
+            )
+            monitor = (
+                session.scalar(
+                    select(ProductMonitor).where(ProductMonitor.item_id == existing.id)
+                )
+                if existing
+                else None
+            )
+        status = str(item.get("status") or "状态未知")
+        ownership_status = str(item.get("ownership_status") or "pending")
+        monitoring_enabled = bool(monitor and monitor.enabled)
+        blocked_reason = None
+        if status != "在售":
+            blocked_reason = "商品当前不是在售状态，不能加入采集"
+        elif ownership_status != "owned":
+            blocked_reason = (
+                "卖家与当前登录账号不一致，不能加入采集"
+                if ownership_status == "excluded"
+                else "暂时无法确认商品属于当前登录账号，不能加入采集"
+            )
+        elif monitoring_enabled:
+            blocked_reason = "已在采集"
+        return {
+            "external_id": external_id,
+            "title": str(item.get("title") or "未知商品"),
+            "price": _as_money(item.get("price")),
+            "status": status,
+            "ownership_status": ownership_status,
+            "already_registered": monitor is not None,
+            "monitoring_enabled": monitoring_enabled,
+            "can_register": blocked_reason is None,
+            "blocked_reason": blocked_reason,
+        }
+
+    @staticmethod
+    def _registration_remote_status(raw: dict) -> str:
+        status_text = str(
+            raw.get("itemStatusStr")
+            or raw.get("statusText")
+            or raw.get("statusDesc")
+            or ""
+        ).strip()
+        if status_text in {"在售", "上架中", "售卖中"}:
+            return "在售"
+        if status_text and any(
+            marker in status_text
+            for marker in ("下架", "删除", "失效", "售罄", "卖出", "已售")
+        ):
+            return status_text
+        status_code = raw.get("itemStatus")
+        if status_code is not None:
+            normalized = str(status_code).strip()
+            if normalized == "0":
+                return "在售"
+            if normalized == "1":
+                return "已下架"
+        return "状态未知"
+
+    async def discover_owned_listings(self, limit: int = 100) -> dict:
+        if not self.settings.xianyu_configured:
+            raise ProductCollectionUnavailable(
+                "请先在设置中心配置有效的闲鱼 Cookie，系统不会读取或展示 Cookie 内容"
+            )
+        try:
+            rows = await self.adapter.list_owned_items(min(max(limit, 1), 100))
+        except (LoginExpiredError, AdapterAccessVerificationError):
+            raise
+        except Exception as exc:
+            _code, detail = self._safe_collection_error(exc)
+            raise ProductCollectionUnavailable(
+                f"当前账号在售商品读取失败，未加入任何商品：{detail}"
+            ) from None
+        items = [
+            {
+                "external_id": row.external_id,
+                "title": row.title,
+                "price": row.price,
+                "status": row.status,
+                "ownership_status": "owned",
+                "ownership_source": "account_listing",
+                "description": None,
+                "raw": None,
+            }
+            for row in rows
+            if row.status == "在售"
+        ]
+        return self._registration_preview(
+            source="account_listing",
+            items=items,
+            warnings=["这里只读取当前登录账号的在售列表，不会发布、修改或下架商品"],
+        )
+
+    async def resolve_registration_reference(self, reference: str) -> dict:
+        if not self.settings.xianyu_configured:
+            raise ProductCollectionUnavailable(
+                "请先在设置中心配置有效的闲鱼 Cookie，系统不会读取或展示 Cookie 内容"
+            )
+        try:
+            external_id = await resolve_product_reference(reference)
+        except ProductReferenceResolutionError as exc:
+            raise ProductReferenceInvalid(str(exc)) from None
+        try:
+            info: ItemInfo | None = await self.adapter.fetch_item(external_id)
+        except (LoginExpiredError, AdapterAccessVerificationError):
+            raise
+        except Exception as exc:
+            code, detail = self._safe_collection_error(exc)
+            logger.warning(
+                "商品添加预览失败 item=%s error=%s code=%s",
+                external_id,
+                type(exc).__name__,
+                code,
+            )
+            raise ProductCollectionUnavailable(detail) from None
+        if info is None:
+            raise ProductCollectionUnavailable(
+                "商品详情不可读取，可能已下架、失效或当前账号无权访问"
+            )
+        ownership_status, ownership_source = self._ownership(info.raw, info.seller_id)
+        item = {
+            "external_id": external_id,
+            "title": info.title,
+            "price": info.price,
+            "status": self._registration_remote_status(info.raw),
+            "ownership_status": ownership_status,
+            "ownership_source": f"remote_{ownership_source}",
+            "description": info.description,
+            "raw": info.raw,
+        }
+        warnings = []
+        if item["status"] != "在售":
+            warnings.append("商品当前不是在售状态，不能加入采集")
+        elif ownership_status == "excluded":
+            warnings.append("卖家与当前登录账号不一致，不能加入采集")
+        elif ownership_status == "pending":
+            warnings.append("暂时无法确认卖家身份，不能加入采集")
+        else:
+            warnings.append("已验证为当前账号的在售商品，可以加入每日只读采集")
+        return self._registration_preview(
+            source="shared_reference",
+            items=[item],
+            warnings=warnings,
+        )
+
+    async def _revalidate_registration_candidates(
+        self,
+        *,
+        source: str,
+        selected: list[str],
+        preview_items: dict[str, dict],
+    ) -> dict[str, dict]:
+        validated: dict[str, dict] = {}
+        if source == "account_listing":
+            try:
+                rows = await self.adapter.list_owned_items(100)
+            except (LoginExpiredError, AdapterAccessVerificationError):
+                raise
+            except Exception as exc:
+                _code, detail = self._safe_collection_error(exc)
+                raise ProductCollectionUnavailable(
+                    f"无法复核商品当前在售状态，未加入任何商品：{detail}"
+                ) from None
+            current = {str(row.external_id): row for row in rows}
+            for external_id in selected:
+                row = current.get(external_id)
+                if row is None:
+                    raise ProductReferenceInvalid(
+                        f"商品 {external_id} 已不在当前账号商品列表中，请重新读取"
+                    )
+                if row.status != "在售":
+                    raise ProductReferenceInvalid(
+                        f"商品 {external_id} 当前不是在售状态，不能加入采集"
+                    )
+                candidate = dict(preview_items[external_id])
+                candidate.update(
+                    {
+                        "title": row.title,
+                        "price": row.price,
+                        "status": "在售",
+                        "ownership_status": "owned",
+                        "ownership_source": "account_listing_commit",
+                    }
+                )
+                validated[external_id] = candidate
+            return validated
+
+        if source != "shared_reference":
+            raise ProductReferenceInvalid("未知的商品添加来源，请重新读取")
+        for external_id in selected:
+            try:
+                info = await self.adapter.fetch_item(external_id)
+            except (LoginExpiredError, AdapterAccessVerificationError):
+                raise
+            except Exception as exc:
+                _code, detail = self._safe_collection_error(exc)
+                raise ProductCollectionUnavailable(
+                    f"无法复核商品 {external_id} 的当前状态，未加入任何商品：{detail}"
+                ) from None
+            if info is None:
+                raise ProductReferenceInvalid(
+                    f"商品 {external_id} 当前不可读取，可能已下架或删除"
+                )
+            status = self._registration_remote_status(info.raw)
+            if status != "在售":
+                raise ProductReferenceInvalid(
+                    f"商品 {external_id} 当前不是在售状态，不能加入采集"
+                )
+            ownership_status, ownership_source = self._ownership(
+                info.raw, info.seller_id
+            )
+            if ownership_status != "owned":
+                raise ProductReferenceInvalid(
+                    f"商品 {external_id} 未验证为当前账号本人商品，不能加入采集"
+                )
+            validated[external_id] = {
+                "external_id": external_id,
+                "title": info.title,
+                "price": info.price,
+                "status": status,
+                "ownership_status": "owned",
+                "ownership_source": f"remote_{ownership_source}_commit",
+                "description": info.description,
+                "raw": info.raw,
+            }
+        return validated
+
+    async def commit_registration(
+        self,
+        *,
+        request_id: str,
+        preview_token: str,
+        external_ids: list[str],
+    ) -> dict:
+        self._cleanup_registration_previews()
+        preview = self._registration_previews.get(preview_token)
+        if preview is None:
+            raise ProductReferenceInvalid("商品预览已失效，请重新识别")
+        selected = list(dict.fromkeys(str(value).strip() for value in external_ids))
+        if not selected or any(value not in preview["items"] for value in selected):
+            raise ProductReferenceInvalid("所选商品与当前预览不一致，请重新选择")
+        payload_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "source": preview["source"],
+                    "external_ids": sorted(selected),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        with self.database.session() as session:
+            prior = session.get(ProductRegistrationRequest, request_id)
+            if prior is not None:
+                if prior.payload_hash != payload_hash:
+                    raise ProductReferenceInvalid("该请求编号已用于不同商品，请重新提交")
+                stored = json.loads(prior.result_json)
+                product_ids = stored.get("external_ids") or []
+                return {
+                    "products": [self.product(value) for value in product_ids],
+                    "registered_count": int(stored.get("registered_count") or 0),
+                    "already_registered_count": int(
+                        stored.get("already_registered_count") or 0
+                    ),
+                    "idempotent": True,
+                }
+
+        validated_items = await self._revalidate_registration_candidates(
+            source=str(preview["source"]),
+            selected=selected,
+            preview_items=preview["items"],
+        )
+        with self.database.session() as session:
+            prior = session.get(ProductRegistrationRequest, request_id)
+            if prior is not None:
+                if prior.payload_hash != payload_hash:
+                    raise ProductReferenceInvalid("该请求编号已用于不同商品，请重新提交")
+                stored = json.loads(prior.result_json)
+                product_ids = stored.get("external_ids") or []
+                return {
+                    "products": [self.product(value) for value in product_ids],
+                    "registered_count": int(stored.get("registered_count") or 0),
+                    "already_registered_count": int(
+                        stored.get("already_registered_count") or 0
+                    ),
+                    "idempotent": True,
+                }
+
+            registered_count = 0
+            already_registered_count = 0
+            for external_id in selected:
+                candidate = validated_items[external_id]
+                item = session.scalar(select(Item).where(Item.external_id == external_id))
+                if item is None:
+                    item = Item(external_id=external_id)
+                    session.add(item)
+                    session.flush()
+                monitor = session.scalar(
+                    select(ProductMonitor).where(ProductMonitor.item_id == item.id)
+                )
+                if monitor is None:
+                    monitor = ProductMonitor(item_id=item.id)
+                    session.add(monitor)
+                    registered_count += 1
+                else:
+                    if monitor.enabled and monitor.ownership_status == "owned":
+                        raise ProductReferenceInvalid(
+                            f"商品 {external_id} 已在采集，无需重复加入"
+                        )
+                    already_registered_count += 1
+                item.title = str(candidate.get("title") or item.title or "未知商品")
+                item.price = candidate.get("price") or item.price
+                if candidate.get("description") is not None:
+                    item.description = str(candidate["description"])
+                if candidate.get("raw") is not None:
+                    item.raw_json = json.dumps(
+                        candidate["raw"], ensure_ascii=False
+                    )[:100_000]
+                monitor.source = "manual"
+                monitor.ownership_status = "owned"
+                monitor.ownership_source = str(
+                    candidate.get("ownership_source") or "registration_verified"
+                )
+                monitor.enabled = True
+                monitor.last_collection_status = "success"
+                monitor.last_error_code = None
+                monitor.last_error_detail = None
+                monitor.updated_at = utcnow()
+            stored = {
+                "external_ids": selected,
+                "registered_count": registered_count,
+                "already_registered_count": already_registered_count,
+            }
+            session.add(
+                ProductRegistrationRequest(
+                    request_id=request_id,
+                    payload_hash=payload_hash,
+                    result_json=json.dumps(stored, ensure_ascii=False),
+                )
+            )
+            session.commit()
+        self._maintain_plans_after_write()
+        self.event_hub.publish_nowait(
+            {"type": "product_monitor_updated", "item_ids": selected}
+        )
+        return {
+            "products": [self.product(value) for value in selected],
+            **stored,
+            "idempotent": False,
+        }
 
     @staticmethod
     def _active_project_count(session) -> int:
@@ -346,6 +821,145 @@ class ProductIntelligenceService:
         normalized = self._utc(value)
         return normalized.astimezone(self.timezone) if normalized else None
 
+    @staticmethod
+    def _duration_label(minutes: int) -> str:
+        hours, remaining = divmod(max(0, int(minutes)), 60)
+        if not hours:
+            return f"{remaining} 分钟"
+        if not remaining:
+            return f"{hours} 小时"
+        return f"{hours} 小时 {remaining} 分钟"
+
+    @staticmethod
+    def _minute_utc(value: datetime) -> datetime:
+        normalized = (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
+        )
+        return normalized.replace(second=0, microsecond=0)
+
+    def _traffic_datetime_label(self, value: datetime | None) -> str:
+        local_value = self._local(value)
+        if local_value is None:
+            return "时间未记录"
+        return (
+            f"{local_value.month}月{local_value.day}日"
+            f"{local_value.hour}时{local_value.minute:02d}分"
+        )
+
+    def _ensure_traffic_checkpoint_jobs_in_session(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+    ) -> list[ProductTrafficCheckpointJob]:
+        """Create the four durable jobs once an actual start exists."""
+
+        started_at = self._utc(batch.started_at)
+        if started_at is None or batch.status in {"planned", "cancelled", "invalidated"}:
+            return []
+        batch_items = session.scalars(
+            select(ProductTrafficBatchItem)
+            .where(ProductTrafficBatchItem.batch_id == batch.id)
+            .order_by(ProductTrafficBatchItem.position)
+        ).all()
+        existing = {
+            row.checkpoint: row
+            for row in session.scalars(
+                select(ProductTrafficCheckpointJob).where(
+                    ProductTrafficCheckpointJob.batch_id == batch.id
+                )
+            ).all()
+        }
+        jobs: list[ProductTrafficCheckpointJob] = []
+        now = self._now().astimezone(timezone.utc)
+        for checkpoint in self._checkpoint_order_for_batch(batch):
+            hours = CHECKPOINT_HOURS[checkpoint]
+            job = existing.get(checkpoint)
+            if job is None:
+                job = ProductTrafficCheckpointJob(
+                    id=f"traffic-checkpoint-job-{uuid4()}",
+                    batch_id=batch.id,
+                    checkpoint=checkpoint,
+                    scheduled_for=started_at + timedelta(hours=hours),
+                    status="scheduled",
+                    total_count=len(batch_items),
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(job)
+                session.flush()
+                for batch_item in batch_items:
+                    session.add(
+                        ProductTrafficCheckpointJobItem(
+                            job_id=job.id,
+                            item_id=batch_item.item_id,
+                            status="pending",
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+            jobs.append(job)
+        return jobs
+
+    def _checkpoint_job_views(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+    ) -> list[ProductTrafficCheckpointJobView]:
+        jobs = session.scalars(
+            select(ProductTrafficCheckpointJob)
+            .where(ProductTrafficCheckpointJob.batch_id == batch.id)
+            .order_by(ProductTrafficCheckpointJob.scheduled_for)
+        ).all()
+        views: list[ProductTrafficCheckpointJobView] = []
+        for job in jobs:
+            rows = session.scalars(
+                select(ProductTrafficCheckpointJobItem)
+                .where(ProductTrafficCheckpointJobItem.job_id == job.id)
+                .order_by(ProductTrafficCheckpointJobItem.id)
+            ).all()
+            views.append(
+                ProductTrafficCheckpointJobView(
+                    checkpoint=job.checkpoint,
+                    hours=CHECKPOINT_HOURS.get(job.checkpoint, 0),
+                    scheduled_for=job.scheduled_for,
+                    status=job.status,
+                    mode=batch.checkpoint_collection_mode,
+                    attempt_count=job.attempt_count,
+                    collected_count=job.collected_count,
+                    total_count=job.total_count,
+                    captured_at=job.captured_at,
+                    completed_at=job.completed_at,
+                    capture_delay_minutes=job.capture_delay_minutes,
+                    last_error_code=job.last_error_code,
+                    last_error_detail=job.last_error_detail,
+                    can_retry_auto=(
+                        batch.status in {"running", "observing"}
+                        and batch.checkpoint_collection_mode == "auto"
+                        and job.status
+                        in {"waiting_connection", "partial", "waiting_manual", "circuit_open"}
+                        and job.collected_count < job.total_count
+                    ),
+                    can_complete_manually=(
+                        batch.status in {"running", "observing"}
+                        and job.status != "completed"
+                    ),
+                    items=[
+                        ProductTrafficCheckpointJobItemView(
+                            external_id=row.item.external_id,
+                            title=row.item.title,
+                            status=row.status,
+                            captured_at=row.captured_at,
+                            error_code=row.error_code,
+                            error_detail=row.error_detail,
+                        )
+                        for row in rows
+                    ],
+                )
+            )
+        return views
+
     def _traffic_time_bucket(self, value: datetime | None) -> tuple[str, str]:
         local_value = self._local(value) or self._now()
         start_hour = (local_value.hour // 2) * 2
@@ -384,8 +998,247 @@ class ProductIntelligenceService:
             return []
         return value if isinstance(value, list) else []
 
+    @staticmethod
+    def _canonical_payload(value: dict) -> str:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _payload_hash(cls, value: dict) -> str:
+        return hashlib.sha256(cls._canonical_payload(value).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _same_timestamp(left: datetime | None, right: datetime | None) -> bool:
+        if left is None or right is None:
+            return left is right
+        normalized_left = left.replace(tzinfo=timezone.utc) if left.tzinfo is None else left.astimezone(timezone.utc)
+        normalized_right = right.replace(tzinfo=timezone.utc) if right.tzinfo is None else right.astimezone(timezone.utc)
+        return abs((normalized_left - normalized_right).total_seconds()) < 0.001
+
+    def _require_batch_revision(
+        self,
+        batch: ProductTrafficBatch,
+        expected_updated_at: datetime,
+    ) -> None:
+        if not self._same_timestamp(batch.updated_at, expected_updated_at):
+            raise ProductTrafficConflict("批次已在其他页面更新，请刷新后重试")
+
+    def _existing_batch_event(
+        self,
+        session,
+        *,
+        request_id: str,
+        event_type: str,
+        payload_hash: str,
+    ) -> ProductTrafficBatchEvent | None:
+        event = session.scalar(
+            select(ProductTrafficBatchEvent).where(
+                ProductTrafficBatchEvent.request_id == request_id
+            )
+        )
+        if event is None:
+            return None
+        if event.event_type != event_type or event.payload_hash != payload_hash:
+            raise ProductTrafficConflict("相同 request_id 不能用于不同的批次操作")
+        return event
+
+    def _record_batch_event(
+        self,
+        session,
+        *,
+        batch_id: str,
+        request_id: str,
+        event_type: str,
+        payload_hash: str,
+        summary: dict,
+        result: dict,
+    ) -> ProductTrafficBatchEvent:
+        event = ProductTrafficBatchEvent(
+            id=f"traffic-event-{uuid4()}",
+            batch_id=batch_id,
+            request_id=request_id,
+            event_type=event_type,
+            payload_hash=payload_hash,
+            summary_json=self._canonical_payload(summary),
+            result_json=self._canonical_payload(result),
+            created_at=utcnow(),
+        )
+        session.add(event)
+        return event
+
+    def _traffic_baseline_invalidation_reason(
+        self,
+        batch: ProductTrafficBatch,
+        batch_items: list[ProductTrafficBatchItem],
+    ) -> str | None:
+        """Return a terminal reason only for a batch that really started."""
+
+        if (
+            batch.started_at is None
+            or batch.status not in {"running", "observing", "closed"}
+            or not batch_items
+        ):
+            return None
+        # An explicitly restored exploratory observation deliberately uses an
+        # older, auditable reference snapshot.  It may collect factual
+        # checkpoints, but `_traffic_batch_view` keeps it permanently outside
+        # decision-grade attribution.
+        if batch.attribution_status == "exploratory":
+            return None
+        if any(
+            item.baseline_captured_at is None
+            or item.baseline_source in {"missing", "pending"}
+            for item in batch_items
+        ):
+            return "missing_baseline"
+        if any(item.baseline_source == "legacy_snapshot" for item in batch_items):
+            return "legacy_baseline"
+        started_at = self._minute_utc(batch.started_at)
+        captured_minutes = [
+            self._minute_utc(item.baseline_captured_at)
+            for item in batch_items
+            if item.baseline_captured_at is not None
+        ]
+        if len(captured_minutes) != len(batch_items):
+            return "missing_baseline"
+        if any(captured_at > started_at for captured_at in captured_minutes):
+            return "invalid_baseline_time"
+        oldest_age = max(
+            int((started_at - captured_at).total_seconds() // 60)
+            for captured_at in captured_minutes
+        )
+        if oldest_age > self.settings.product_traffic_baseline_max_age_minutes:
+            return "stale_baseline"
+        return None
+
+    def _invalidate_batch_in_session(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+        *,
+        reason: str,
+        invalidated_at: datetime,
+    ) -> bool:
+        if batch.status == "invalidated":
+            return False
+        request_id = f"traffic-auto-invalidate-{batch.id}"
+        payload = {
+            "batch_id": batch.id,
+            "reason": reason,
+            "started_at": (
+                self._utc(batch.started_at).isoformat() if batch.started_at else None
+            ),
+        }
+        payload_hash = self._payload_hash(payload)
+        existing = session.scalar(
+            select(ProductTrafficBatchEvent).where(
+                ProductTrafficBatchEvent.request_id == request_id
+            )
+        )
+        if existing is not None and (
+            existing.event_type != "invalidate"
+            or existing.payload_hash != payload_hash
+        ):
+            raise ProductTrafficConflict("批次失效审计标识发生冲突，请停止写入并检查数据")
+        if existing is None:
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="invalidate",
+                payload_hash=payload_hash,
+                summary={
+                    "reason": reason,
+                    "facts_preserved": True,
+                    "reminders_stopped": True,
+                },
+                result={"batch_id": batch.id, "status": "invalidated"},
+            )
+        batch.status = "invalidated"
+        batch.invalidated_at = invalidated_at
+        batch.invalidation_reason = reason
+        batch.updated_at = invalidated_at
+        jobs = session.scalars(
+            select(ProductTrafficCheckpointJob).where(
+                ProductTrafficCheckpointJob.batch_id == batch.id,
+                ProductTrafficCheckpointJob.status != "completed",
+            )
+        ).all()
+        for job in jobs:
+            job.status = "missed"
+            job.last_error_code = "baseline_invalidated"
+            job.last_error_detail = "基线无效，检查点任务已停止"
+            job.completed_at = invalidated_at
+            job.updated_at = invalidated_at
+        return True
+
+    def _restore_traffic_checkpoint_jobs(self) -> None:
+        """Backfill active batches and recover interrupted collecting states."""
+
+        now = self._now().astimezone(timezone.utc)
+        with self.database.session() as session:
+            batches = session.scalars(
+                select(ProductTrafficBatch).where(
+                    ProductTrafficBatch.status.in_(("running", "observing")),
+                    ProductTrafficBatch.started_at.is_not(None),
+                )
+            ).all()
+            for batch in batches:
+                self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
+            interrupted = session.scalars(
+                select(ProductTrafficCheckpointJob).where(
+                    ProductTrafficCheckpointJob.status == "collecting"
+                )
+            ).all()
+            for job in interrupted:
+                job.status = "waiting_manual"
+                job.last_error_code = "service_restarted"
+                job.last_error_detail = (
+                    "服务在采集中重启；已保留成功商品，请手动补齐或明确恢复补采"
+                )
+                job.updated_at = now
+            session.commit()
+
+    def _invalidate_unusable_traffic_baselines(self) -> list[str]:
+        """Terminally stop unusable observations while preserving every fact."""
+
+        invalidated_at = self._now().astimezone(timezone.utc)
+        changed_ids: list[str] = []
+        with self.database.session() as session:
+            batches = session.scalars(
+                select(ProductTrafficBatch).where(
+                    ProductTrafficBatch.status.in_(("running", "observing", "closed")),
+                    ProductTrafficBatch.started_at.is_not(None),
+                )
+            ).all()
+            for batch in batches:
+                batch_items = session.scalars(
+                    select(ProductTrafficBatchItem).where(
+                        ProductTrafficBatchItem.batch_id == batch.id
+                    )
+                ).all()
+                reason = self._traffic_baseline_invalidation_reason(
+                    batch, list(batch_items)
+                )
+                if reason and self._invalidate_batch_in_session(
+                    session,
+                    batch,
+                    reason=reason,
+                    invalidated_at=invalidated_at,
+                ):
+                    changed_ids.append(batch.id)
+            if changed_ids:
+                session.commit()
+        return changed_ids
+
     async def start(self) -> None:
         self.bootstrap_cached_state()
+        invalidated_ids = self._invalidate_unusable_traffic_baselines()
+        self._maintain_daily_plans()
+        self._restore_traffic_checkpoint_jobs()
+        for batch_id in invalidated_ids:
+            self.event_hub.publish_nowait(
+                {"type": "product_traffic_batch_updated", "batch_id": batch_id}
+            )
         if self._task is None:
             self._task = asyncio.create_task(
                 self._scheduler_loop(), name="daily-product-intelligence"
@@ -404,6 +1257,15 @@ class ProductIntelligenceService:
     async def _scheduler_loop(self) -> None:
         while True:
             try:
+                self.bootstrap_cached_state()
+                invalidated_ids = self._invalidate_unusable_traffic_baselines()
+                self._maintain_daily_plans()
+                self._restore_traffic_checkpoint_jobs()
+                for batch_id in invalidated_ids:
+                    self.event_hub.publish_nowait(
+                        {"type": "product_traffic_batch_updated", "batch_id": batch_id}
+                    )
+                await self._dispatch_due_traffic_checkpoint_jobs()
                 await self._dispatch_due_traffic_reminders()
                 await self._dispatch_due_market_reminder()
                 if self._scheduled_collection_due():
@@ -416,7 +1278,50 @@ class ProductIntelligenceService:
                 pass
             except Exception:
                 logger.exception("每日商品经营数据采集失败")
-            await asyncio.sleep(self.settings.product_collection_check_interval_seconds)
+            await asyncio.sleep(
+                min(60, self.settings.product_collection_check_interval_seconds)
+            )
+
+    def _maintain_daily_plans(self) -> None:
+        """Create the Beijing-day plans outside of read-only GET requests."""
+
+        today = self._day_key()
+        with self.database.session() as session:
+            operating = session.scalar(
+                select(ProductOperatingPlan)
+                .where(ProductOperatingPlan.status == "current")
+                .order_by(ProductOperatingPlan.generated_at.desc())
+                .limit(1)
+            )
+            market = session.scalar(
+                select(ProductMarketKeywordPlan).where(
+                    ProductMarketKeywordPlan.plan_date == today
+                )
+            )
+            changed = False
+            before_id = operating.id if operating else None
+            before_signature = operating.input_signature if operating else None
+            maintained = self._ensure_operating_plan(session)
+            if (
+                maintained.id != before_id
+                or maintained.input_signature != before_signature
+            ):
+                changed = True
+            if market is None:
+                self._ensure_market_keyword_plan(session)
+                changed = True
+            if changed:
+                session.commit()
+
+    def _maintain_plans_after_write(self) -> None:
+        """Re-evaluate plans immediately after a real product-domain write.
+
+        GET endpoints stay strictly read-only. Semantic plan comparison inside
+        ``_ensure_operating_plan`` prevents these event-driven refreshes from
+        creating a new version when the actionable schedule did not change.
+        """
+
+        self._maintain_daily_plans()
 
     async def _dispatch_due_traffic_reminders(self) -> None:
         """Send one local reminder per planned batch/checkpoint.
@@ -446,10 +1351,17 @@ class ProductIntelligenceService:
                             (
                                 "preflight",
                                 reminder_at,
-                                "曝光批次即将开始，请在闲鱼人工选择商品并确认费用",
+                                (
+                                    f"曝光批次计划于 {self._traffic_datetime_label(planned_at)} 开始，"
+                                    "请在闲鱼人工选择商品并确认费用"
+                                ),
                             )
                         )
-                if started_at and batch.status in {"running", "observing"}:
+                if (
+                    started_at
+                    and batch.status in {"running", "observing"}
+                    and batch.checkpoint_collection_mode == "manual"
+                ):
                     completed = set(
                         session.scalars(
                             select(distinct(ProductTrafficCheckpoint.checkpoint)).where(
@@ -457,7 +1369,8 @@ class ProductIntelligenceService:
                             )
                         ).all()
                     )
-                    for checkpoint, hours in CHECKPOINT_HOURS.items():
+                    for checkpoint in self._checkpoint_order_for_batch(batch):
+                        hours = CHECKPOINT_HOURS[checkpoint]
                         if checkpoint in completed:
                             continue
                         due_at = started_at + timedelta(hours=hours)
@@ -466,7 +1379,11 @@ class ProductIntelligenceService:
                                 (
                                     checkpoint,
                                     due_at,
-                                    f"曝光批次到了 +{hours}h 检查点，请手工记录浏览与咨询变化",
+                                    (
+                                        f"曝光批次到了 +{hours}h 检查点（"
+                                        f"{self._traffic_datetime_label(due_at)}），"
+                                        "请手工记录浏览与咨询变化"
+                                    ),
                                 )
                             )
                             break
@@ -507,6 +1424,308 @@ class ProductIntelligenceService:
                     "只提醒，不会自动购买曝光",
                 )
 
+    async def _dispatch_due_traffic_checkpoint_jobs(self) -> None:
+        """Run due automatic jobs once; manual jobs become reminder-ready."""
+
+        now = self._now().astimezone(timezone.utc)
+        due_ids: list[str] = []
+        with self.database.session() as session:
+            jobs = session.scalars(
+                select(ProductTrafficCheckpointJob)
+                .join(
+                    ProductTrafficBatch,
+                    ProductTrafficBatch.id == ProductTrafficCheckpointJob.batch_id,
+                )
+                .where(
+                    ProductTrafficBatch.status.in_(("running", "observing")),
+                    ProductTrafficCheckpointJob.scheduled_for <= now,
+                    ProductTrafficCheckpointJob.status.in_(
+                        ("scheduled", "waiting_connection")
+                    ),
+                )
+                .order_by(ProductTrafficCheckpointJob.scheduled_for)
+                .limit(4)
+            ).all()
+            for job in jobs:
+                batch = session.get(ProductTrafficBatch, job.batch_id)
+                if batch is None:
+                    continue
+                if batch.checkpoint_collection_mode == "manual":
+                    job.status = "waiting_manual"
+                    job.updated_at = now
+                    continue
+                if job.status == "waiting_connection" and not self.settings.xianyu_configured:
+                    continue
+                due_ids.append(job.id)
+            session.commit()
+        for job_id in due_ids:
+            await self._run_traffic_checkpoint_job(job_id)
+
+    async def _run_traffic_checkpoint_job(self, job_id: str) -> None:
+        now = self._now().astimezone(timezone.utc)
+        if not self.settings.xianyu_configured:
+            with self.database.session() as session:
+                job = session.get(ProductTrafficCheckpointJob, job_id)
+                if job is None or job.status == "completed":
+                    return
+                job.status = "waiting_connection"
+                job.last_error_code = "connection_unconfigured"
+                job.last_error_detail = "闲鱼商品采集凭证未配置，任务已保留"
+                job.updated_at = now
+                session.commit()
+            return
+
+        with self.database.session() as session:
+            job = session.get(ProductTrafficCheckpointJob, job_id)
+            if job is None or job.status not in {"scheduled", "waiting_connection"}:
+                return
+            batch = session.get(ProductTrafficBatch, job.batch_id)
+            if batch is None or batch.status not in {"running", "observing"}:
+                return
+            if batch.checkpoint_collection_mode != "auto":
+                job.status = "waiting_manual"
+                session.commit()
+                return
+            job.status = "collecting"
+            job.started_at = job.started_at or now
+            job.last_attempt_at = now
+            job.attempt_count += 1
+            job.last_error_code = None
+            job.last_error_detail = ""
+            pending_rows = session.scalars(
+                select(ProductTrafficCheckpointJobItem)
+                .where(
+                    ProductTrafficCheckpointJobItem.job_id == job.id,
+                    ProductTrafficCheckpointJobItem.status == "pending",
+                )
+                .order_by(ProductTrafficCheckpointJobItem.id)
+            ).all()
+            monitor_rows = {
+                monitor.item_id: monitor
+                for monitor in session.scalars(
+                    select(ProductMonitor).where(
+                        ProductMonitor.item_id.in_([row.item_id for row in pending_rows])
+                    )
+                ).all()
+            }
+            targets = [
+                (row.item_id, row.item.external_id, monitor_rows.get(row.item_id))
+                for row in pending_rows
+            ]
+            session.commit()
+
+        async with self._collection_lock:
+            for index, (item_id, external_id, monitor) in enumerate(targets):
+                if monitor is None or monitor.ownership_status != "owned" or not monitor.enabled:
+                    self._mark_checkpoint_job_item_error(
+                        job_id, item_id, "ownership_restricted", "商品不再满足本人且启用监测条件"
+                    )
+                    continue
+                try:
+                    ownership = await self._collect_monitor(
+                        monitor_id=monitor.id,
+                        item_id=item_id,
+                        external_id=external_id,
+                        snapshot_date=self._day_key(),
+                        source="remote_manual",
+                    )
+                    if ownership != "owned":
+                        raise ProductOwnershipRestricted("商品归属不再是当前账号")
+                    self._store_automatic_checkpoint_item(job_id, item_id)
+                except AdapterAccessVerificationError as exc:
+                    code, detail = self._safe_collection_error(exc)
+                    self._mark_checkpoint_job_item_error(job_id, item_id, code, detail)
+                    with self.database.session() as session:
+                        job = session.get(ProductTrafficCheckpointJob, job_id)
+                        if job is not None:
+                            job.status = "circuit_open"
+                            job.last_error_code = code
+                            job.last_error_detail = detail
+                            job.updated_at = self._now().astimezone(timezone.utc)
+                        remaining_ids = [value[0] for value in targets[index + 1 :]]
+                        if remaining_ids:
+                            rows = session.scalars(
+                                select(ProductTrafficCheckpointJobItem).where(
+                                    ProductTrafficCheckpointJobItem.job_id == job_id,
+                                    ProductTrafficCheckpointJobItem.item_id.in_(remaining_ids),
+                                    ProductTrafficCheckpointJobItem.status == "pending",
+                                )
+                            ).all()
+                            for row in rows:
+                                row.status = "protection_skipped"
+                                row.error_code = "access_verification_circuit"
+                                row.error_detail = "首个访问验证后已停止剩余请求"
+                                row.updated_at = self._now().astimezone(timezone.utc)
+                        session.commit()
+                    break
+                except Exception as exc:
+                    code, detail = self._safe_collection_error(exc)
+                    self._mark_checkpoint_job_item_error(job_id, item_id, code, detail)
+                if index < len(targets) - 1 and self.settings.product_collection_request_delay_seconds:
+                    await asyncio.sleep(self.settings.product_collection_request_delay_seconds)
+        self._finalize_checkpoint_job(job_id)
+
+    def _mark_checkpoint_job_item_error(
+        self, job_id: str, item_id: int, code: str, detail: str
+    ) -> None:
+        with self.database.session() as session:
+            row = session.scalar(
+                select(ProductTrafficCheckpointJobItem).where(
+                    ProductTrafficCheckpointJobItem.job_id == job_id,
+                    ProductTrafficCheckpointJobItem.item_id == item_id,
+                )
+            )
+            if row is None:
+                return
+            row.status = "failed"
+            row.error_code = code[:64]
+            row.error_detail = detail[:500]
+            row.updated_at = self._now().astimezone(timezone.utc)
+            session.commit()
+
+    def _store_automatic_checkpoint_item(self, job_id: str, item_id: int) -> None:
+        captured_at = self._now().astimezone(timezone.utc)
+        with self.database.session() as session:
+            job = session.get(ProductTrafficCheckpointJob, job_id)
+            if job is None:
+                raise ProductRecordNotFound("检查点任务不存在")
+            batch = session.get(ProductTrafficBatch, job.batch_id)
+            batch_item = session.scalar(
+                select(ProductTrafficBatchItem).where(
+                    ProductTrafficBatchItem.batch_id == job.batch_id,
+                    ProductTrafficBatchItem.item_id == item_id,
+                )
+            )
+            snapshot = session.scalar(
+                select(ProductDailySnapshot)
+                .where(
+                    ProductDailySnapshot.item_id == item_id,
+                    ProductDailySnapshot.snapshot_date == self._day_key(),
+                )
+                .order_by(ProductDailySnapshot.captured_at.desc())
+                .limit(1)
+            )
+            if batch is None or batch_item is None or snapshot is None:
+                raise ProductCollectionUnavailable("采集完成但未形成可用商品快照")
+            counts = (
+                snapshot.browse_count,
+                snapshot.collect_count,
+                snapshot.want_count,
+                snapshot.inquiry_count,
+            )
+            floor = (
+                batch_item.baseline_browse_count,
+                batch_item.baseline_collect_count,
+                batch_item.baseline_want_count,
+                batch_item.baseline_inquiry_count,
+            )
+            prior = session.scalars(
+                select(ProductTrafficCheckpoint).where(
+                    ProductTrafficCheckpoint.batch_id == job.batch_id,
+                    ProductTrafficCheckpoint.item_id == item_id,
+                    ProductTrafficCheckpoint.checkpoint.in_(
+                        CHECKPOINT_ORDER[: CHECKPOINT_ORDER.index(job.checkpoint)]
+                    ),
+                )
+            ).all()
+            for row in prior:
+                floor = tuple(
+                    max(current, previous)
+                    for current, previous in zip(
+                        floor,
+                        (row.browse_count, row.collect_count, row.want_count, row.inquiry_count),
+                    )
+                )
+            if any(current < previous for current, previous in zip(counts, floor)):
+                raise ProductTrafficConflict("采集累计值低于基线或更早检查点")
+            checkpoint = session.scalar(
+                select(ProductTrafficCheckpoint).where(
+                    ProductTrafficCheckpoint.batch_id == job.batch_id,
+                    ProductTrafficCheckpoint.item_id == item_id,
+                    ProductTrafficCheckpoint.checkpoint == job.checkpoint,
+                )
+            )
+            if checkpoint is None:
+                checkpoint = ProductTrafficCheckpoint(
+                    id=f"traffic-checkpoint-{uuid4()}",
+                    batch_id=job.batch_id,
+                    item_id=item_id,
+                    checkpoint=job.checkpoint,
+                )
+                session.add(checkpoint)
+            checkpoint.browse_count = counts[0]
+            checkpoint.collect_count = counts[1]
+            checkpoint.want_count = counts[2]
+            checkpoint.inquiry_count = counts[3]
+            checkpoint.recorded_at = captured_at
+            checkpoint.source = "automatic"
+            checkpoint.note = "到点自动只读采集"
+            job_item = session.scalar(
+                select(ProductTrafficCheckpointJobItem).where(
+                    ProductTrafficCheckpointJobItem.job_id == job.id,
+                    ProductTrafficCheckpointJobItem.item_id == item_id,
+                )
+            )
+            if job_item is not None:
+                job_item.status = "completed"
+                job_item.captured_at = captured_at
+                job_item.error_code = None
+                job_item.error_detail = ""
+                job_item.updated_at = captured_at
+            session.commit()
+
+    def _finalize_checkpoint_job(self, job_id: str) -> None:
+        now = self._now().astimezone(timezone.utc)
+        with self.database.session() as session:
+            job = session.get(ProductTrafficCheckpointJob, job_id)
+            if job is None:
+                return
+            batch = session.get(ProductTrafficBatch, job.batch_id)
+            rows = session.scalars(
+                select(ProductTrafficCheckpointJobItem).where(
+                    ProductTrafficCheckpointJobItem.job_id == job.id
+                )
+            ).all()
+            completed_rows = [row for row in rows if row.status == "completed"]
+            job.collected_count = len(completed_rows)
+            job.total_count = len(rows)
+            captured = [self._utc(row.captured_at) for row in completed_rows if row.captured_at]
+            job.captured_at = max(captured) if captured else None
+            if len(completed_rows) == len(rows) and rows:
+                job.status = "completed"
+                job.completed_at = now
+                job.capture_delay_minutes = max(
+                    0,
+                    int((now - self._utc(job.scheduled_for)).total_seconds() // 60),
+                )
+                job.last_error_code = None
+                job.last_error_detail = ""
+                if batch is not None:
+                    batch.status = (
+                        "closed"
+                        if job.checkpoint == self._terminal_checkpoint_for_batch(batch)
+                        else "observing"
+                    )
+                    batch.updated_at = now
+            elif job.status != "circuit_open":
+                job.status = "partial" if completed_rows else "waiting_manual"
+                job.last_error_code = job.last_error_code or "partial_collection"
+                job.last_error_detail = (
+                    f"已采集 {len(completed_rows)}/{len(rows)} 件；不会自动重试"
+                )
+            job.updated_at = now
+            session.commit()
+            batch_id = job.batch_id
+            checkpoint = job.checkpoint
+        self._maintain_plans_after_write()
+        self.event_hub.publish_nowait(
+            {
+                "type": "product_traffic_checkpoint_job_updated",
+                "batch_id": batch_id,
+                "checkpoint": checkpoint,
+            }
+        )
+
     def _market_scheduled_for(self, value: datetime | None = None) -> datetime:
         current = (value or self._now()).astimezone(self.timezone)
         return datetime.combine(
@@ -519,7 +1738,7 @@ class ProductIntelligenceService:
         )
 
     async def _dispatch_due_market_reminder(self) -> None:
-        """Notify once when today's user-assisted Edge sample is still missing."""
+        """Notify once when today's user-assisted Ego Lite sample is still missing."""
 
         now_local = self._now()
         scheduled_local = self._market_scheduled_for(now_local)
@@ -576,7 +1795,7 @@ class ProductIntelligenceService:
         if self.notifier:
             await self.notifier.notify(
                 "闲鱼市场参考待更新",
-                "今天还没有导入关键词搜索参考；可用现有 Edge 搜索后回到助手导入",
+                "今天还没有导入关键词搜索参考；可用现有 Ego Lite 搜索后回到助手导入",
                 "只提醒，不会自动打开网站或采集",
             )
 
@@ -633,7 +1852,7 @@ class ProductIntelligenceService:
         if isinstance(exc, AdapterAccessVerificationError):
             return (
                 "access_verification",
-                "闲鱼接口触发访问验证，本批次已停止后续请求；商品不一定下架。请在现有 Edge 中人工完成验证，再更新本机 .env 的 XIANYU_COOKIE 并重启服务；不要在聊天或日志中发送 Cookie。恢复后请先手动采集单件商品。",
+                "闲鱼接口触发访问验证，本批次已停止后续请求；商品不一定下架。请在现有 Ego Lite 中人工完成验证，再到渠道连接手动恢复；不要在聊天或日志中发送 Cookie。恢复后请先手动采集单件商品。",
             )
         if isinstance(exc, ProductItemUnavailable):
             return (
@@ -668,7 +1887,7 @@ class ProductIntelligenceService:
         monitor.last_error_code = "access_verification_batch_stopped"
         monitor.last_error_detail = (
             "本批次已有商品触发闲鱼访问验证。为保护账号，本商品未继续请求；"
-            "请先在现有 Edge 中完成人工验证，恢复后从单件采集开始。"
+            "请先在现有 Ego Lite 中完成人工验证，恢复后从单件采集开始。"
         )
 
     def _backfill_legacy_collection_diagnostics(
@@ -733,7 +1952,10 @@ class ProductIntelligenceService:
                     monitor = ProductMonitor(
                         item_id=item.id,
                         source="conversation",
-                        enabled=ownership_status == "owned",
+                        # Conversation discovery may classify ownership and retain
+                        # evidence, but only an explicit registration can enable
+                        # daily collection for a newly discovered product.
+                        enabled=False,
                         ownership_status=ownership_status,
                         ownership_source=f"cached_{ownership_source}",
                     )
@@ -773,72 +1995,140 @@ class ProductIntelligenceService:
             self._refresh_recommendations(session)
             session.commit()
 
-    def _business_metrics(self, session, item_id: int) -> dict[str, float | int]:
+    def _business_metrics(self, session, item_id: int) -> dict[str, object]:
         conversation_ids = list(
             session.scalars(
                 select(Conversation.id).where(Conversation.item_id == item_id)
             ).all()
         )
-        if not conversation_ids:
-            return {
-                "inquiry_count": 0,
-                "inbound_message_count": 0,
-                "converted_project_count": 0,
-                "revenue_total": 0.0,
-                "profit_total": 0.0,
-            }
-        inquiry_count = int(
-            session.scalar(
-                select(func.count(distinct(Message.conversation_id))).where(
-                    Message.conversation_id.in_(conversation_ids),
-                    Message.direction == "inbound",
+        inquiry_count = 0
+        inbound_count = 0
+        if conversation_ids:
+            inquiry_count = int(
+                session.scalar(
+                    select(func.count(distinct(Message.conversation_id))).where(
+                        Message.conversation_id.in_(conversation_ids),
+                        Message.direction == "inbound",
+                    )
                 )
+                or 0
             )
-            or 0
-        )
-        inbound_count = int(
-            session.scalar(
-                select(func.count(Message.id)).where(
-                    Message.conversation_id.in_(conversation_ids),
-                    Message.direction == "inbound",
+            inbound_count = int(
+                session.scalar(
+                    select(func.count(Message.id)).where(
+                        Message.conversation_id.in_(conversation_ids),
+                        Message.direction == "inbound",
+                    )
                 )
+                or 0
             )
-            or 0
-        )
-        project_ids = list(
+
+        direct_projects = list(
             session.scalars(
-                select(BusinessProject.id).where(
-                    BusinessProject.conversation_id.in_(conversation_ids)
-                )
+                select(BusinessProject).where(BusinessProject.item_id == item_id)
             ).all()
         )
-        converted = len(set(project_ids))
+        direct_ids = {project.id for project in direct_projects}
+        fallback_projects = []
+        if conversation_ids:
+            fallback_projects = list(
+                session.scalars(
+                    select(BusinessProject).where(
+                        BusinessProject.item_id.is_(None),
+                        BusinessProject.conversation_id.in_(conversation_ids),
+                    )
+                ).all()
+            )
+        projects = direct_projects + [
+            project for project in fallback_projects if project.id not in direct_ids
+        ]
+        linked_projects: list[ProductLinkedProjectView] = []
         revenue = 0.0
         expenses = 0.0
-        if project_ids:
-            revenue = float(
+        refunds = 0.0
+        for project in projects:
+            payments = list(
+                session.scalars(
+                    select(PaymentNode).where(PaymentNode.project_id == project.id)
+                ).all()
+            )
+            confirmed_total = round(
+                sum(
+                    float(payment.amount or 0)
+                    for payment in payments
+                    if payment.status in {"confirmed", "refunded"}
+                ),
+                2,
+            )
+            payment_refunds = round(
+                sum(
+                    float(payment.amount or 0)
+                    for payment in payments
+                    if payment.status == "refunded"
+                ),
+                2,
+            )
+            issue_refunds = float(
                 session.scalar(
-                    select(func.coalesce(func.sum(PaymentNode.amount), 0)).where(
-                        PaymentNode.project_id.in_(project_ids),
-                        PaymentNode.status == "confirmed",
-                    )
+                    select(
+                        func.coalesce(
+                            func.sum(ProjectSettlementIssueRecord.refund_amount),
+                            0,
+                        )
+                    ).where(ProjectSettlementIssueRecord.project_id == project.id)
                 )
                 or 0
             )
-            expenses = float(
+            project_refunds = round(payment_refunds + issue_refunds, 2)
+            net_confirmed = round(confirmed_total - project_refunds, 2)
+            project_expenses = float(
                 session.scalar(
                     select(func.coalesce(func.sum(BusinessExpense.amount), 0)).where(
-                        BusinessExpense.project_id.in_(project_ids)
+                        BusinessExpense.project_id == project.id
                     )
                 )
                 or 0
             )
+            project_expenses = round(project_expenses, 2)
+            project_profit = round(net_confirmed - project_expenses, 2)
+            confirmed_times = sorted(
+                str(payment.paid_at or "")
+                for payment in payments
+                if payment.status in {"confirmed", "refunded"} and payment.paid_at
+            )
+            revenue += net_confirmed
+            expenses += project_expenses
+            refunds += project_refunds
+            linked_projects.append(
+                ProductLinkedProjectView(
+                    project_id=project.id,
+                    project_name=project.name,
+                    relation_source=(
+                        "project_binding"
+                        if project.item_id == item_id
+                        else "conversation_compatibility"
+                    ),
+                    latest_confirmed_at=confirmed_times[-1] if confirmed_times else None,
+                    confirmed_total=confirmed_total,
+                    net_confirmed_total=net_confirmed,
+                    expense_total=project_expenses,
+                    refund_total=project_refunds,
+                    profit_total=project_profit,
+                )
+            )
+        linked_projects.sort(
+            key=lambda row: (row.latest_confirmed_at or "", row.project_id),
+            reverse=True,
+        )
         return {
             "inquiry_count": inquiry_count,
             "inbound_message_count": inbound_count,
-            "converted_project_count": converted,
+            "converted_project_count": len(projects),
             "revenue_total": round(revenue, 2),
             "profit_total": round(revenue - expenses, 2),
+            "project_expense_total": round(expenses, 2),
+            "project_refund_total": round(refunds, 2),
+            "linked_projects": linked_projects,
         }
 
     def _snapshot_from_raw(
@@ -1432,6 +2722,7 @@ class ProductIntelligenceService:
                 detail=result.detail,
                 finished_at=result.finished_at,
             )
+            self._maintain_plans_after_write()
             self.event_hub.publish_nowait(
                 {
                     "type": "product_intelligence_updated",
@@ -1659,6 +2950,7 @@ class ProductIntelligenceService:
                 detail=detail,
                 finished_at=finished_at,
             )
+            self._maintain_plans_after_write()
             result = ProductCollectionRunView(
                 id=attempt_id,
                 run_date=run_date,
@@ -1680,42 +2972,6 @@ class ProductIntelligenceService:
                 }
             )
             return result
-
-    def register(self, reference: str) -> ProductView:
-        external_id = _external_id(reference)
-        with self.database.session() as session:
-            item = session.scalar(
-                select(Item).where(Item.external_id == external_id)
-            )
-            if item is None:
-                item = Item(
-                    external_id=external_id,
-                    title=f"待首次采集商品 · {external_id[-6:]}",
-                    raw_json=None,
-                )
-                session.add(item)
-                session.flush()
-            monitor = session.scalar(
-                select(ProductMonitor).where(ProductMonitor.item_id == item.id)
-            )
-            if monitor is None:
-                monitor = ProductMonitor(
-                    item_id=item.id,
-                    source="manual",
-                    enabled=False,
-                    ownership_status="pending",
-                    ownership_source="manual_pending",
-                )
-                session.add(monitor)
-            else:
-                monitor.source = "manual"
-                if monitor.ownership_status == "owned":
-                    monitor.enabled = True
-            session.commit()
-        self.event_hub.publish_nowait(
-            {"type": "product_monitor_updated", "item_id": external_id}
-        )
-        return self.product(external_id)
 
     def update_monitor(self, external_id: str, enabled: bool) -> ProductView:
         with self.database.session() as session:
@@ -1744,10 +3000,43 @@ class ProductIntelligenceService:
                     raise ProductOwnershipRestricted(label)
                 monitor.enabled = enabled
             session.commit()
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {"type": "product_monitor_updated", "item_id": external_id}
         )
         return self.product(external_id)
+
+    def disable_monitors(self, external_ids: list[str]) -> dict:
+        selected = list(dict.fromkeys(value.strip() for value in external_ids if value.strip()))
+        with self.database.session() as session:
+            rows = session.execute(
+                select(Item, ProductMonitor)
+                .join(ProductMonitor, ProductMonitor.item_id == Item.id)
+                .where(Item.external_id.in_(selected))
+            ).all()
+            monitors = {item.external_id: monitor for item, monitor in rows}
+            missing = [external_id for external_id in selected if external_id not in monitors]
+            if missing:
+                raise ProductRecordNotFound("部分商品监测记录不存在，请刷新后重试")
+            disabled_count = 0
+            for external_id in selected:
+                monitor = monitors[external_id]
+                if monitor.enabled:
+                    monitor.enabled = False
+                    monitor.updated_at = utcnow()
+                    disabled_count += 1
+            session.commit()
+        self._maintain_plans_after_write()
+        self.event_hub.publish_nowait(
+            {
+                "type": "product_monitors_disabled",
+                "item_ids": selected,
+            }
+        )
+        return {
+            "disabled_external_ids": selected,
+            "disabled_count": disabled_count,
+        }
 
     def create_action(
         self,
@@ -1794,6 +3083,7 @@ class ProductIntelligenceService:
                 )
             session.commit()
             result = self._action_view(action)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {
                 "type": "product_action_recorded",
@@ -1812,6 +3102,7 @@ class ProductIntelligenceService:
                 raise ProductRecordNotFound("经营建议不存在")
             recommendation.status = status
             session.commit()
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {
                 "type": "product_recommendation_updated",
@@ -1905,7 +3196,7 @@ class ProductIntelligenceService:
             quality = "medium"
 
         batch_rows = session.execute(
-            select(ProductTrafficBatch.planned_at, ProductTrafficBatch.started_at)
+            select(ProductTrafficBatch.started_at)
             .join(
                 ProductTrafficBatchItem,
                 ProductTrafficBatchItem.batch_id == ProductTrafficBatch.id,
@@ -1916,11 +3207,7 @@ class ProductIntelligenceService:
             )
         ).all()
         batch_started = max(
-            (
-                self._utc(started_at or planned_at)
-                for planned_at, started_at in batch_rows
-                if started_at or planned_at
-            ),
+            (self._utc(started_at) for (started_at,) in batch_rows if started_at),
             default=None,
         )
         cooldown_until = (
@@ -1959,7 +3246,7 @@ class ProductIntelligenceService:
     def _effective_batch_count(self, session) -> int:
         batch_ids = session.scalars(
             select(distinct(ProductTrafficCheckpoint.batch_id)).where(
-                ProductTrafficCheckpoint.checkpoint.in_(("h24", "h72"))
+                ProductTrafficCheckpoint.checkpoint.in_(("h24", "h48", "h72"))
             )
         ).all()
         return sum(
@@ -1978,22 +3265,27 @@ class ProductIntelligenceService:
     ) -> tuple[float, float]:
         start, end = self._week_bounds(value)
         batches = session.scalars(
-            select(ProductTrafficBatch).where(
-                ProductTrafficBatch.planned_at >= start.astimezone(timezone.utc),
-                ProductTrafficBatch.planned_at < end.astimezone(timezone.utc),
-                ProductTrafficBatch.status != "cancelled",
-            )
+            select(ProductTrafficBatch).where(ProductTrafficBatch.status != "cancelled")
         ).all()
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
         spent = round(
             sum(
                 batch.actual_cost
                 for batch in batches
-                if batch.status in {"running", "observing", "closed"}
+                if batch.status in {"running", "observing", "closed", "invalidated"}
+                and batch.started_at is not None
+                and start_utc <= (self._utc(batch.started_at) or start_utc) < end_utc
             ),
             2,
         )
         planned = round(
-            sum(batch.actual_cost for batch in batches if batch.status == "planned"),
+            sum(
+                batch.actual_cost
+                for batch in batches
+                if batch.status == "planned"
+                and start_utc <= (self._utc(batch.planned_at) or start_utc) < end_utc
+            ),
             2,
         )
         return spent, planned
@@ -2010,6 +3302,10 @@ class ProductIntelligenceService:
         rows = session.execute(
             select(ProductTrafficBatchItem, ProductTrafficCheckpoint)
             .join(
+                ProductTrafficBatch,
+                ProductTrafficBatch.id == ProductTrafficBatchItem.batch_id,
+            )
+            .join(
                 ProductTrafficCheckpoint,
                 and_(
                     ProductTrafficCheckpoint.batch_id == ProductTrafficBatchItem.batch_id,
@@ -2018,12 +3314,25 @@ class ProductIntelligenceService:
             )
             .where(
                 ProductTrafficBatchItem.item_id == item_id,
-                ProductTrafficCheckpoint.checkpoint.in_(("h24", "h72")),
+                ProductTrafficBatch.status.in_(("running", "observing", "closed")),
+                ProductTrafficBatch.attribution_status == "clean",
+                ProductTrafficCheckpoint.checkpoint.in_(("h24", "h48", "h72")),
             )
             .order_by(ProductTrafficCheckpoint.recorded_at.desc())
         ).all()
         by_batch: dict[str, tuple[ProductTrafficBatchItem, ProductTrafficCheckpoint]] = {}
+        eligibility_by_batch: dict[str, bool] = {}
         for batch_item, checkpoint in rows:
+            if batch_item.batch_id not in eligibility_by_batch:
+                source_batch = session.get(ProductTrafficBatch, batch_item.batch_id)
+                eligibility_by_batch[batch_item.batch_id] = bool(
+                    source_batch
+                    and self._traffic_batch_view(
+                        session, source_batch, include_replan=False
+                    ).analysis_eligible
+                )
+            if not eligibility_by_batch[batch_item.batch_id]:
+                continue
             by_batch.setdefault(batch_item.batch_id, (batch_item, checkpoint))
         browse_lifts = []
         incremental_browse_lifts = []
@@ -2144,6 +3453,207 @@ class ProductIntelligenceService:
             )
         return candidates
 
+    def _latest_started_traffic_batch(
+        self,
+        session,
+        *,
+        exclude_batch_id: str | None = None,
+    ) -> ProductTrafficBatch | None:
+        statement = select(ProductTrafficBatch).where(
+            ProductTrafficBatch.started_at.is_not(None),
+            ProductTrafficBatch.status.not_in(("cancelled", "invalidated")),
+        )
+        if exclude_batch_id:
+            statement = statement.where(ProductTrafficBatch.id != exclude_batch_id)
+        return session.scalar(
+            statement.order_by(ProductTrafficBatch.started_at.desc()).limit(1)
+        )
+
+    def _executed_traffic_batches_by_day(self, session) -> dict[str, ProductTrafficBatch]:
+        """Return the latest real spend for each Beijing calendar day.
+
+        Execution is a business fact even when the batch later loses analysis
+        eligibility.  Keeping invalidated batches here prevents a rolling plan
+        from replacing an action the user already paid for and completed.
+        """
+
+        result: dict[str, ProductTrafficBatch] = {}
+        batches = session.scalars(
+            select(ProductTrafficBatch)
+            .where(
+                ProductTrafficBatch.started_at.is_not(None),
+                ProductTrafficBatch.status != "cancelled",
+            )
+            .order_by(ProductTrafficBatch.started_at)
+        ).all()
+        for batch in batches:
+            started_local = self._local(batch.started_at)
+            if started_local is not None:
+                result[started_local.date().isoformat()] = batch
+        return result
+
+    @staticmethod
+    def _mark_plan_slot_executed(session, batch: ProductTrafficBatch, at: datetime) -> None:
+        if not batch.plan_slot_id:
+            return
+        slot = session.get(ProductOperatingPlanSlot, batch.plan_slot_id)
+        if slot is None:
+            return
+        slot.status = "executed"
+        slot.updated_at = at
+
+    def _batch_external_ids(self, session, batch_id: str) -> list[str]:
+        return list(
+            session.scalars(
+                select(Item.external_id)
+                .join(
+                    ProductTrafficBatchItem,
+                    ProductTrafficBatchItem.item_id == Item.id,
+                )
+                .where(ProductTrafficBatchItem.batch_id == batch_id)
+                .order_by(ProductTrafficBatchItem.position)
+            ).all()
+        )
+
+    def _last_started_by_external_id(self, session) -> dict[str, datetime]:
+        rows = session.execute(
+            select(
+                Item.external_id,
+                ProductTrafficBatch.started_at,
+            )
+            .join(
+                ProductTrafficBatchItem,
+                ProductTrafficBatchItem.item_id == Item.id,
+            )
+            .join(
+                ProductTrafficBatch,
+                ProductTrafficBatch.id == ProductTrafficBatchItem.batch_id,
+            )
+            .where(
+                ProductTrafficBatch.started_at.is_not(None),
+                ProductTrafficBatch.status != "cancelled",
+            )
+        ).all()
+        latest: dict[str, datetime] = {}
+        for external_id, started_at in rows:
+            normalized = self._utc(started_at)
+            if normalized and (
+                external_id not in latest or normalized > latest[external_id]
+            ):
+                latest[str(external_id)] = normalized
+        return latest
+
+    def _select_evidence_rotation(
+        self,
+        session,
+        candidates: list[dict],
+        *,
+        available_at: datetime,
+        source_batch: ProductTrafficBatch | None,
+        target_count: int | None = None,
+    ) -> tuple[list[dict], dict]:
+        """Select one explainable 3–5 listing rotation from stored evidence."""
+
+        target = min(
+            self.settings.product_traffic_batch_max_items,
+            max(
+                self.settings.product_traffic_batch_min_items,
+                target_count or self.settings.product_traffic_batch_max_items,
+            ),
+        )
+        at_utc = self._utc(available_at) or self._now().astimezone(timezone.utc)
+        cooldown = timedelta(hours=self.settings.product_traffic_cooldown_hours)
+        last_started = self._last_started_by_external_id(session)
+        by_external_id = {
+            candidate["item"].external_id: candidate for candidate in candidates
+        }
+        source_ids = (
+            self._batch_external_ids(session, source_batch.id) if source_batch else []
+        )
+        source_view = (
+            self._traffic_batch_view(session, source_batch, include_replan=False)
+            if source_batch
+            else None
+        )
+
+        def available(candidate: dict) -> bool:
+            if not candidate["eligible"]:
+                return False
+            external_id = candidate["item"].external_id
+            started = last_started.get(external_id)
+            if started and started + cooldown > at_utc:
+                return False
+            observation = candidate["signal"]["modification_observation_until"]
+            return not observation or observation <= at_utc
+
+        retained: list[dict] = []
+        if (
+                source_view
+                and source_view.analysis_eligible
+                and source_view.observation_checkpoint == "h72"
+        ):
+            positive = [
+                product
+                for product in source_view.products
+                if product.inquiry_delta > 0
+                and product.external_id in by_external_id
+                and available(by_external_id[product.external_id])
+            ]
+            positive.sort(
+                key=lambda product: (
+                    -product.inquiry_delta,
+                    -product.want_delta,
+                    -product.browse_delta,
+                    product.external_id,
+                )
+            )
+            retained = [by_external_id[value.external_id] for value in positive[:2]]
+
+        retained_ids = {value["item"].external_id for value in retained}
+        remaining = [
+            candidate
+            for candidate in candidates
+            if candidate["item"].external_id not in source_ids
+            and candidate["item"].external_id not in retained_ids
+            and available(candidate)
+        ]
+        oldest = datetime.min.replace(tzinfo=timezone.utc)
+        remaining.sort(
+            key=lambda candidate: (
+                0 if candidate["effect"]["batch_count"] == 0 else 1,
+                last_started.get(candidate["item"].external_id, oldest),
+                -candidate["score"],
+                candidate["item"].external_id,
+            )
+        )
+        selected = retained + remaining[: max(0, target - len(retained))]
+        minimum = self.settings.product_traffic_batch_min_items
+        if len(selected) < minimum:
+            selected = []
+
+        selected_ids = [value["item"].external_id for value in selected]
+        summary = {
+            "source_batch_id": source_batch.id if source_batch else None,
+            "analysis_eligible": bool(
+                source_view
+                and source_view.analysis_eligible
+                and source_view.observation_checkpoint == "h72"
+            ),
+            "retained_ids": [value["item"].external_id for value in retained],
+            "removed_ids": [value for value in source_ids if value not in retained_ids],
+            "added_ids": [value for value in selected_ids if value not in source_ids],
+            "candidate_count": len(selected),
+            "minimum_required": self.settings.product_traffic_batch_min_items,
+            "reason": (
+                "保留最多 2 件具有 +72h 新增咨询的商品，其余优先未验证和最久未投放商品"
+                if retained
+                else "上一批没有合格强正向证据，本批全部轮换为未验证或最久未投放商品"
+                if source_batch
+                else "优先未验证商品，再按最久未投放、机会分数和商品 ID 排序"
+            ),
+        }
+        return selected, summary
+
     def _plan_input_signature(self, session, candidates: list[dict]) -> str:
         payload = {
             "date": self._day_key(),
@@ -2182,8 +3692,11 @@ class ProductIntelligenceService:
                     batch.status,
                     str(batch.planned_at),
                     str(batch.started_at or ""),
+                    str(batch.updated_at),
+                    str(batch.baseline_prepared_at or ""),
                     batch.actual_cost,
                     batch.total_exposure,
+                    self._batch_external_ids(session, batch.id),
                 ]
                 for batch in session.scalars(
                     select(ProductTrafficBatch)
@@ -2213,6 +3726,84 @@ class ProductIntelligenceService:
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
 
+    def _plan_change_factors(
+        self,
+        previous: ProductOperatingPlanSlot | None,
+        *,
+        slot_date: str,
+        scheduled_time: str,
+        action_type: str,
+        item_ids: list[str],
+        planned_cost: float,
+        title_by_id: dict[str, str],
+        specific_factors: list[str] | None = None,
+    ) -> list[str]:
+        factors = list(specific_factors or [])
+        if previous is None:
+            factors.append(f"首次为 {slot_date} 建立经营安排")
+            return list(dict.fromkeys(factors))
+
+        previous_ids = [str(value) for value in self._json_list(previous.item_ids_json)]
+        if previous.action_type != action_type:
+            previous_label = PLAN_ACTION_LABELS.get(
+                previous.action_type, previous.action_type
+            )
+            next_label = PLAN_ACTION_LABELS.get(action_type, action_type)
+            factors.append(
+                f"动作由“{previous_label}”调整为“{next_label}”"
+            )
+        if previous.scheduled_time != scheduled_time:
+            factors.append(
+                f"北京时间由 {previous.scheduled_time} 调整为 {scheduled_time}"
+            )
+        added = [value for value in item_ids if value not in previous_ids]
+        removed = [value for value in previous_ids if value not in item_ids]
+        if added:
+            factors.append(
+                "新增商品："
+                + "、".join(title_by_id.get(value, value) for value in added[:3])
+            )
+        if removed:
+            factors.append(
+                "移出商品："
+                + "、".join(title_by_id.get(value, value) for value in removed[:3])
+            )
+        if round(previous.planned_cost, 2) != round(planned_cost, 2):
+            factors.append(
+                f"批次预算由 ¥{previous.planned_cost:g} 调整为 ¥{planned_cost:g}"
+            )
+        if not factors:
+            factors.append("动作、商品组合、时段和预算均未变化")
+        return list(dict.fromkeys(factors))
+
+    @staticmethod
+    def _plan_semantic_payload(
+        weekly_budget: float,
+        slots: list[dict],
+    ) -> str:
+        payload = {
+            "weekly_budget": round(weekly_budget, 2),
+            "slots": [
+                {
+                    "date": slot["date"],
+                    "scheduled_time": slot["scheduled_time"],
+                    "action_type": slot["action_type"],
+                    "item_ids": list(slot["item_ids"]),
+                    "planned_cost": round(float(slot["planned_cost"]), 2),
+                    "source_batch_id": slot.get("source_batch_id"),
+                    "availability_at": (
+                        slot.get("availability_at").isoformat()
+                        if isinstance(slot.get("availability_at"), datetime)
+                        else slot.get("availability_at")
+                    ),
+                    "is_new_spend": bool(slot.get("is_new_spend")),
+                    "rotation_summary": slot.get("rotation_summary") or {},
+                }
+                for slot in slots
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
     def _ensure_operating_plan(
         self,
         session,
@@ -2220,8 +3811,28 @@ class ProductIntelligenceService:
         force: bool = False,
     ) -> ProductOperatingPlan:
         candidates = self._candidate_pool(session)
+        growth_context = (
+            self.traffic_growth.operating_plan_context(
+                session,
+                now=self._now(),
+            )
+            if self.traffic_growth is not None
+            else None
+        )
         signature = self._plan_input_signature(session, candidates)
-        today = self._now().date()
+        if growth_context:
+            signature = hashlib.sha256(
+                (
+                    signature
+                    + json.dumps(
+                        growth_context,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
+        plan_now = self._now()
+        today = plan_now.date()
         today_key = today.isoformat()
         latest = session.scalar(
             select(ProductOperatingPlan)
@@ -2247,20 +3858,6 @@ class ProductIntelligenceService:
                     )
                 ).all()
             }
-        version = (
-            int(
-                session.scalar(
-                    select(func.max(ProductOperatingPlan.version)).where(
-                        ProductOperatingPlan.plan_start_date == today_key
-                    )
-                )
-                or 0
-            )
-            + 1
-        )
-        if latest:
-            latest.status = "superseded"
-
         effective_batch_count = self._effective_batch_count(session)
         analysis_stage = self._analysis_stage(effective_batch_count)
         quality_counts = defaultdict(int)
@@ -2290,8 +3887,23 @@ class ProductIntelligenceService:
             time(scheduled_hour, scheduled_minute),
             tzinfo=self.timezone,
         )
-        first_traffic_offset = 0 if self._now() < today_scheduled else 1
+        first_traffic_offset = 0 if plan_now < today_scheduled else 1
         traffic_offsets = set(range(first_traffic_offset, 7, 2))
+        growth_slots = growth_context.get("slots", {}) if growth_context else {}
+        if growth_slots:
+            traffic_offsets = {
+                (datetime.fromisoformat(day).date() - today).days
+                for day in growth_slots
+                if 0 <= (datetime.fromisoformat(day).date() - today).days < 7
+            }
+        plan_weekly_budget = round(
+            float(
+                growth_context.get("weekly_budget")
+                if growth_context
+                else self.settings.product_traffic_weekly_budget
+            ),
+            2,
+        )
         active_projects = self._active_project_count(session)
         capacity_guard = active_projects >= self.settings.product_delivery_capacity
         batch_cost = round(self.settings.product_traffic_batch_cost, 2)
@@ -2305,20 +3917,189 @@ class ProductIntelligenceService:
             for candidate in candidates
             if candidate["eligible"]
         }
+        title_by_id = {
+            candidate["item"].external_id: candidate["item"].title
+            for candidate in candidates
+        }
+        # The newest real spend is the only attribution source for the next
+        # rotation.  A planned timestamp never becomes an exposure anchor.
+        active_observation = self._latest_started_traffic_batch(session)
+        active_observation_view = (
+            self._traffic_batch_view(
+                session, active_observation, include_replan=False
+            )
+            if active_observation and active_observation.started_at
+            else None
+        )
+        active_started = (
+            self._utc(active_observation.started_at)
+            if active_observation
+            else None
+        )
+        active_until = (
+            active_started + timedelta(hours=self.settings.product_traffic_cooldown_hours)
+            if active_started
+            else None
+        )
+        active_item_ids = (
+            [product.external_id for product in active_observation_view.products]
+            if active_observation_view
+            else []
+        )
+        active_observation_incomplete = bool(
+            active_observation_view
+            and active_observation_view.observation_checkpoint != "h72"
+        )
+        last_started_by_item = self._last_started_by_external_id(session)
+        executed_by_day = self._executed_traffic_batches_by_day(session)
+        traffic_cooldown = timedelta(
+            hours=self.settings.product_traffic_cooldown_hours
+        )
 
         for offset in range(7):
             slot_day = today + timedelta(days=offset)
             slot_key = slot_day.isoformat()
+            growth_slot = growth_slots.get(slot_key)
+            slot_scheduled_time = (
+                str(growth_slot.get("scheduled_time"))
+                if growth_slot
+                else scheduled_time
+            )
+            slot_hour, slot_minute = [
+                int(value) for value in slot_scheduled_time.split(":", 1)
+            ]
             slot_local = datetime.combine(
                 slot_day,
-                time(scheduled_hour, scheduled_minute),
+                time(slot_hour, slot_minute),
                 tzinfo=self.timezone,
             )
             previous = previous_slots.get(slot_key)
+            executed_batch = executed_by_day.get(slot_key)
+            if executed_batch is not None:
+                executed_ids = self._batch_external_ids(session, executed_batch.id)
+                original_slot = (
+                    session.get(ProductOperatingPlanSlot, executed_batch.plan_slot_id)
+                    if executed_batch.plan_slot_id
+                    else None
+                )
+                executed_local = self._local(executed_batch.started_at)
+                executed_time = (
+                    original_slot.scheduled_time
+                    if original_slot and original_slot.slot_date == slot_key
+                    else f"{executed_local.hour:02d}:{executed_local.minute:02d}"
+                    if executed_local
+                    else scheduled_time
+                )
+                if not previous or previous.status != "executed":
+                    changed_slots += 1
+                new_slots.append(
+                    {
+                        "date": slot_key,
+                        "scheduled_time": executed_time,
+                        "action_type": "traffic",
+                        "item_ids": executed_ids,
+                        "planned_cost": round(executed_batch.actual_cost, 2),
+                        "reason": (
+                            f"已于 {self._traffic_datetime_label(executed_batch.started_at)} "
+                            f"实际执行多商品曝光，真实费用 ¥{executed_batch.actual_cost:.1f}"
+                        ),
+                        "change_reason": "当天真实投流已经执行，后续重新评估不再改写今日安排",
+                        "change_factors": [
+                            "真实执行事实已冻结",
+                            "基线质量只影响分析资格，不影响今日任务完成状态",
+                        ],
+                        "evidence": [
+                            f"实际批次 {executed_batch.id}",
+                            f"实际开始 {self._traffic_datetime_label(executed_batch.started_at)}",
+                            f"实际费用 ¥{executed_batch.actual_cost:.1f}",
+                        ],
+                        "warnings": (
+                            ["该批次基线仅支持低置信探索观察，不进入预算、时段或复投结论"]
+                            if executed_batch.status == "invalidated"
+                            or executed_batch.attribution_status == "exploratory"
+                            else []
+                        ),
+                        "confidence": (
+                            "low"
+                            if executed_batch.status == "invalidated"
+                            or executed_batch.attribution_status != "clean"
+                            else "medium"
+                        ),
+                        "locked": False,
+                        "status": "executed",
+                        "source_batch_id": None,
+                        "availability_at": None,
+                        "is_new_spend": False,
+                        "rotation_summary": {
+                            "executed": True,
+                            "batch_id": executed_batch.id,
+                            "item_count": len(executed_ids),
+                        },
+                    }
+                )
+                continue
+            within_stability_window = bool(
+                plan_now <= slot_local <= plan_now + timedelta(hours=24)
+            )
+            # v2.4.2 wrote ``locked=true`` automatically for today and
+            # tomorrow. Only a lock created under the current rules version
+            # can be treated as an explicit user choice.
+            previous_manual_locked = bool(
+                previous
+                and previous.locked
+                and latest
+                and latest.rules_version == RULES_VERSION
+            )
+            # Keep the current batch's checkpoint visible today, but do not use
+            # an unfinished *whole batch* as a global gate.  Future paid slots
+            # may use a completely disjoint listing group; the per-listing
+            # cooldown remains authoritative at preview and mutation time.
+            active_observation_guard = bool(
+                offset == 0 and active_observation_incomplete
+            )
+            expected_source_batch_id = (
+                active_observation.id if active_observation_view else None
+            )
+            previous_item_ids = (
+                [str(value) for value in self._json_list(previous.item_ids_json)]
+                if previous
+                else []
+            )
+            previous_traffic_is_clean = bool(
+                previous
+                and previous.action_type == "traffic"
+                and all(
+                    (
+                        external_id not in active_item_ids
+                        if active_observation_incomplete
+                        else True
+                    )
+                    and (
+                        last_started_by_item.get(external_id) is None
+                        or last_started_by_item[external_id] + traffic_cooldown
+                        <= slot_local.astimezone(timezone.utc)
+                    )
+                    for external_id in previous_item_ids
+                )
+            )
             keep_previous = bool(
                 previous
                 and not capacity_guard
-                and (previous.locked or offset <= 1)
+                and not active_observation_guard
+                and (previous_manual_locked or within_stability_window)
+                and (
+                    previous_manual_locked
+                    or previous.action_type != "traffic"
+                    or offset in traffic_offsets
+                )
+                and (
+                    previous.action_type != "traffic"
+                    or previous_traffic_is_clean
+                )
+                and (
+                    previous.source_batch_id is None
+                    or previous.source_batch_id == expected_source_batch_id
+                )
                 and set(self._json_list(previous.item_ids_json)).issubset(
                     eligible_external_ids
                 )
@@ -2339,7 +4120,19 @@ class ProductIntelligenceService:
                         "item_ids": item_ids,
                         "planned_cost": previous.planned_cost,
                         "reason": previous.reason,
-                        "change_reason": "近 24 小时计划已锁定，保持不变",
+                        "change_reason": (
+                            "用户手动固定，保持不变"
+                            if previous_manual_locked
+                            else "未来 24 小时稳定窗口内，保持不变"
+                        ),
+                        "change_factors": [
+                            (
+                                "用户手动固定继续生效"
+                                if previous_manual_locked
+                                else "未来 24 小时稳定窗口继续生效"
+                            ),
+                            "动作、商品组合、时段和预算均未变化",
+                        ],
                         "evidence": [
                             f"规则版本 {RULES_VERSION}",
                             *[
@@ -2348,12 +4141,22 @@ class ProductIntelligenceService:
                                 if not str(value).startswith("规则版本")
                                 and not str(value).startswith("投放时段依据")
                             ],
-                            "投放时段依据：近 24 小时计划锁定，沿用上一版时段",
+                            (
+                                "投放时段依据：用户手动固定，沿用上一版时段"
+                                if previous_manual_locked
+                                else "投放时段依据：未来 24 小时稳定窗口，沿用上一版时段"
+                            ),
                         ],
                         "warnings": self._json_list(previous.warnings_json),
                         "confidence": previous.confidence,
-                        "locked": True,
+                        "locked": previous_manual_locked,
                         "status": previous.status,
+                        "source_batch_id": previous.source_batch_id,
+                        "availability_at": previous.availability_at,
+                        "is_new_spend": previous.is_new_spend,
+                        "rotation_summary": _json_dict(
+                            previous.rotation_summary_json
+                        ),
                     }
                 )
                 continue
@@ -2369,8 +4172,68 @@ class ProductIntelligenceService:
                 f"投放时段依据：{timing_source}",
             ]
             reason = "观察自然流量，不在没有证据时频繁调整"
+            specific_factors: list[str] = []
+            slot_source_batch_id: str | None = None
+            slot_availability_at: datetime | None = None
+            rotation_summary: dict = {}
 
-            if capacity_guard:
+            if active_observation_guard:
+                action_type = "measure"
+                selected = [
+                    candidate
+                    for candidate in candidates
+                    if candidate["item"].external_id in active_item_ids
+                ]
+                next_checkpoint = active_observation_view.due_checkpoint or "h72"
+                next_label = f"+{CHECKPOINT_HOURS.get(next_checkpoint, 72)}h"
+                started_label = self._traffic_datetime_label(
+                    active_observation.started_at
+                )
+                if offset == 0 and active_observation_view.due_ready:
+                    reason = (
+                        f"补录 {started_label} 实际开始批次的 {next_label}；"
+                        "今天先完成检查点，未来只为不重叠商品排期"
+                    )
+                elif offset == 0:
+                    due_label = self._traffic_datetime_label(
+                        active_observation_view.due_at
+                    )
+                    reason = (
+                        f"继续观察，{next_label} 将于 {due_label} 到期；"
+                        "今天不重复投放，未来可轮换到不重叠商品"
+                    )
+                else:
+                    reason = "当前批次仍在 72 小时观察窗口，冷却结束后再评估下一批"
+                evidence.extend(
+                    [
+                        f"当前批次实际开始：{started_label}（北京时间）",
+                        f"下一检查点：{next_label}",
+                        "当前批次商品继续观察；其他商品仍按各自冷却状态判断",
+                    ]
+                )
+                warnings.append("这是当前批次的观察安排，不是再次购买曝光")
+                slot_source_batch_id = active_observation.id
+                # Every selected listing is already available at this slot.
+                # Do not expose the unrelated source batch's +72h as a global
+                # availability date for a disjoint rotation.
+                slot_availability_at = active_until
+                rotation_summary = {
+                    "mode": "observation",
+                    "source_batch_id": active_observation.id,
+                    "eligible_after": active_until.isoformat() if active_until else None,
+                    "checkpoint": next_checkpoint,
+                }
+                specific_factors.extend(
+                    [
+                        f"检测到 {started_label} 开始的批次仍未完成 72h 观察",
+                        (
+                            f"当前应补录 {next_label}，暂停重叠投放"
+                            if active_observation_view.due_ready
+                            else f"{next_label} 尚未到期，继续观察并暂停重叠投放"
+                        ),
+                    ]
+                )
+            elif capacity_guard:
                 action_type = "delivery_guard"
                 reason = "交付容量已满，本地规则暂停全部商品的新增曝光建议"
                 warnings.append("容量保护优先于商品分数")
@@ -2379,72 +4242,85 @@ class ProductIntelligenceService:
                 week_key = week_start.isoformat()
                 spent, already_planned = self._week_traffic_totals(session, slot_local)
                 available_budget = (
-                    self.settings.product_traffic_weekly_budget
+                    plan_weekly_budget
                     - spent
                     - already_planned
                     - planned_by_week[week_key]
                 )
-                available = []
-                for candidate in candidates:
-                    if not candidate["eligible"]:
-                        continue
-                    external_id = candidate["item"].external_id
-                    cooldown = candidate["signal"]["traffic_cooldown_until"]
-                    observation = candidate["signal"]["modification_observation_until"]
-                    if cooldown and cooldown > slot_local.astimezone(timezone.utc):
-                        continue
-                    if observation and observation > slot_local.astimezone(timezone.utc):
-                        continue
-                    if future_cooldowns.get(external_id, datetime.min.replace(tzinfo=timezone.utc)) > slot_local.astimezone(timezone.utc):
-                        continue
-                    available.append(candidate)
-                available.sort(
-                    key=lambda candidate: (
-                        usage[candidate["item"].external_id],
-                        -candidate["score"],
+                slot_utc = slot_local.astimezone(timezone.utc)
+                available = [
+                    candidate
+                    for candidate in candidates
+                    if candidate["eligible"]
+                    and future_cooldowns.get(
                         candidate["item"].external_id,
+                        datetime.min.replace(tzinfo=timezone.utc),
                     )
+                    <= slot_utc
+                ]
+                selected, rotation_summary = self._select_evidence_rotation(
+                    session,
+                    available,
+                    available_at=slot_utc,
+                    source_batch=active_observation,
                 )
-                if analysis_stage == "explore_exploit" and len(available) >= 3:
-                    exploit_count = max(
-                        2, self.settings.product_traffic_batch_max_items - 1
-                    )
-                    exploit = sorted(
-                        available,
-                        key=lambda candidate: (
-                            -candidate["score"],
-                            usage[candidate["item"].external_id],
-                        ),
-                    )[:exploit_count]
-                    exploration = next(
+                if growth_slot:
+                    hero_external_id = str(growth_slot["hero_external_id"])
+                    hero = next(
                         (
                             candidate
-                            for candidate in sorted(
-                                available,
-                                key=lambda value: (
-                                    value["effect"]["batch_count"],
-                                    usage[value["item"].external_id],
-                                ),
-                            )
-                            if candidate not in exploit
+                            for candidate in candidates
+                            if candidate["item"].external_id == hero_external_id
+                            and candidate["eligible"]
                         ),
                         None,
                     )
-                    selected = exploit + ([exploration] if exploration else [])
-                else:
-                    selected = available[: self.settings.product_traffic_batch_max_items]
-                minimum = min(
-                    self.settings.product_traffic_batch_min_items,
-                    len(eligible_external_ids),
+                    if hero is None:
+                        selected = []
+                        warnings.append("实验重点商品当前不可经营，暂停该实验时段")
+                    elif all(
+                        value["item"].external_id != hero_external_id
+                        for value in selected
+                    ):
+                        companions = [
+                            value
+                            for value in (selected or available)
+                            if value["item"].external_id != hero_external_id
+                        ]
+                        selected = [hero, *companions][
+                            : self.settings.product_traffic_batch_max_items
+                        ]
+                        if len(selected) < self.settings.product_traffic_batch_min_items:
+                            selected = []
+                    rotation_summary = {
+                        **rotation_summary,
+                        **growth_slot,
+                        "hero_external_id": hero_external_id,
+                        "experiment_managed": True,
+                    }
+                    evidence.extend(
+                        [
+                            f"增长实验 {growth_slot['experiment_id']}",
+                            (
+                                f"干净时段格 {growth_slot['window_bucket']}:00，"
+                                "重点商品仍保持至少 72 小时间隔"
+                                if growth_slot["mode"] == "time_test"
+                                else f"{growth_slot['stage']} 扩量队列按 14 天整体观察"
+                            ),
+                        ]
+                    )
+                slot_source_batch_id = (
+                    active_observation.id if active_observation else None
                 )
+                slot_availability_at = None
                 if available_budget + 1e-9 < batch_cost:
                     action_type = "rest"
                     selected = []
                     reason = "本周计划预算已用完，保留自然流量观察日"
                     warnings.append(
-                        f"周上限 ¥{self.settings.product_traffic_weekly_budget:.0f}，不会建议超额批次"
+                        f"周上限 ¥{plan_weekly_budget:.0f}，不会建议超额批次"
                     )
-                elif len(selected) < max(1, minimum):
+                elif len(selected) < self.settings.product_traffic_batch_min_items:
                     action_type = "measure"
                     selected = []
                     reason = "可用商品不足，优先等待 72 小时冷却或数据恢复"
@@ -2454,9 +4330,19 @@ class ProductIntelligenceService:
                     planned_cost = batch_cost
                     planned_by_week[week_key] += batch_cost
                     reason = (
-                        f"建议人工选择 {len(selected)} 件商品组成一个批次；"
+                        (
+                            "按增长实验建议"
+                            if growth_slot
+                            else "建议人工选择"
+                        )
+                        + f" {len(selected)} 件商品组成一个批次；"
                         f"批次总费用按约 ¥{batch_cost:g} 记录"
                     )
+                    evidence.append(str(rotation_summary.get("reason") or "证据轮换"))
+                    if active_observation_incomplete:
+                        specific_factors.append(
+                            "上一批仍在观察，本批只使用不重叠且已冷却商品"
+                        )
                     warnings.extend(
                         [
                             "套餐总曝光不平均分摊到单件商品",
@@ -2493,56 +4379,135 @@ class ProductIntelligenceService:
                                 timezone.utc
                             ) + timedelta(hours=self.settings.product_traffic_cooldown_hours)
             else:
-                active_observations = [
-                    candidate
-                    for candidate in candidates
-                    if (
-                        candidate["signal"]["traffic_cooldown_until"]
-                        and candidate["signal"]["traffic_cooldown_until"]
-                        > slot_local.astimezone(timezone.utc)
-                    )
-                ]
                 optimization = [
                     candidate for candidate in candidates if candidate["role"] == "先优化"
                 ]
-                if active_observations:
+                if active_observation_incomplete and active_observation_view:
                     action_type = "measure"
-                    selected = active_observations[:3]
+                    selected = [
+                        candidate
+                        for candidate in candidates
+                        if candidate["item"].external_id in active_item_ids
+                    ][:3]
                     reason = "曝光后的长尾观察日，补齐检查点，不安排重叠批次"
+                    slot_source_batch_id = active_observation.id
+                    slot_availability_at = active_until
+                    rotation_summary = {
+                        "mode": "observation",
+                        "source_batch_id": active_observation.id,
+                    }
                 elif optimization:
                     action_type = "optimize"
                     selected = optimization[:2]
                     reason = "先优化高浏览低咨询商品的表达，再考虑曝光"
 
             item_ids = [candidate["item"].external_id for candidate in selected]
-            change_reason = "首次建立滚动计划"
-            if previous:
-                previous_ids = [str(value) for value in self._json_list(previous.item_ids_json)]
-                if previous.action_type == action_type and previous_ids == item_ids:
-                    change_reason = "新数据未改变结论，未来安排保持稳定"
-                else:
-                    changed_slots += 1
-                    change_reason = "根据新快照、预算、交付容量或 72 小时冷却重新安排"
+            change_factors = self._plan_change_factors(
+                previous,
+                slot_date=slot_key,
+                scheduled_time=slot_scheduled_time,
+                action_type=action_type,
+                item_ids=item_ids,
+                planned_cost=planned_cost,
+                title_by_id=title_by_id,
+                specific_factors=specific_factors,
+            )
+            if previous is None:
+                change_reason = "首次建立滚动计划"
+            elif change_factors == ["动作、商品组合、时段和预算均未变化"]:
+                change_reason = "新数据未改变结论，未来安排保持稳定"
+            else:
+                changed_slots += 1
+                change_reason = "；".join(change_factors[:2])
             new_slots.append(
                 {
                     "date": slot_key,
-                    "scheduled_time": scheduled_time,
+                    "scheduled_time": slot_scheduled_time,
                     "action_type": action_type,
                     "item_ids": item_ids,
                     "planned_cost": planned_cost,
                     "reason": reason,
                     "change_reason": change_reason,
+                    "change_factors": change_factors,
                     "evidence": evidence,
                     "warnings": warnings,
                     "confidence": portfolio_quality,
-                    "locked": offset <= 1,
+                    # Persistence is reserved for an explicit manual lock.
+                    # The exact 24-hour stability window is response-derived.
+                    "locked": False,
                     "status": "planned",
+                    "source_batch_id": (
+                        slot_source_batch_id
+                    ),
+                    "availability_at": slot_availability_at,
+                    "is_new_spend": action_type == "traffic",
+                    "rotation_summary": rotation_summary,
                 }
             )
 
+        semantic_payload = self._plan_semantic_payload(
+            plan_weekly_budget,
+            new_slots,
+        )
+        if latest and latest.plan_start_date == today_key:
+            existing_slot_payload = [
+                {
+                    "date": slot.slot_date,
+                    "scheduled_time": slot.scheduled_time,
+                    "action_type": slot.action_type,
+                    "item_ids": [str(value) for value in self._json_list(slot.item_ids_json)],
+                    "planned_cost": slot.planned_cost,
+                    "source_batch_id": slot.source_batch_id,
+                    "availability_at": slot.availability_at,
+                    "is_new_spend": slot.is_new_spend,
+                    "rotation_summary": _json_dict(slot.rotation_summary_json),
+                }
+                for slot in sorted(previous_slots.values(), key=lambda value: value.slot_date)
+            ]
+            if semantic_payload == self._plan_semantic_payload(
+                latest.weekly_budget,
+                existing_slot_payload,
+            ):
+                latest.input_signature = signature
+                latest.rules_version = RULES_VERSION
+                latest.weekly_budget = round(
+                    plan_weekly_budget, 2
+                )
+                setattr(
+                    latest,
+                    "_evaluation_message",
+                    (
+                        "你已手动重新评估；动作、商品组合、时段和预算均未变化，"
+                        f"继续沿用第 {latest.version} 版。"
+                        if force
+                        else latest.change_summary
+                    ),
+                )
+                setattr(
+                    latest,
+                    "_evaluation_factors",
+                    ["本次计算结果与当前版本语义一致，未创建噪声版本"],
+                )
+                return latest
+
+        version = (
+            int(
+                session.scalar(
+                    select(func.max(ProductOperatingPlan.version)).where(
+                        ProductOperatingPlan.plan_start_date == today_key
+                    )
+                )
+                or 0
+            )
+            + 1
+        )
+        if latest:
+            latest.status = "superseded"
+
         if latest:
             change_summary = (
-                f"已生成第 {version} 版；今明两天保持稳定，未来计划调整 {changed_slots} 天。"
+                f"已生成第 {version} 版；未来 24 小时内的有效计划保持稳定，"
+                f"其余计划调整 {changed_slots} 天。"
                 if changed_slots
                 else f"已生成第 {version} 版；新数据未改变主要安排。"
             )
@@ -2550,6 +4515,14 @@ class ProductIntelligenceService:
             change_summary = "首次建立滚动 7 天计划；默认隔天安排一批并轮换商品。"
         if force:
             change_summary = "你已手动重新评估。" + change_summary
+        plan_factors = list(
+            dict.fromkeys(
+                factor
+                for slot in new_slots
+                for factor in slot["change_factors"]
+                if factor != "动作、商品组合、时段和预算均未变化"
+            )
+        )[:8]
 
         plan = ProductOperatingPlan(
             id=f"product-plan-{uuid4()}",
@@ -2557,8 +4530,9 @@ class ProductIntelligenceService:
             version=version,
             status="current",
             input_signature=signature,
-            weekly_budget=round(self.settings.product_traffic_weekly_budget, 2),
+            weekly_budget=plan_weekly_budget,
             change_summary=change_summary,
+            change_factors_json=json.dumps(plan_factors, ensure_ascii=False),
             data_quality=portfolio_quality,
             rules_version=RULES_VERSION,
             generated_at=utcnow(),
@@ -2577,11 +4551,20 @@ class ProductIntelligenceService:
                     planned_cost=slot_data["planned_cost"],
                     reason=slot_data["reason"],
                     change_reason=slot_data["change_reason"],
+                    change_factors_json=json.dumps(
+                        slot_data["change_factors"], ensure_ascii=False
+                    ),
                     evidence_json=json.dumps(slot_data["evidence"], ensure_ascii=False),
                     warnings_json=json.dumps(slot_data["warnings"], ensure_ascii=False),
                     confidence=slot_data["confidence"],
                     locked=slot_data["locked"],
                     status=slot_data["status"],
+                    source_batch_id=slot_data.get("source_batch_id"),
+                    availability_at=slot_data.get("availability_at"),
+                    is_new_spend=bool(slot_data.get("is_new_spend")),
+                    rotation_summary_json=json.dumps(
+                        slot_data.get("rotation_summary", {}), ensure_ascii=False
+                    ),
                 )
             )
         session.flush()
@@ -2606,36 +4589,26 @@ class ProductIntelligenceService:
             .where(ProductOperatingPlanSlot.plan_id == plan.id)
             .order_by(ProductOperatingPlanSlot.slot_date)
         ).all()
-        # When a new plan version carries a locked day forward, its existing
-        # batch still points to the previous slot. Match it safely by Beijing
-        # day and overlapping product ids so the current plan does not create a
-        # duplicate batch or count the same budget twice.
-        all_active_batches = session.scalars(
-            select(ProductTrafficBatch).where(ProductTrafficBatch.status != "cancelled")
-        ).all()
-        batch_product_ids: dict[str, set[str]] = {}
-        for batch in all_active_batches:
-            batch_product_ids[batch.id] = set(
-                session.scalars(
-                    select(Item.external_id)
-                    .join(ProductTrafficBatchItem, ProductTrafficBatchItem.item_id == Item.id)
-                    .where(ProductTrafficBatchItem.batch_id == batch.id)
-                ).all()
-            )
+        executed_by_day = self._executed_traffic_batches_by_day(session)
         for slot in slots:
-            if slot.id in batch_by_slot:
-                continue
-            slot_ids = {str(value) for value in self._json_list(slot.item_ids_json)}
-            for batch in all_active_batches:
-                local_planned = self._local(batch.planned_at)
-                if (
-                    local_planned
-                    and local_planned.date().isoformat() == slot.slot_date
-                    and slot_ids
-                    and slot_ids & batch_product_ids.get(batch.id, set())
-                ):
-                    batch_by_slot[slot.id] = batch.id
-                    break
+            if slot.status == "executed" and slot.slot_date in executed_by_day:
+                batch_by_slot[slot.id] = executed_by_day[slot.slot_date].id
+        # v2.4 intentionally avoids fuzzy day/product matching.  A plan slot is
+        # linked either by its own materialized batch or by the explicit source
+        # observation identifier persisted when the plan was generated.
+        valid_batch_ids = set(
+            session.scalars(
+                select(ProductTrafficBatch.id).where(
+                    ProductTrafficBatch.status != "invalidated"
+                )
+            ).all()
+        )
+        plan_now = self._now()
+        stability_until = plan_now + timedelta(hours=24)
+        last_started_by_item = self._last_started_by_external_id(session)
+        traffic_cooldown = timedelta(
+            hours=self.settings.product_traffic_cooldown_hours
+        )
         slot_views: list[ProductOperatingPlanSlotView] = []
         for slot in slots:
             products: list[ProductPlanProductView] = []
@@ -2655,8 +4628,37 @@ class ProductIntelligenceService:
             try:
                 slot_day = datetime.fromisoformat(slot.slot_date).date()
                 weekday = WEEKDAY_LABELS[slot_day.weekday()]
+                scheduled_hour, scheduled_minute = [
+                    int(value) for value in slot.scheduled_time.split(":", 1)
+                ]
+                slot_local = datetime.combine(
+                    slot_day,
+                    time(scheduled_hour, scheduled_minute),
+                    tzinfo=self.timezone,
+                )
             except ValueError:
                 weekday = ""
+                slot_local = None
+            if slot.status == "executed":
+                lock_mode = "executed"
+                lock_label = "今日已执行"
+            elif slot.locked:
+                lock_mode = "manual"
+                lock_label = "手动固定"
+            elif slot_local and plan_now <= slot_local <= stability_until:
+                lock_mode = "stability"
+                lock_label = "24h内 · 计划固定"
+            else:
+                lock_mode = "none"
+                lock_label = None
+            cooldowns = [
+                last_started_by_item[product.external_id] + traffic_cooldown
+                for product in products
+                if product.external_id in last_started_by_item
+                and slot_local
+                and last_started_by_item[product.external_id] + traffic_cooldown
+                > slot_local.astimezone(timezone.utc)
+            ]
             slot_views.append(
                 ProductOperatingPlanSlotView(
                     id=slot.id,
@@ -2668,12 +4670,28 @@ class ProductIntelligenceService:
                     planned_cost=round(slot.planned_cost, 2),
                     reason=slot.reason,
                     change_reason=slot.change_reason,
+                    change_factors=[
+                        str(value)
+                        for value in self._json_list(slot.change_factors_json)
+                    ],
                     evidence=[str(value) for value in self._json_list(slot.evidence_json)],
                     warnings=[str(value) for value in self._json_list(slot.warnings_json)],
                     confidence=slot.confidence,
                     locked=slot.locked,
+                    lock_mode=lock_mode,
+                    lock_label=lock_label,
+                    cooldown_conflict_count=len(cooldowns),
+                    cooldown_until=max(cooldowns) if cooldowns else None,
                     status=slot.status,
                     batch_id=batch_by_slot.get(slot.id),
+                    source_batch_id=(
+                        slot.source_batch_id
+                        if slot.source_batch_id in valid_batch_ids
+                        else None
+                    ),
+                    availability_at=slot.availability_at,
+                    is_new_spend=slot.is_new_spend,
+                    rotation_summary=_json_dict(slot.rotation_summary_json),
                 )
             )
         spent, already_planned = self._week_traffic_totals(session)
@@ -2701,7 +4719,15 @@ class ProductIntelligenceService:
             planned_this_week=planned_total,
             remaining_this_week=max(0, round(plan.weekly_budget - spent - planned_total, 2)),
             cadence="默认隔天一批；同一商品至少间隔 72 小时",
-            change_summary=plan.change_summary,
+            change_summary=getattr(plan, "_evaluation_message", plan.change_summary),
+            change_factors=(
+                list(getattr(plan, "_evaluation_factors"))
+                if hasattr(plan, "_evaluation_factors")
+                else [
+                    str(value)
+                    for value in self._json_list(plan.change_factors_json)
+                ]
+            ),
             data_quality=plan.data_quality,
             rules_version=plan.rules_version,
             analysis_stage=self._analysis_stage(effective_batch_count),
@@ -2709,7 +4735,544 @@ class ProductIntelligenceService:
             slots=slot_views,
         )
 
-    def _traffic_batch_view(self, session, batch: ProductTrafficBatch) -> ProductTrafficBatchView:
+    @staticmethod
+    def _traffic_point_counts(value) -> tuple[int, int, int, int]:
+        return (
+            int(value.browse_count),
+            int(value.collect_count),
+            int(value.want_count),
+            int(value.inquiry_count),
+        )
+
+    def _traffic_exploratory_analysis(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+        batch_items: list[ProductTrafficBatchItem],
+        by_checkpoint: dict[str, dict[int, ProductTrafficCheckpoint]],
+        completed_checkpoints: list[str],
+    ) -> dict:
+        """Derive weak, explicitly non-causal observations from preserved facts.
+
+        Invalid T0 data must never be rehabilitated into an attribution
+        baseline.  This helper instead follows the useful boundary shared by
+        causal time-series projects: keep observed outcomes, expose the
+        comparison assumptions, and withhold treatment-effect claims when a
+        trustworthy counterfactual cannot be identified.
+        """
+
+        empty = {
+            "available": False,
+            "reference_source": None,
+            "reference_label": None,
+            "reference_at": None,
+            "through_label": None,
+            "through_at": None,
+            "browse_change": 0,
+            "collect_change": 0,
+            "want_change": 0,
+            "inquiry_change": 0,
+            "natural_low": None,
+            "natural_high": None,
+            "natural_sample_size": 0,
+            "natural_item_count": 0,
+            "control_expected": None,
+            "control_item_count": 0,
+            "control_adjusted": None,
+            "directional_low": None,
+            "directional_high": None,
+            "summary": None,
+            "limitations": [],
+            "points": [],
+            "item_points": {},
+        }
+        started_at = self._utc(batch.started_at)
+        if started_at is None or not batch_items:
+            return empty
+
+        item_ids = [item.item_id for item in batch_items]
+        snapshots = session.scalars(
+            select(ProductDailySnapshot)
+            .where(ProductDailySnapshot.item_id.in_(item_ids))
+            .order_by(ProductDailySnapshot.item_id, ProductDailySnapshot.captured_at)
+        ).all()
+        snapshots_by_item: defaultdict[int, list[ProductDailySnapshot]] = defaultdict(list)
+        for snapshot in snapshots:
+            snapshots_by_item[snapshot.item_id].append(snapshot)
+
+        rejected_checkpoint_labels: list[str] = []
+        usable_checkpoints: list[str] = []
+        for checkpoint_name in completed_checkpoints:
+            checkpoint_values = by_checkpoint.get(checkpoint_name, {})
+            # A row of zeroes is not a believable cumulative counter when a
+            # real snapshot before that row already contains positive totals.
+            all_zero = all(
+                sum(self._traffic_point_counts(value)) == 0
+                for value in checkpoint_values.values()
+            )
+            known_positive_before = False
+            if all_zero:
+                for item_id, checkpoint in checkpoint_values.items():
+                    recorded_at = self._utc(checkpoint.recorded_at)
+                    if any(
+                        self._utc(snapshot.captured_at) <= recorded_at
+                        and sum(self._traffic_point_counts(snapshot)) > 0
+                        for snapshot in snapshots_by_item.get(item_id, [])
+                    ):
+                        known_positive_before = True
+                        break
+            if all_zero and known_positive_before:
+                rejected_checkpoint_labels.append(
+                    CHECKPOINT_SHORT_LABELS.get(checkpoint_name, checkpoint_name)
+                )
+            else:
+                usable_checkpoints.append(checkpoint_name)
+
+        reference_source: str | None = None
+        reference_label: str | None = None
+        through_label: str | None = None
+        reference_at: datetime | None = None
+        through_at: datetime | None = None
+        observation_duration_hours: float | None = None
+        point_rows: list[dict] = []
+        item_point_rows: defaultdict[int, list[dict]] = defaultdict(list)
+
+        has_stored_exploratory_reference = bool(
+            batch.attribution_status == "exploratory"
+            and batch_items
+            and all(
+                item.baseline_source == "daily_exploratory"
+                and item.baseline_captured_at is not None
+                for item in batch_items
+            )
+        )
+        if has_stored_exploratory_reference and usable_checkpoints:
+            reference_source = "daily_snapshot"
+            reference_label = "早间参考基线"
+            reference_at = max(
+                self._utc(item.baseline_captured_at)
+                for item in batch_items
+                if item.baseline_captured_at is not None
+            )
+            baseline_by_item = {
+                item.item_id: (
+                    item.baseline_browse_count,
+                    item.baseline_collect_count,
+                    item.baseline_want_count,
+                    item.baseline_inquiry_count,
+                )
+                for item in batch_items
+            }
+            reference_totals = [0, 0, 0, 0]
+            for item in batch_items:
+                counts = baseline_by_item[item.item_id]
+                for index, current in enumerate(counts):
+                    reference_totals[index] += current
+                item_point_rows[item.item_id].append(
+                    {
+                        "key": "exploratory_reference",
+                        "label": "早间参考基线",
+                        "source": "daily_snapshot",
+                        "recorded_at": item.baseline_captured_at,
+                        "counts": counts,
+                        "changes": [0, 0, 0, 0],
+                    }
+                )
+            point_rows.append(
+                {
+                    "key": "exploratory_reference",
+                    "label": "早间参考基线",
+                    "source": "daily_snapshot",
+                    "recorded_at": reference_at,
+                    "counts": reference_totals,
+                    "changes": [0, 0, 0, 0],
+                }
+            )
+            for checkpoint_name in usable_checkpoints:
+                values = by_checkpoint[checkpoint_name]
+                totals = [0, 0, 0, 0]
+                changes = [0, 0, 0, 0]
+                recorded_at = max(self._utc(value.recorded_at) for value in values.values())
+                for item_id, value in values.items():
+                    counts = self._traffic_point_counts(value)
+                    base_counts = baseline_by_item[item_id]
+                    item_changes = [
+                        current - base for current, base in zip(counts, base_counts)
+                    ]
+                    for index, current in enumerate(counts):
+                        totals[index] += current
+                        changes[index] += item_changes[index]
+                    item_point_rows[item_id].append(
+                        {
+                            "key": checkpoint_name,
+                            "label": CHECKPOINT_SHORT_LABELS.get(checkpoint_name, checkpoint_name),
+                            "source": "checkpoint",
+                            "recorded_at": value.recorded_at,
+                            "counts": counts,
+                            "changes": item_changes,
+                        }
+                    )
+                point_rows.append(
+                    {
+                        "key": checkpoint_name,
+                        "label": CHECKPOINT_SHORT_LABELS.get(checkpoint_name, checkpoint_name),
+                        "source": "checkpoint",
+                        "recorded_at": recorded_at,
+                        "counts": totals,
+                        "changes": changes,
+                    }
+                )
+            through_label = CHECKPOINT_SHORT_LABELS.get(
+                usable_checkpoints[-1], usable_checkpoints[-1]
+            )
+            through_at = point_rows[-1]["recorded_at"]
+            observation_duration_hours = max(
+                1.0, (through_at - reference_at).total_seconds() / 3600
+            )
+        elif len(usable_checkpoints) >= 2:
+            reference_name = usable_checkpoints[0]
+            through_name = usable_checkpoints[-1]
+            reference_source = "checkpoint"
+            reference_label = CHECKPOINT_SHORT_LABELS.get(reference_name, reference_name)
+            through_label = CHECKPOINT_SHORT_LABELS.get(through_name, through_name)
+            reference_values = by_checkpoint[reference_name]
+            through_values = by_checkpoint[through_name]
+            reference_at = min(
+                self._utc(value.recorded_at) for value in reference_values.values()
+            )
+            through_at = max(
+                self._utc(value.recorded_at) for value in through_values.values()
+            )
+            observation_duration_hours = max(
+                1.0,
+                (through_at - reference_at).total_seconds() / 3600,
+            )
+            for checkpoint_name in usable_checkpoints:
+                values = by_checkpoint[checkpoint_name]
+                base_by_item = reference_values
+                totals = [0, 0, 0, 0]
+                changes = [0, 0, 0, 0]
+                recorded_at = max(self._utc(value.recorded_at) for value in values.values())
+                for item_id, value in values.items():
+                    counts = self._traffic_point_counts(value)
+                    base_counts = self._traffic_point_counts(base_by_item[item_id])
+                    item_changes = [current - base for current, base in zip(counts, base_counts)]
+                    for index, current in enumerate(counts):
+                        totals[index] += current
+                        changes[index] += item_changes[index]
+                    item_point_rows[item_id].append(
+                        {
+                            "key": checkpoint_name,
+                            "label": CHECKPOINT_SHORT_LABELS.get(checkpoint_name, checkpoint_name),
+                            "source": "checkpoint",
+                            "recorded_at": value.recorded_at,
+                            "counts": counts,
+                            "changes": item_changes,
+                        }
+                    )
+                point_rows.append(
+                    {
+                        "key": checkpoint_name,
+                        "label": CHECKPOINT_SHORT_LABELS.get(checkpoint_name, checkpoint_name),
+                        "source": "checkpoint",
+                        "recorded_at": recorded_at,
+                        "counts": totals,
+                        "changes": changes,
+                    }
+                )
+        else:
+            # When checkpoints cannot establish a sequence, retain a weaker
+            # pre/post daily-snapshot view.  The pre snapshot is deliberately
+            # not called T0: it can be hours old and is only an observation
+            # reference.
+            snapshot_pairs: dict[int, tuple[ProductDailySnapshot, ProductDailySnapshot]] = {}
+            for item_id in item_ids:
+                history = snapshots_by_item.get(item_id, [])
+                before = [
+                    value
+                    for value in history
+                    if self._utc(value.captured_at) <= started_at
+                    and value.source != "cached_baseline"
+                ]
+                after = [
+                    value
+                    for value in history
+                    if self._utc(value.captured_at) > started_at
+                    and value.source != "cached_baseline"
+                ]
+                if before and after:
+                    snapshot_pairs[item_id] = (before[-1], after[-1])
+            if snapshot_pairs:
+                reference_source = "daily_snapshot"
+                reference_label = "投放前最近日快照"
+                through_label = "投放后最新日快照"
+                reference_at = max(
+                    self._utc(value[0].captured_at) for value in snapshot_pairs.values()
+                )
+                through_at = max(
+                    self._utc(value[1].captured_at) for value in snapshot_pairs.values()
+                )
+                observation_duration_hours = max(
+                    1.0,
+                    float(
+                        median(
+                            [
+                                (
+                                    self._utc(through.captured_at)
+                                    - self._utc(reference.captured_at)
+                                ).total_seconds()
+                                / 3600
+                                for reference, through in snapshot_pairs.values()
+                            ]
+                        )
+                    ),
+                )
+                reference_totals = [0, 0, 0, 0]
+                through_totals = [0, 0, 0, 0]
+                through_changes = [0, 0, 0, 0]
+                for item_id, (reference, through) in snapshot_pairs.items():
+                    reference_counts = self._traffic_point_counts(reference)
+                    through_counts = self._traffic_point_counts(through)
+                    changes = [
+                        current - base
+                        for current, base in zip(through_counts, reference_counts)
+                    ]
+                    for index in range(4):
+                        reference_totals[index] += reference_counts[index]
+                        through_totals[index] += through_counts[index]
+                        through_changes[index] += changes[index]
+                    item_point_rows[item_id].extend(
+                        [
+                            {
+                                "key": "snapshot_reference",
+                                "label": "投放前快照",
+                                "source": "daily_snapshot",
+                                "recorded_at": reference.captured_at,
+                                "counts": reference_counts,
+                                "changes": [0, 0, 0, 0],
+                            },
+                            {
+                                "key": "snapshot_latest",
+                                "label": "投放后快照",
+                                "source": "daily_snapshot",
+                                "recorded_at": through.captured_at,
+                                "counts": through_counts,
+                                "changes": changes,
+                            },
+                        ]
+                    )
+                point_rows = [
+                    {
+                        "key": "snapshot_reference",
+                        "label": "投放前快照",
+                        "source": "daily_snapshot",
+                        "recorded_at": reference_at,
+                        "counts": reference_totals,
+                        "changes": [0, 0, 0, 0],
+                    },
+                    {
+                        "key": "snapshot_latest",
+                        "label": "投放后快照",
+                        "source": "daily_snapshot",
+                        "recorded_at": through_at,
+                        "counts": through_totals,
+                        "changes": through_changes,
+                    },
+                ]
+
+        if not point_rows or reference_at is None or through_at is None:
+            result = {**empty}
+            if rejected_checkpoint_labels:
+                result["limitations"] = [
+                    f"{ '、'.join(rejected_checkpoint_labels) } 累计值与已有快照冲突，未用于探索分析"
+                ]
+            return result
+
+        duration_hours = observation_duration_hours or max(
+            1.0,
+            (through_at - reference_at).total_seconds() / 3600,
+        )
+        latest_changes = point_rows[-1]["changes"]
+
+        # Build a transparent natural-growth envelope from per-listing daily
+        # changes before the real start.  We normalize gaps by elapsed hours so
+        # a two-day gap is not treated as one day's growth.
+        natural_low_rate = 0.0
+        natural_high_rate = 0.0
+        natural_sample_size = 0
+        natural_item_count = 0
+        for item_id in item_ids:
+            history = [
+                value
+                for value in snapshots_by_item.get(item_id, [])
+                if self._utc(value.captured_at) <= started_at
+                and value.source != "cached_baseline"
+            ][-8:]
+            rates: list[float] = []
+            for previous, current in zip(history, history[1:]):
+                elapsed_hours = (
+                    self._utc(current.captured_at) - self._utc(previous.captured_at)
+                ).total_seconds() / 3600
+                if elapsed_hours <= 0 or current.browse_count < previous.browse_count:
+                    continue
+                rates.append((current.browse_count - previous.browse_count) * 24 / elapsed_hours)
+            if rates:
+                natural_item_count += 1
+                natural_sample_size += len(rates)
+                natural_low_rate += min(rates)
+                natural_high_rate += max(rates)
+        natural_low = natural_high = None
+        if natural_item_count:
+            duration_scale = duration_hours / 24
+            natural_low = int(round(natural_low_rate * duration_scale))
+            natural_high = int(round(natural_high_rate * duration_scale))
+
+        # A lightweight synthetic-control check: use only owned listings that
+        # were outside every real exposure window touching this observation.
+        other_started = session.scalars(
+            select(ProductTrafficBatch).where(
+                ProductTrafficBatch.started_at.is_not(None),
+                ProductTrafficBatch.status.in_(
+                    ("running", "observing", "closed", "invalidated")
+                ),
+                ProductTrafficBatch.started_at <= through_at,
+                ProductTrafficBatch.started_at
+                >= reference_at
+                - timedelta(hours=self.settings.product_traffic_cooldown_hours),
+            )
+        ).all()
+        exposed_ids = set(item_ids)
+        if other_started:
+            exposed_ids.update(
+                session.scalars(
+                    select(ProductTrafficBatchItem.item_id).where(
+                        ProductTrafficBatchItem.batch_id.in_(
+                            [value.id for value in other_started]
+                        )
+                    )
+                ).all()
+            )
+        control_ids = session.scalars(
+            select(ProductMonitor.item_id).where(
+                ProductMonitor.ownership_status == "owned",
+                ProductMonitor.enabled.is_(True),
+                ~ProductMonitor.item_id.in_(exposed_ids),
+            )
+        ).all()
+        control_changes: list[int] = []
+        for item_id in control_ids:
+            history = session.scalars(
+                select(ProductDailySnapshot)
+                .where(
+                    ProductDailySnapshot.item_id == item_id,
+                    ProductDailySnapshot.source != "cached_baseline",
+                )
+                .order_by(ProductDailySnapshot.captured_at)
+            ).all()
+            before = [value for value in history if self._utc(value.captured_at) <= reference_at]
+            after = [
+                value
+                for value in history
+                if reference_at < self._utc(value.captured_at) <= through_at
+            ]
+            if before and after and after[-1].browse_count >= before[-1].browse_count:
+                control_changes.append(after[-1].browse_count - before[-1].browse_count)
+        control_expected = None
+        control_adjusted = None
+        if len(control_changes) >= 3:
+            control_expected = round(float(median(control_changes)) * len(item_ids), 1)
+            control_adjusted = round(float(latest_changes[0]) - control_expected, 1)
+
+        directional_low = directional_high = None
+        if natural_low is not None and natural_high is not None:
+            directional_low = int(latest_changes[0] - natural_high)
+            directional_high = int(latest_changes[0] - natural_low)
+
+        limitations = [
+            "缺少可靠投放前 T0，观察变化不能解释为曝光增量或因果贡献",
+            "累计值同时包含自然流量、商品表达、咨询波动和采集时刻差异",
+        ]
+        if rejected_checkpoint_labels:
+            limitations.append(
+                f"{ '、'.join(rejected_checkpoint_labels) } 累计值与已有快照冲突，已从探索计算中排除"
+            )
+        if batch.attribution_status in {"overlap", "cohort_overlap"}:
+            limitations.append("该批次与其他投放重叠，不能区分各批次贡献")
+        if natural_item_count < len(item_ids):
+            limitations.append(
+                f"历史自然范围仅覆盖 {natural_item_count}/{len(item_ids)} 件商品"
+            )
+        if len(control_changes) < 3:
+            limitations.append("同期未投放对照不足 3 件，不输出对照校正值")
+
+        natural_copy = (
+            f"；相同观察长度的历史自然增长约 +{natural_low}～+{natural_high}"
+            if natural_low is not None and natural_high is not None
+            else "；历史自然增长样本不足"
+        )
+        summary = (
+            f"从{reference_label}到{through_label}，批次累计浏览实测 "
+            f"{latest_changes[0]:+d}、咨询 {latest_changes[3]:+d}{natural_copy}。"
+            "这是方向性观察，不是曝光贡献值。"
+        )
+
+        def point_view(value: dict) -> ProductTrafficExploratoryPointView:
+            counts = value["counts"]
+            changes = value["changes"]
+            return ProductTrafficExploratoryPointView(
+                key=value["key"],
+                label=value["label"],
+                source=value["source"],
+                recorded_at=value["recorded_at"],
+                browse_count=counts[0],
+                collect_count=counts[1],
+                want_count=counts[2],
+                inquiry_count=counts[3],
+                browse_change=changes[0],
+                collect_change=changes[1],
+                want_change=changes[2],
+                inquiry_change=changes[3],
+            )
+
+        return {
+            "available": True,
+            "reference_source": reference_source,
+            "reference_label": reference_label,
+            "reference_at": reference_at,
+            "through_label": through_label,
+            "through_at": through_at,
+            "browse_change": latest_changes[0],
+            "collect_change": latest_changes[1],
+            "want_change": latest_changes[2],
+            "inquiry_change": latest_changes[3],
+            "natural_low": natural_low,
+            "natural_high": natural_high,
+            "natural_sample_size": natural_sample_size,
+            "natural_item_count": natural_item_count,
+            "control_expected": control_expected,
+            "control_item_count": len(control_changes),
+            "control_adjusted": control_adjusted,
+            "directional_low": directional_low,
+            "directional_high": directional_high,
+            "summary": summary,
+            "limitations": limitations,
+            "points": [point_view(value) for value in point_rows],
+            "item_points": {
+                item_id: [point_view(value) for value in values]
+                for item_id, values in item_point_rows.items()
+            },
+        }
+
+    def _traffic_batch_view(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+        *,
+        include_replan: bool = True,
+    ) -> ProductTrafficBatchView:
+        checkpoint_order = self._checkpoint_order_for_batch(batch)
+        terminal_checkpoint = self._terminal_checkpoint_for_batch(batch)
+        observation_window_hours = self._observation_window_hours(batch)
         batch_items = session.scalars(
             select(ProductTrafficBatchItem)
             .where(ProductTrafficBatchItem.batch_id == batch.id)
@@ -2720,6 +5283,11 @@ class ProductIntelligenceService:
             .where(ProductTrafficCheckpoint.batch_id == batch.id)
             .order_by(ProductTrafficCheckpoint.recorded_at)
         ).all()
+        is_invalidated = batch.status == "invalidated"
+        invalidation_reason_label = INVALID_BASELINE_REASONS.get(
+            batch.invalidation_reason or "",
+            "基线无法证明为可靠的投放前 T0",
+        )
         checkpoint_rank = {name: index for index, name in enumerate(CHECKPOINT_ORDER)}
         by_item: defaultdict[int, list[ProductTrafficCheckpoint]] = defaultdict(list)
         by_checkpoint: defaultdict[str, dict[int, ProductTrafficCheckpoint]] = defaultdict(dict)
@@ -2729,10 +5297,17 @@ class ProductIntelligenceService:
 
         completed_checkpoints = [
             checkpoint
-            for checkpoint in CHECKPOINT_ORDER
+            for checkpoint in checkpoint_order
             if batch_items
             and len(by_checkpoint.get(checkpoint, {})) >= len(batch_items)
         ]
+        exploratory = self._traffic_exploratory_analysis(
+            session,
+            batch,
+            batch_items,
+            by_checkpoint,
+            completed_checkpoints,
+        )
         checkpoint_metrics: list[ProductTrafficCheckpointMetricsView] = []
         baseline_by_item = {value.item_id: value for value in batch_items}
         for checkpoint_name in completed_checkpoints:
@@ -2763,7 +5338,13 @@ class ProductIntelligenceService:
 
         item_views: list[ProductTrafficBatchItemView] = []
         for batch_item in batch_items:
-            item_checkpoints = by_item[batch_item.item_id]
+            item_checkpoints = sorted(
+                by_item[batch_item.item_id],
+                key=lambda value: (
+                    checkpoint_rank.get(value.checkpoint, len(checkpoint_rank)),
+                    value.recorded_at,
+                ),
+            )
             latest = (
                 max(
                     item_checkpoints,
@@ -2785,69 +5366,168 @@ class ProductIntelligenceService:
                     baseline_want_count=batch_item.baseline_want_count,
                     baseline_inquiry_count=batch_item.baseline_inquiry_count,
                     baseline_captured_at=batch_item.baseline_captured_at,
+                    baseline_source=batch_item.baseline_source,
                     latest_checkpoint=latest.checkpoint if latest else None,
                     latest_browse_count=browse,
                     latest_collect_count=collect,
                     latest_want_count=want,
                     latest_inquiry_count=inquiry,
-                    browse_delta=max(0, browse - batch_item.baseline_browse_count),
-                    collect_delta=max(0, collect - batch_item.baseline_collect_count),
-                    want_delta=max(0, want - batch_item.baseline_want_count),
-                    inquiry_delta=max(0, inquiry - batch_item.baseline_inquiry_count),
+                    browse_delta=(
+                        0
+                        if is_invalidated
+                        else max(0, browse - batch_item.baseline_browse_count)
+                    ),
+                    collect_delta=(
+                        0
+                        if is_invalidated
+                        else max(0, collect - batch_item.baseline_collect_count)
+                    ),
+                    want_delta=(
+                        0
+                        if is_invalidated
+                        else max(0, want - batch_item.baseline_want_count)
+                    ),
+                    inquiry_delta=(
+                        0
+                        if is_invalidated
+                        else max(0, inquiry - batch_item.baseline_inquiry_count)
+                    ),
+                    checkpoints=[
+                        ProductTrafficItemCheckpointView(
+                            checkpoint=checkpoint.checkpoint,
+                            hours=CHECKPOINT_HOURS.get(checkpoint.checkpoint, 0),
+                            recorded_at=checkpoint.recorded_at,
+                            browse_count=checkpoint.browse_count,
+                            collect_count=checkpoint.collect_count,
+                            want_count=checkpoint.want_count,
+                            inquiry_count=checkpoint.inquiry_count,
+                            browse_delta=(
+                                0
+                                if is_invalidated
+                                else max(
+                                    0,
+                                    checkpoint.browse_count
+                                    - batch_item.baseline_browse_count,
+                                )
+                            ),
+                            collect_delta=(
+                                0
+                                if is_invalidated
+                                else max(
+                                    0,
+                                    checkpoint.collect_count
+                                    - batch_item.baseline_collect_count,
+                                )
+                            ),
+                            want_delta=(
+                                0
+                                if is_invalidated
+                                else max(
+                                    0,
+                                    checkpoint.want_count
+                                    - batch_item.baseline_want_count,
+                                )
+                            ),
+                            inquiry_delta=(
+                                0
+                                if is_invalidated
+                                else max(
+                                    0,
+                                    checkpoint.inquiry_count
+                                    - batch_item.baseline_inquiry_count,
+                                )
+                            ),
+                        )
+                        for checkpoint in item_checkpoints
+                    ],
+                    exploratory_points=list(
+                        exploratory["item_points"].get(batch_item.item_id, [])
+                    ),
                 )
             )
         due_checkpoint = None
         due_at = None
+        due_ready = False
         started_at = self._utc(batch.started_at)
         if started_at and batch.status in {"running", "observing"}:
             due_checkpoint = next(
                 (
                     checkpoint
-                    for checkpoint in CHECKPOINT_ORDER
+                    for checkpoint in checkpoint_order
                     if checkpoint not in completed_checkpoints
                 ),
                 None,
             )
             if due_checkpoint:
                 due_at = started_at + timedelta(hours=CHECKPOINT_HOURS[due_checkpoint])
+                due_ready = self._now().astimezone(timezone.utc) >= due_at
 
-        overlap_warning = None
-        attribution_overlap = False
-        anchor_at = started_at or self._utc(batch.planned_at)
+        overlap_warning = (
+            "该批次属于 14 天扩量队列；只参与队列整体收益观察，永久排除单批时段与预算归因"
+            if batch.attribution_status == "cohort_overlap"
+            else "该批次已按真实重叠投放补记，永久排除时段、预算、商品优先级和复投归因结论"
+            if batch.attribution_status == "overlap"
+            else None
+        )
+        attribution_overlap = batch.attribution_status in {
+            "overlap",
+            "cohort_overlap",
+        }
+        # Planned batches have no attribution time.  Their overlap/readiness is
+        # represented by the start preview and replan proposal instead.
+        anchor_at = started_at
         if anchor_at and batch_items:
-            other_rows = session.execute(
-                select(
-                    ProductTrafficBatch.started_at,
-                    ProductTrafficBatchItem.item_id,
-                )
-                .join(
-                    ProductTrafficBatchItem,
-                    ProductTrafficBatchItem.batch_id == ProductTrafficBatch.id,
-                )
-                .where(
-                    ProductTrafficBatch.id != batch.id,
-                    ProductTrafficBatch.started_at.is_not(None),
-                    ProductTrafficBatch.status.in_(("running", "observing", "closed")),
-                    ProductTrafficBatchItem.item_id.in_(
-                        [item.item_id for item in batch_items]
-                    ),
-                )
-            ).all()
+            overlap_details = self._traffic_overlap_details(
+                session,
+                batch,
+                anchor_at=anchor_at,
+                include_later_batches=True,
+            )
             overlapping_items = {
-                item_id
-                for other_started_at, item_id in other_rows
-                if self._utc(other_started_at)
-                and abs((self._utc(other_started_at) - anchor_at).total_seconds())
-                < self.settings.product_traffic_cooldown_hours * 3600
+                value["item_id"] for value in overlap_details["items"]
             }
-            if overlapping_items:
+            if overlapping_items and batch.attribution_status not in {
+                "overlap",
+                "cohort_overlap",
+            }:
                 attribution_overlap = True
                 overlap_warning = (
-                    f"有 {len(overlapping_items)} 件商品与其他批次间隔不足 "
-                    f"{self.settings.product_traffic_cooldown_hours} 小时，结果可能重叠"
+                    f"有 {len(overlapping_items)} 件商品与其他批次观察窗口重叠，"
+                    "结果仅作为事实观察"
                 )
 
+        (
+            start_blocked_items,
+            start_blocked_until,
+            unfinished_observation,
+            global_attribution_gate,
+        ) = (
+            self._traffic_start_conflict(session, batch)
+        )
+        start_blocked_reason = self._traffic_start_block_reason(
+            start_blocked_items,
+            start_blocked_until,
+            unfinished_observation,
+            global_attribution_gate,
+        )
+
         observation_checkpoint = completed_checkpoints[-1] if completed_checkpoints else None
+        observation_job = (
+            session.scalar(
+                select(ProductTrafficCheckpointJob).where(
+                    ProductTrafficCheckpointJob.batch_id == batch.id,
+                    ProductTrafficCheckpointJob.checkpoint == observation_checkpoint,
+                )
+            )
+            if observation_checkpoint
+            else None
+        )
+        checkpoint_capture_late = bool(
+            observation_job
+            and observation_job.capture_delay_minutes is not None
+            and observation_job.capture_delay_minutes
+            > CHECKPOINT_MAX_DELAY_MINUTES.get(observation_checkpoint or "", 0)
+        )
         latest_metric = checkpoint_metrics[-1] if checkpoint_metrics else None
         browse_delta = latest_metric.browse_delta if latest_metric else 0
         collect_delta = latest_metric.collect_delta if latest_metric else 0
@@ -2857,14 +5537,135 @@ class ProductIntelligenceService:
         baseline_missing = bool(started_at) and any(
             value.baseline_captured_at is None for value in batch_items
         )
-        baseline_stale = bool(started_at) and any(
+        baseline_ages = [
+            max(
+                0,
+                int(
+                    (
+                        started_at
+                        - (self._utc(value.baseline_captured_at) or started_at)
+                    ).total_seconds()
+                    // 60
+                ),
+            )
+            for value in batch_items
+            if started_at and value.baseline_captured_at is not None
+        ]
+        baseline_age_minutes = max(baseline_ages) if baseline_ages else None
+        prepared_at = self._utc(batch.baseline_prepared_at)
+        baseline_expires_at = (
+            prepared_at
+            + timedelta(minutes=self.settings.product_traffic_baseline_max_age_minutes)
+            if prepared_at
+            else None
+        )
+        baseline_sources = {value.baseline_source for value in batch_items}
+        exploratory_baseline = bool(
+            batch.attribution_status == "exploratory"
+            or "daily_exploratory" in baseline_sources
+        )
+        baseline_complete = bool(batch_items) and all(
             value.baseline_captured_at is not None
-            and (
-                started_at - (self._utc(value.baseline_captured_at) or started_at)
-            ).total_seconds()
-            > 24 * 3600
+            and value.baseline_source
+            in {"remote_refresh", "manual", "legacy_snapshot", "daily_exploratory"}
             for value in batch_items
         )
+        reliable_baseline = bool(batch_items) and not is_invalidated and all(
+            value.baseline_captured_at is not None
+            and value.baseline_source in {"remote_refresh", "manual"}
+            for value in batch_items
+        )
+        baseline_fresh_now = bool(
+            prepared_at
+            and baseline_complete
+            and baseline_expires_at
+            and self._now().astimezone(timezone.utc) <= baseline_expires_at
+        )
+        if is_invalidated:
+            baseline_status = "invalidated"
+            baseline_status_label = "基线无效 · 已终止观察"
+        elif batch.status != "planned":
+            baseline_status = (
+                "exploratory"
+                if exploratory_baseline
+                else "legacy"
+                if "legacy_snapshot" in baseline_sources
+                else "used"
+            )
+            baseline_status_label = (
+                "早间参考基线 · 探索观察"
+                if baseline_status == "exploratory"
+                else "历史基线"
+                if baseline_status == "legacy"
+                else "已用于实际投放"
+            )
+        elif not baseline_complete or prepared_at is None:
+            baseline_status = "pending"
+            baseline_status_label = "待准备 T0"
+        elif not baseline_fresh_now:
+            baseline_status = "expired"
+            baseline_status_label = "T0 已过期"
+        else:
+            baseline_status = "ready"
+            baseline_status_label = "T0 已就绪"
+        legacy_baseline = "legacy_snapshot" in baseline_sources
+        baseline_stale = legacy_baseline or (
+            bool(started_at)
+            and bool(
+                baseline_age_minutes is not None
+                and baseline_age_minutes
+                > self.settings.product_traffic_baseline_max_age_minutes
+            )
+        )
+        if is_invalidated:
+            baseline_quality = "invalidated"
+            baseline_quality_label = "基线无效 · 已终止观察"
+            baseline_quality_detail = (
+                f"{invalidation_reason_label}；真实费用、投放时间、商品组合和已有记录均保留，"
+                "但不会再产生检查点提醒或经营结论"
+            )
+        elif exploratory_baseline:
+            baseline_quality = "exploratory"
+            baseline_quality_label = "早间参考基线 · 低置信"
+            baseline_quality_detail = (
+                f"参考快照距实际投放约 {baseline_age_minutes or 0} 分钟；"
+                "允许继续采集和生成方向性观察，但自然增长不能解释为曝光贡献，"
+                "且永久排除预算、时段、复投和商品优先级结论"
+            )
+        elif batch.status == "planned":
+            baseline_quality = baseline_status
+            baseline_quality_label = baseline_status_label
+            baseline_quality_detail = (
+                "T0 已准备，可在 30 分钟内完成人工投放并开始计时"
+                if baseline_status == "ready"
+                else "T0 已超过 30 分钟，需要重新刷新或重新填写"
+                if baseline_status == "expired"
+                else "先刷新整批 T0；远程失败时可人工填写全部商品"
+            )
+        elif baseline_missing:
+            baseline_quality = "missing"
+            baseline_quality_label = "缺少 T0"
+            baseline_quality_detail = "没有可审计的投放前快照，不能进入经营结论"
+        elif baseline_stale:
+            baseline_quality = "weak"
+            baseline_quality_label = "历史 T0" if legacy_baseline else "T0 偏旧"
+            baseline_quality_detail = (
+                "该批次沿用 v2.4 之前的历史快照，数据继续保留，"
+                "但不能进入成熟结论或获得商品复投资格"
+                if legacy_baseline
+                else (
+                    f"T0 距实际投放约 {baseline_age_minutes} 分钟，超过 "
+                    f"{self.settings.product_traffic_baseline_max_age_minutes} 分钟门槛；"
+                    "数据继续保留，但不进入成熟结论"
+                )
+            )
+        else:
+            baseline_quality = "fresh"
+            baseline_quality_label = "T0 新鲜"
+            baseline_quality_detail = (
+                f"T0 距实际投放约 {baseline_age_minutes or 0} 分钟，"
+                "可继续完成长尾观察"
+            )
         inconsistent = False
         for batch_item in batch_items:
             previous = (
@@ -2890,26 +5691,96 @@ class ProductIntelligenceService:
             if inconsistent:
                 break
 
-        if batch.status == "planned":
+        if is_invalidated:
+            data_quality = "invalidated"
+        elif batch.status == "planned":
             data_quality = "planned"
+        elif exploratory_baseline:
+            data_quality = "exploratory_baseline"
+        elif batch.attribution_status in {"overlap", "cohort_overlap"}:
+            data_quality = "confounded"
         elif baseline_missing:
             data_quality = "missing_baseline"
         elif inconsistent:
             data_quality = "inconsistent"
+        elif checkpoint_capture_late:
+            data_quality = "late_capture"
         elif attribution_overlap:
             data_quality = "confounded"
         elif baseline_stale:
             data_quality = "stale_baseline"
-        elif observation_checkpoint in {"h24", "h72"}:
+        elif observation_checkpoint in (
+            {"h24", "h72"}
+            if observation_window_hours == 72
+            else {terminal_checkpoint}
+        ):
             data_quality = "mature"
         elif observation_checkpoint:
             data_quality = "early"
         else:
             data_quality = "baseline"
-        analysis_eligible = data_quality == "mature"
-        time_bucket, _time_range = self._traffic_time_bucket(
-            batch.started_at or batch.planned_at
+        analysis_eligible = data_quality == "mature" and not is_invalidated
+        analysis_tier = (
+            "decision_grade"
+            if analysis_eligible
+            else "exploratory"
+            if exploratory["available"]
+            else "fact_only"
         )
+        analysis_tier_label = {
+            "decision_grade": "决策级分析",
+            "exploratory": "探索性分析",
+            "fact_only": "事实记录",
+        }[analysis_tier]
+        analysis_confidence = (
+            "high"
+            if analysis_eligible and observation_checkpoint == terminal_checkpoint
+            else "medium"
+            if analysis_eligible
+            else "low"
+        )
+        if is_invalidated:
+            # Existing raw checkpoint rows remain available on each item as
+            # historical facts, but aggregate deltas must not look like a
+            # valid baseline comparison.
+            checkpoint_metrics = []
+            browse_delta = 0
+            collect_delta = 0
+            want_delta = 0
+            inquiry_delta = 0
+        time_bucket = ""
+        if batch.started_at:
+            time_bucket, _time_range = self._traffic_time_bucket(batch.started_at)
+        planned_actual_delta_minutes = None
+        planned_actual_delta_label = None
+        if started_at:
+            planned_at = self._utc(batch.planned_at)
+            if planned_at:
+                planned_actual_delta_minutes = int(
+                    round((started_at - planned_at).total_seconds() / 60)
+                )
+                if planned_actual_delta_minutes == 0:
+                    planned_actual_delta_label = "按计划开始"
+                elif planned_actual_delta_minutes > 0:
+                    planned_actual_delta_label = (
+                        f"较计划晚 {self._duration_label(planned_actual_delta_minutes)}"
+                    )
+                else:
+                    planned_actual_delta_label = (
+                        f"较计划早 {self._duration_label(abs(planned_actual_delta_minutes))}"
+                    )
+        needs_replan = bool(batch.status == "planned" and start_blocked_reason)
+        replan_reason = start_blocked_reason if needs_replan else None
+        if batch.status == "planned" and include_replan:
+            proposal = self._traffic_replan_proposal(session, batch)
+            current_ids = self._batch_external_ids(session, batch.id)
+            proposed_ids = proposal["proposed_ids"]
+            if current_ids != proposed_ids and proposed_ids:
+                needs_replan = True
+                replan_reason = (
+                    replan_reason
+                    or "当前商品组合已不符合最新 72 小时轮换证据，建议先预览重排"
+                )
         return ProductTrafficBatchView(
             id=batch.id,
             plan_slot_id=batch.plan_slot_id,
@@ -2917,6 +5788,38 @@ class ProductIntelligenceService:
             planned_at=batch.planned_at,
             started_at=batch.started_at,
             completed_at=batch.completed_at,
+            updated_at=batch.updated_at,
+            baseline_prepared_at=batch.baseline_prepared_at,
+            recording_mode=batch.recording_mode,
+            attribution_status=batch.attribution_status,
+            invalidated_at=batch.invalidated_at,
+            invalidation_reason=batch.invalidation_reason,
+            invalidation_label=(
+                "基线无效 · 已终止观察" if is_invalidated else None
+            ),
+            checkpoint_collection_mode=batch.checkpoint_collection_mode,
+            observation_window_hours=observation_window_hours,
+            terminal_checkpoint=terminal_checkpoint,
+            checkpoint_sequence=list(checkpoint_order),
+            is_legacy_protocol=observation_window_hours == 72,
+            observation_title=self._observation_title(batch),
+            checkpoint_jobs=self._checkpoint_job_views(session, batch),
+            has_reliable_baseline=reliable_baseline,
+            baseline_expires_at=baseline_expires_at,
+            baseline_status=baseline_status,
+            baseline_status_label=baseline_status_label,
+            can_prepare_baseline=(
+                batch.status == "planned" and not bool(start_blocked_items)
+            ),
+            can_start=(
+                batch.status == "planned"
+                and not bool(start_blocked_items)
+                and baseline_status == "ready"
+            ),
+            planned_actual_delta_minutes=planned_actual_delta_minutes,
+            planned_actual_delta_label=planned_actual_delta_label,
+            needs_replan=needs_replan,
+            replan_reason=replan_reason,
             actual_cost=round(batch.actual_cost, 2),
             total_exposure=batch.total_exposure,
             note=batch.note,
@@ -2924,7 +5827,16 @@ class ProductIntelligenceService:
             completed_checkpoints=completed_checkpoints,
             due_checkpoint=due_checkpoint,
             due_at=due_at,
+            due_ready=due_ready,
+            checkpoint_progress=len(completed_checkpoints),
+            baseline_age_minutes=baseline_age_minutes,
+            baseline_quality=baseline_quality,
+            baseline_quality_label=baseline_quality_label,
+            baseline_quality_detail=baseline_quality_detail,
             overlap_warning=overlap_warning,
+            start_blocked=bool(start_blocked_items),
+            start_blocked_reason=start_blocked_reason,
+            start_blocked_until=start_blocked_until,
             browse_delta=browse_delta,
             collect_delta=collect_delta,
             want_delta=want_delta,
@@ -2940,6 +5852,31 @@ class ProductIntelligenceService:
             time_bucket=time_bucket,
             data_quality=data_quality,
             analysis_eligible=analysis_eligible,
+            analysis_tier=analysis_tier,
+            analysis_tier_label=analysis_tier_label,
+            analysis_confidence=analysis_confidence,
+            exploratory_available=exploratory["available"],
+            exploratory_reference_source=exploratory["reference_source"],
+            exploratory_reference_label=exploratory["reference_label"],
+            exploratory_reference_at=exploratory["reference_at"],
+            exploratory_through_label=exploratory["through_label"],
+            exploratory_through_at=exploratory["through_at"],
+            observed_browse_change=exploratory["browse_change"],
+            observed_collect_change=exploratory["collect_change"],
+            observed_want_change=exploratory["want_change"],
+            observed_inquiry_change=exploratory["inquiry_change"],
+            natural_browse_low=exploratory["natural_low"],
+            natural_browse_high=exploratory["natural_high"],
+            natural_sample_size=exploratory["natural_sample_size"],
+            natural_item_count=exploratory["natural_item_count"],
+            control_browse_expected=exploratory["control_expected"],
+            control_item_count=exploratory["control_item_count"],
+            control_adjusted_browse_change=exploratory["control_adjusted"],
+            directional_browse_low=exploratory["directional_low"],
+            directional_browse_high=exploratory["directional_high"],
+            exploratory_summary=exploratory["summary"],
+            analysis_limitations=exploratory["limitations"],
+            exploratory_points=exploratory["points"],
             checkpoint_metrics=checkpoint_metrics,
             created_at=batch.created_at,
         )
@@ -2957,6 +5894,984 @@ class ProductIntelligenceService:
         ).all()
         return [self._traffic_batch_view(session, batch) for batch in batches]
 
+    def _traffic_start_conflict(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+    ) -> tuple[set[int], datetime | None, bool, bool]:
+        """Return overlapping items that make a planned batch unsafe to start.
+
+        A listing cannot enter a second attribution window while another batch
+        is still running/observing, or while the earlier batch is less than the
+        configured cooldown age. This check is repeated at mutation time; the
+        UI hint is only a convenience and is not the authority.
+        """
+
+        if batch.status != "planned":
+            return set(), None, False, False
+        item_ids = list(
+            session.scalars(
+                select(ProductTrafficBatchItem.item_id).where(
+                    ProductTrafficBatchItem.batch_id == batch.id
+                )
+            ).all()
+        )
+        if not item_ids:
+            return set(), None, False, False
+        now = self._now().astimezone(timezone.utc)
+        details = self._traffic_overlap_details(
+            session,
+            batch,
+            anchor_at=now,
+            include_later_batches=False,
+        )
+        allowed_cohort_item_id = None
+        if (
+            self.traffic_growth is not None
+            and batch.recording_mode == "scale_cohort"
+            and batch.attribution_status == "cohort_overlap"
+        ):
+            allowed_cohort_item_id = (
+                self.traffic_growth.scale_cohort_item_id_for_batch(
+                    session,
+                    batch.id,
+                )
+            )
+        unsafe_items = [
+            value
+            for value in details["items"]
+            if value["item_id"] != allowed_cohort_item_id
+        ]
+        unsafe_until = max(
+            (value["cooldown_until"] for value in unsafe_items),
+            default=None,
+        )
+        return (
+            {value["item_id"] for value in unsafe_items},
+            unsafe_until,
+            bool(unsafe_items),
+            False,
+        )
+
+    def _traffic_overlap_details(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+        *,
+        anchor_at: datetime,
+        include_later_batches: bool,
+    ) -> dict:
+        """Return same-listing attribution collisions around an actual time.
+
+        Normal starts only look backward from server time. Historical factual
+        recording also looks forward so a later existing batch cannot be
+        silently omitted from the overlap audit.
+        """
+
+        anchor = self._utc(anchor_at)
+        assert anchor is not None
+        batch_items = session.scalars(
+            select(ProductTrafficBatchItem).where(
+                ProductTrafficBatchItem.batch_id == batch.id
+            )
+        ).all()
+        if not batch_items:
+            return {"items": [], "batches": [], "cooldown_until": None}
+        item_by_id = {value.item_id: value.item for value in batch_items}
+        target_window_hours = self._observation_window_hours(batch)
+        rows = session.execute(
+            select(
+                ProductTrafficBatch.id,
+                ProductTrafficBatch.status,
+                ProductTrafficBatch.started_at,
+                ProductTrafficBatch.observation_window_hours,
+                ProductTrafficBatchItem.item_id,
+            )
+            .join(
+                ProductTrafficBatchItem,
+                ProductTrafficBatchItem.batch_id == ProductTrafficBatch.id,
+            )
+            .where(
+                ProductTrafficBatch.id != batch.id,
+                ProductTrafficBatch.started_at.is_not(None),
+                ProductTrafficBatch.status != "cancelled",
+                ProductTrafficBatchItem.item_id.in_(list(item_by_id)),
+            )
+        ).all()
+        item_rows: list[dict] = []
+        batches: dict[str, dict] = {}
+        cooldown_until: datetime | None = None
+        for (
+            other_batch_id,
+            _status,
+            other_started_at,
+            other_window_hours,
+            item_id,
+        ) in rows:
+            source_started_at = self._utc(other_started_at)
+            if source_started_at is None:
+                continue
+            if not include_later_batches and source_started_at > anchor:
+                continue
+            source_window_hours = 48 if int(other_window_hours or 72) == 48 else 72
+            overlap_window_hours = max(target_window_hours, source_window_hours)
+            cooldown = timedelta(hours=overlap_window_hours)
+            if abs((source_started_at - anchor).total_seconds()) >= cooldown.total_seconds():
+                continue
+            source_cooldown_until = source_started_at + cooldown
+            if source_started_at <= anchor and (
+                cooldown_until is None or source_cooldown_until > cooldown_until
+            ):
+                cooldown_until = source_cooldown_until
+            item = item_by_id[item_id]
+            item_rows.append(
+                {
+                    "item_id": item_id,
+                    "external_id": item.external_id,
+                    "title": item.title,
+                    "source_batch_id": other_batch_id,
+                    "source_started_at": source_started_at,
+                    "cooldown_until": source_cooldown_until,
+                    "observation_window_hours": source_window_hours,
+                    "overlap_window_hours": overlap_window_hours,
+                }
+            )
+            group = batches.setdefault(
+                other_batch_id,
+                {
+                    "batch_id": other_batch_id,
+                    "started_at": source_started_at,
+                    "cooldown_until": source_cooldown_until,
+                    "observation_window_hours": source_window_hours,
+                    "overlap_window_hours": overlap_window_hours,
+                    "item_external_ids": [],
+                },
+            )
+            if item.external_id not in group["item_external_ids"]:
+                group["item_external_ids"].append(item.external_id)
+        return {
+            "items": item_rows,
+            "batches": [
+                {**value, "item_count": len(value["item_external_ids"])}
+                for value in sorted(
+                    batches.values(), key=lambda row: row["started_at"], reverse=True
+                )
+            ],
+            "cooldown_until": cooldown_until,
+        }
+
+    def _batch_checkpoint_complete(
+        self,
+        session,
+        batch_id: str,
+        checkpoint: str,
+    ) -> bool:
+        item_count = int(
+            session.scalar(
+                select(func.count(ProductTrafficBatchItem.id)).where(
+                    ProductTrafficBatchItem.batch_id == batch_id
+                )
+            )
+            or 0
+        )
+        recorded_count = int(
+            session.scalar(
+                select(func.count(distinct(ProductTrafficCheckpoint.item_id))).where(
+                    ProductTrafficCheckpoint.batch_id == batch_id,
+                    ProductTrafficCheckpoint.checkpoint == checkpoint,
+                )
+            )
+            or 0
+        )
+        return item_count > 0 and recorded_count >= item_count
+
+    def _traffic_start_block_reason(
+        self,
+        blocked_items: set[int],
+        blocked_until: datetime | None,
+        unfinished_observation: bool,
+        global_attribution_gate: bool = False,
+    ) -> str | None:
+        if global_attribution_gate:
+            if blocked_until:
+                local_until = self._traffic_datetime_label(blocked_until)
+                return (
+                    "上一批尚未完成整批 +72h；"
+                    f"最早在北京时间 {local_until} 到期，届时仍需记录或补录 +72h 后再开始新批次"
+                )
+            return "上一批尚未完成整批 +72h；请先记录或补录 +72h，再开始新批次"
+        if not blocked_items:
+            return None
+        item_label = f"{len(blocked_items)} 件商品"
+        if blocked_until:
+            local_until = self._traffic_datetime_label(blocked_until)
+            suffix = (
+                "；若原批次仍在观察，请先补齐 +72h"
+                if unfinished_observation
+                else ""
+            )
+            return (
+                f"当前批次 72h 观察未结束，{item_label}与其他批次重叠；"
+                f"最早可在北京时间 {local_until} 后开始{suffix}"
+            )
+        return (
+            f"当前批次 72h 观察尚未完成，{item_label}与其他批次重叠；"
+            "请先补齐原批次 +72h，再开始新批次"
+        )
+
+    @staticmethod
+    def _plan_product_view(candidate: dict) -> ProductPlanProductView:
+        return ProductPlanProductView(
+            external_id=candidate["item"].external_id,
+            title=candidate["item"].title,
+            role=candidate["role"],
+            score=candidate["score"],
+            data_quality=candidate["signal"]["data_quality"],
+            reason=candidate["reason"],
+        )
+
+    def _traffic_replan_proposal(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+    ) -> dict:
+        candidates = self._candidate_pool(session)
+        by_external_id = {
+            candidate["item"].external_id: candidate for candidate in candidates
+        }
+        current_ids = self._batch_external_ids(session, batch.id)
+        source_batch = self._latest_started_traffic_batch(
+            session, exclude_batch_id=batch.id
+        )
+        now_utc = self._now().astimezone(timezone.utc)
+        initial_at = max(
+            value
+            for value in (self._utc(batch.planned_at), now_utc)
+            if value is not None
+        )
+        selected, rotation_summary = self._select_evidence_rotation(
+            session,
+            candidates,
+            available_at=initial_at,
+            source_batch=source_batch,
+            target_count=max(
+                self.settings.product_traffic_batch_min_items,
+                min(len(current_ids), self.settings.product_traffic_batch_max_items),
+            ),
+        )
+        proposed_at = initial_at
+        availability_at = None
+        reasons: list[str] = []
+        warnings: list[str] = []
+        source_complete = bool(
+            not source_batch
+            or self._batch_checkpoint_complete(session, source_batch.id, "h72")
+        )
+        if source_batch and not source_complete and selected:
+            reasons.append(
+                "上一批尚未完成 +72h；本次只选取当前时点已冷却且不与其重叠的商品"
+            )
+            warnings.append("上一批商品继续观察；正常开始时仍会再次逐商品校验 72 小时冷却")
+        if selected:
+            reasons.append(str(rotation_summary.get("reason") or "按证据轮换商品"))
+        else:
+            reasons.append("可用商品不足 3 件，当前不建议产生新的曝光费用")
+            warnings.append("保留原批次记录，等待冷却或恢复商品数据后再预览")
+        proposed_ids = [candidate["item"].external_id for candidate in selected]
+        current_candidates = [
+            by_external_id[value]
+            for value in current_ids
+            if value in by_external_id
+        ]
+        current_set = set(current_ids)
+        proposed_set = set(proposed_ids)
+        retained_ids = [value for value in current_ids if value in proposed_set]
+        removed_ids = [value for value in current_ids if value not in proposed_set]
+        added_ids = [value for value in proposed_ids if value not in current_set]
+        return {
+            "current_ids": current_ids,
+            "proposed_ids": proposed_ids,
+            "current": current_candidates,
+            "proposed": selected,
+            "retained": [by_external_id[value] for value in retained_ids if value in by_external_id],
+            "removed": [by_external_id[value] for value in removed_ids if value in by_external_id],
+            "added": [by_external_id[value] for value in added_ids if value in by_external_id],
+            "source_batch_id": source_batch.id if source_batch else None,
+            "availability_at": availability_at,
+            "proposed_planned_at": proposed_at,
+            "is_new_spend": bool(selected),
+            "rotation_summary": rotation_summary,
+            "reasons": reasons,
+            "warnings": warnings,
+        }
+
+    def _cleanup_traffic_replan_previews(self) -> None:
+        now = self._now().astimezone(timezone.utc)
+        expired = [
+            value
+            for value, preview in self._traffic_replan_previews.items()
+            if preview["expires_at"] < now
+        ]
+        for value in expired:
+            self._traffic_replan_previews.pop(value, None)
+
+    def traffic_replan_preview(
+        self,
+        batch_id: str,
+    ) -> ProductTrafficReplanPreviewView:
+        self._cleanup_traffic_replan_previews()
+        with self.database.session() as session:
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            if batch.status != "planned":
+                raise ProductTrafficConflict("只有尚未开始的批次可以重排")
+            proposal = self._traffic_replan_proposal(session, batch)
+            canonical = {
+                "batch_id": batch.id,
+                "updated_at": self._utc(batch.updated_at).isoformat(),
+                "proposed_planned_at": proposal["proposed_planned_at"].isoformat(),
+                "proposed_ids": proposal["proposed_ids"],
+                "source_batch_id": proposal["source_batch_id"],
+                "availability_at": (
+                    proposal["availability_at"].isoformat()
+                    if proposal["availability_at"]
+                    else None
+                ),
+                "is_new_spend": proposal["is_new_spend"],
+                "actual_cost": round(batch.actual_cost, 2),
+            }
+            preview_hash = self._payload_hash(canonical)
+            self._traffic_replan_previews[preview_hash] = {
+                **canonical,
+                "expires_at": self._now().astimezone(timezone.utc)
+                + timedelta(minutes=10),
+            }
+            return ProductTrafficReplanPreviewView(
+                batch_id=batch.id,
+                updated_at=batch.updated_at,
+                preview_hash=preview_hash,
+                can_replan=bool(proposal["proposed_ids"]),
+                proposed_planned_at=proposal["proposed_planned_at"],
+                current_products=[self._plan_product_view(value) for value in proposal["current"]],
+                proposed_products=[self._plan_product_view(value) for value in proposal["proposed"]],
+                retained_products=[self._plan_product_view(value) for value in proposal["retained"]],
+                removed_products=[self._plan_product_view(value) for value in proposal["removed"]],
+                added_products=[self._plan_product_view(value) for value in proposal["added"]],
+                source_batch_id=proposal["source_batch_id"],
+                availability_at=proposal["availability_at"],
+                is_new_spend=proposal["is_new_spend"],
+                fee_impact=0,
+                reasons=proposal["reasons"],
+                warnings=proposal["warnings"],
+            )
+
+    def replan_traffic_batch(
+        self,
+        batch_id: str,
+        *,
+        request_id: str,
+        expected_updated_at: datetime,
+        preview_hash: str,
+    ) -> ProductTrafficBatchView:
+        self._cleanup_traffic_replan_previews()
+        payload = {
+            "batch_id": batch_id,
+            "expected_updated_at": self._utc(expected_updated_at).isoformat(),
+            "preview_hash": preview_hash,
+        }
+        payload_hash = self._payload_hash(payload)
+        with self.database.session() as session:
+            replay = self._existing_batch_event(
+                session,
+                request_id=request_id,
+                event_type="replan",
+                payload_hash=payload_hash,
+            )
+            if replay:
+                stored = session.get(ProductTrafficBatch, replay.batch_id)
+                if stored is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                return self._traffic_batch_view(session, stored)
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            if batch.status != "planned":
+                raise ProductTrafficConflict("只有尚未开始的批次可以重排")
+            self._require_batch_revision(batch, expected_updated_at)
+            preview = self._traffic_replan_previews.get(preview_hash)
+            if preview is None or preview["batch_id"] != batch.id:
+                raise ProductTrafficConflict("重排预览已过期，请重新预览")
+            if preview["updated_at"] != self._utc(batch.updated_at).isoformat():
+                raise ProductTrafficConflict("批次状态已变化，请重新预览")
+            proposal = self._traffic_replan_proposal(session, batch)
+            current_hash = self._payload_hash(
+                {
+                    "batch_id": batch.id,
+                    "updated_at": self._utc(batch.updated_at).isoformat(),
+                    "proposed_planned_at": proposal["proposed_planned_at"].isoformat(),
+                    "proposed_ids": proposal["proposed_ids"],
+                    "source_batch_id": proposal["source_batch_id"],
+                    "availability_at": (
+                        proposal["availability_at"].isoformat()
+                        if proposal["availability_at"]
+                        else None
+                    ),
+                    "is_new_spend": proposal["is_new_spend"],
+                    "actual_cost": round(batch.actual_cost, 2),
+                }
+            )
+            if current_hash != preview_hash or not proposal["proposed_ids"]:
+                raise ProductTrafficConflict("重排证据已变化，请重新预览")
+            item_by_external_id = {
+                item.external_id: item
+                for item in session.scalars(
+                    select(Item).where(Item.external_id.in_(proposal["proposed_ids"]))
+                ).all()
+            }
+            if len(item_by_external_id) != len(proposal["proposed_ids"]):
+                raise ProductTrafficConflict("重排商品已变化，请重新预览")
+            session.execute(
+                delete(ProductTrafficBatchItem).where(
+                    ProductTrafficBatchItem.batch_id == batch.id
+                )
+            )
+            for position, external_id in enumerate(proposal["proposed_ids"]):
+                session.add(
+                    ProductTrafficBatchItem(
+                        batch_id=batch.id,
+                        item_id=item_by_external_id[external_id].id,
+                        position=position,
+                        baseline_browse_count=0,
+                        baseline_collect_count=0,
+                        baseline_want_count=0,
+                        baseline_inquiry_count=0,
+                        baseline_captured_at=None,
+                        baseline_source="pending",
+                    )
+                )
+            changed_at = self._now().astimezone(timezone.utc)
+            batch.planned_at = proposal["proposed_planned_at"]
+            batch.baseline_prepared_at = None
+            batch.updated_at = changed_at
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="replan",
+                payload_hash=payload_hash,
+                summary={
+                    "retained_count": len(proposal["retained"]),
+                    "removed_count": len(proposal["removed"]),
+                    "added_count": len(proposal["added"]),
+                    "source_batch_id": proposal["source_batch_id"],
+                },
+                result={
+                    "batch_id": batch.id,
+                    "planned_at": batch.planned_at.isoformat(),
+                    "item_count": len(proposal["proposed_ids"]),
+                },
+            )
+            session.commit()
+            result = self._traffic_batch_view(session, batch)
+        self._traffic_replan_previews.pop(preview_hash, None)
+        self._maintain_plans_after_write()
+        self.event_hub.publish_nowait(
+            {"type": "product_traffic_batch_updated", "batch_id": batch_id}
+        )
+        return result
+
+    @staticmethod
+    def _encode_traffic_cursor(batch: ProductTrafficBatch) -> str:
+        payload = json.dumps(
+            [batch.created_at.isoformat(), batch.id], separators=(",", ":")
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_traffic_cursor(cursor: str) -> tuple[datetime, str]:
+        try:
+            raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+            created_at, batch_id = json.loads(raw.decode("utf-8"))
+            return datetime.fromisoformat(str(created_at)), str(batch_id)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise ProductTrafficConflict("批次游标无效，请从第一页重新加载") from exc
+
+    def traffic_batches(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 20,
+        status: str | None = None,
+    ) -> ProductTrafficBatchPageView:
+        page_size = min(max(int(limit), 1), 100)
+        allowed_statuses = {
+            "planned",
+            "running",
+            "observing",
+            "closed",
+            "invalidated",
+            "cancelled",
+        }
+        if status and status not in allowed_statuses:
+            raise ProductTrafficConflict("批次状态筛选无效")
+        with self.database.session() as session:
+            statement = select(ProductTrafficBatch)
+            if status:
+                statement = statement.where(ProductTrafficBatch.status == status)
+            if cursor:
+                cursor_time, cursor_id = self._decode_traffic_cursor(cursor)
+                statement = statement.where(
+                    or_(
+                        ProductTrafficBatch.created_at < cursor_time,
+                        and_(
+                            ProductTrafficBatch.created_at == cursor_time,
+                            ProductTrafficBatch.id < cursor_id,
+                        ),
+                    )
+                )
+            rows = session.scalars(
+                statement.order_by(
+                    ProductTrafficBatch.created_at.desc(),
+                    ProductTrafficBatch.id.desc(),
+                ).limit(page_size + 1)
+            ).all()
+            has_more = len(rows) > page_size
+            visible = rows[:page_size]
+            return ProductTrafficBatchPageView(
+                items=[self._traffic_batch_view(session, value) for value in visible],
+                next_cursor=(
+                    self._encode_traffic_cursor(visible[-1])
+                    if has_more and visible
+                    else None
+                ),
+                has_more=has_more,
+            )
+
+    def traffic_start_preview(self, batch_id: str) -> ProductTrafficStartPreviewView:
+        with self.database.session() as session:
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            view = self._traffic_batch_view(session, batch)
+            batch_items = session.scalars(
+                select(ProductTrafficBatchItem).where(
+                    ProductTrafficBatchItem.batch_id == batch.id
+                )
+            ).all()
+            monitor_by_item = {
+                monitor.item_id: monitor
+                for monitor in session.scalars(
+                    select(ProductMonitor).where(
+                        ProductMonitor.item_id.in_([value.item_id for value in batch_items])
+                    )
+                ).all()
+            }
+            ownership_ready = bool(batch_items) and all(
+                (monitor := monitor_by_item.get(value.item_id)) is not None
+                and monitor.ownership_status == "owned"
+                and monitor.enabled
+                for value in batch_items
+            )
+            reasons: list[str] = []
+            if batch.status != "planned":
+                reasons.append("只有尚未开始的计划批次可以执行开始准备")
+            if not ownership_ready:
+                reasons.append("批次包含未验证为本人或未启用的商品")
+            if view.start_blocked_reason:
+                reasons.append(view.start_blocked_reason)
+            if view.baseline_status == "pending":
+                reasons.append("尚未准备整批 T0")
+            elif view.baseline_status == "expired":
+                reasons.append("T0 已超过 30 分钟有效期")
+            overlap = self._traffic_overlap_details(
+                session,
+                batch,
+                anchor_at=self._now().astimezone(timezone.utc),
+                include_later_batches=False,
+            )
+            overlap_items = [
+                ProductTrafficOverlapItemView(
+                    external_id=value["external_id"],
+                    title=value["title"],
+                    source_batch_id=value["source_batch_id"],
+                    source_started_at=value["source_started_at"],
+                    cooldown_until=value["cooldown_until"],
+                )
+                for value in overlap["items"]
+            ]
+            conflicting_batches = [
+                ProductTrafficConflictingBatchView(**value)
+                for value in overlap["batches"]
+            ]
+            cohort_item_id = None
+            if (
+                self.traffic_growth is not None
+                and batch.recording_mode == "scale_cohort"
+                and batch.attribution_status == "cohort_overlap"
+            ):
+                cohort_item_id = (
+                    self.traffic_growth.scale_cohort_item_id_for_batch(
+                        session,
+                        batch.id,
+                    )
+                )
+            unsafe_overlap_items = [
+                value
+                for value in overlap["items"]
+                if value["item_id"] != cohort_item_id
+            ]
+            unsafe_cooldown_until = max(
+                (value["cooldown_until"] for value in unsafe_overlap_items),
+                default=None,
+            )
+            can_start_cohort = bool(
+                cohort_item_id is not None
+                and not reasons
+                and view.can_start
+                and not unsafe_overlap_items
+            )
+            can_start_clean = bool(
+                cohort_item_id is None and not reasons and view.can_start
+            )
+            can_record_actual = (
+                batch.status == "planned" and ownership_ready and bool(overlap_items)
+                and cohort_item_id is None
+            )
+            actions: list[str] = []
+            if can_start_clean:
+                actions.append("start")
+            elif can_start_cohort:
+                actions.append("start_cohort")
+            elif batch.status == "planned" and ownership_ready and not overlap_items:
+                actions.extend(["remote_refresh", "manual"])
+            elif can_record_actual:
+                actions.extend(["remove_overlap", "replan", "wait", "actual_start"])
+            return ProductTrafficStartPreviewView(
+                batch=view,
+                can_start=can_start_clean or can_start_cohort,
+                can_start_clean=can_start_clean,
+                can_start_cohort=can_start_cohort,
+                can_record_actual=can_record_actual,
+                blocked_reasons=list(dict.fromkeys(reasons)),
+                ownership_ready=ownership_ready,
+                baseline_status=view.baseline_status,
+                baseline_expires_at=view.baseline_expires_at,
+                earliest_start_at=unsafe_cooldown_until,
+                cooldown_until=unsafe_cooldown_until,
+                overlap_items=overlap_items,
+                conflicting_batches=conflicting_batches,
+                analysis_impact=(
+                    "本批次属于已确认的 14 天扩量队列；允许重点商品按队列频率重复，"
+                    "但单批结果永久排除时段和预算结论，只评估队列整体投入、咨询、项目与利润。"
+                    if cohort_item_id is not None
+                    else
+                    "补录后本批次永久标记为归因重叠；费用与检查点保留，"
+                    "但不进入时段、预算、商品优先级或复投结论。"
+                    if overlap_items
+                    else "当前商品组合没有处于 72 小时窗口内的重复商品。"
+                ),
+                safety_notice=(
+                    "系统只记录已经发生的人工购买，不会调用闲鱼购买接口、"
+                    "取消批次或修改商品。"
+                ),
+                actions=actions,
+            )
+
+    def _manual_baseline_values(
+        self,
+        session,
+        batch: ProductTrafficBatch,
+        items: list[dict],
+    ) -> dict[int, tuple[int, int, int, int]]:
+        batch_items = session.scalars(
+            select(ProductTrafficBatchItem).where(
+                ProductTrafficBatchItem.batch_id == batch.id
+            )
+        ).all()
+        by_external_id = {value.item.external_id: value for value in batch_items}
+        submitted = {str(value["external_id"]): value for value in items}
+        if set(submitted) != set(by_external_id):
+            raise ProductTrafficConflict("人工 T0 必须填写该批次的全部商品")
+        result: dict[int, tuple[int, int, int, int]] = {}
+        for external_id, batch_item in by_external_id.items():
+            value = submitted[external_id]
+            counts = (
+                int(value["browse_count"]),
+                int(value.get("collect_count", 0)),
+                int(value.get("want_count", 0)),
+                int(value.get("inquiry_count", 0)),
+            )
+            latest = session.scalar(
+                select(ProductDailySnapshot)
+                .where(ProductDailySnapshot.item_id == batch_item.item_id)
+                .order_by(
+                    ProductDailySnapshot.snapshot_date.desc(),
+                    ProductDailySnapshot.captured_at.desc(),
+                )
+                .limit(1)
+            )
+            known = (
+                latest.browse_count if latest else 0,
+                latest.collect_count if latest else 0,
+                latest.want_count if latest else 0,
+                latest.inquiry_count if latest else 0,
+            )
+            if any(current < minimum for current, minimum in zip(counts, known)):
+                raise ProductTrafficConflict(
+                    f"{batch_item.item.title} 的人工 T0 不能低于最近已知累计值"
+                )
+            result[batch_item.item_id] = counts
+        return result
+
+    async def prepare_traffic_baseline(
+        self,
+        batch_id: str,
+        *,
+        request_id: str,
+        expected_updated_at: datetime,
+        mode: str,
+        items: list[dict],
+    ) -> ProductTrafficBatchView:
+        payload = {
+            "batch_id": batch_id,
+            "expected_updated_at": self._utc(expected_updated_at).isoformat(),
+            "mode": mode,
+            "items": sorted(items, key=lambda value: str(value.get("external_id", ""))),
+        }
+        payload_hash = self._payload_hash(payload)
+        with self.database.session() as session:
+            replay = self._existing_batch_event(
+                session,
+                request_id=request_id,
+                event_type="baseline",
+                payload_hash=payload_hash,
+            )
+            if replay:
+                batch = session.get(ProductTrafficBatch, replay.batch_id)
+                if batch is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                replay_result = _json_dict(replay.result_json)
+                if replay_result.get("status") == "failed":
+                    raise ProductCollectionUnavailable(
+                        str(
+                            replay_result.get("detail")
+                            or "整批 T0 刷新未全部成功；请改用人工填写"
+                        )
+                    )
+                return self._traffic_batch_view(session, batch)
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            if batch.status != "planned":
+                raise ProductTrafficConflict("已经开始或取消的批次不能重新准备 T0")
+            self._require_batch_revision(batch, expected_updated_at)
+            (
+                blocked_items,
+                blocked_until,
+                unfinished,
+                global_attribution_gate,
+            ) = self._traffic_start_conflict(session, batch)
+            reason = self._traffic_start_block_reason(
+                blocked_items,
+                blocked_until,
+                unfinished,
+                global_attribution_gate,
+            )
+            if reason:
+                raise ProductTrafficConflict(reason)
+            if mode == "manual":
+                manual_values = self._manual_baseline_values(session, batch, items)
+            else:
+                manual_values = {}
+
+        captured_at = self._now().astimezone(timezone.utc)
+        if mode == "remote_refresh":
+            async with self._collection_lock:
+                with self.database.session() as session:
+                    batch = session.get(ProductTrafficBatch, batch_id)
+                    if batch is None:
+                        raise ProductRecordNotFound("曝光批次不存在")
+                    self._require_batch_revision(batch, expected_updated_at)
+                    batch_items = session.scalars(
+                        select(ProductTrafficBatchItem)
+                        .where(ProductTrafficBatchItem.batch_id == batch.id)
+                        .order_by(ProductTrafficBatchItem.position)
+                    ).all()
+                    monitor_rows = {
+                        monitor.item_id: monitor
+                        for monitor in session.scalars(
+                            select(ProductMonitor).where(
+                                ProductMonitor.item_id.in_([value.item_id for value in batch_items])
+                            )
+                        ).all()
+                    }
+                    remote_targets = [
+                        (
+                            value.item_id,
+                            value.item.external_id,
+                            monitor_rows.get(value.item_id),
+                        )
+                        for value in batch_items
+                    ]
+                    if not remote_targets or any(
+                        monitor is None
+                        or monitor.ownership_status != "owned"
+                        or not monitor.enabled
+                        for _item_id, _external_id, monitor in remote_targets
+                    ):
+                        raise ProductOwnershipRestricted(
+                            "只能为已确认属于本人且启用监测的商品准备 T0"
+                        )
+                failures: list[str] = []
+                fetched: dict[int, tuple[int, int, int, int, datetime]] = {}
+                for index, (item_id, external_id, monitor) in enumerate(remote_targets):
+                    assert monitor is not None
+                    try:
+                        ownership = await self._collect_monitor(
+                            monitor_id=monitor.id,
+                            item_id=item_id,
+                            external_id=external_id,
+                            snapshot_date=self._day_key(),
+                            source="remote_manual",
+                        )
+                        if ownership != "owned":
+                            raise ProductOwnershipRestricted("商品归属不再是当前账号")
+                        with self.database.session() as session:
+                            snapshot = session.scalar(
+                                select(ProductDailySnapshot)
+                                .where(
+                                    ProductDailySnapshot.item_id == item_id,
+                                    ProductDailySnapshot.snapshot_date == self._day_key(),
+                                )
+                                .limit(1)
+                            )
+                            if snapshot is None:
+                                raise ProductCollectionUnavailable("远程刷新未形成可用快照")
+                            fetched[item_id] = (
+                                snapshot.browse_count,
+                                snapshot.collect_count,
+                                snapshot.want_count,
+                                snapshot.inquiry_count,
+                                self._utc(snapshot.captured_at) or captured_at,
+                            )
+                    except AdapterAccessVerificationError as exc:
+                        code, detail = self._safe_collection_error(exc)
+                        failures.append(detail)
+                        with self.database.session() as session:
+                            failed_monitor = session.get(ProductMonitor, monitor.id)
+                            if failed_monitor is not None:
+                                self._set_monitor_failure(failed_monitor, exc)
+                            remaining_ids = [
+                                value[0] for value in remote_targets[index + 1 :]
+                            ]
+                            if remaining_ids:
+                                remaining_monitors = session.scalars(
+                                    select(ProductMonitor).where(
+                                        ProductMonitor.item_id.in_(remaining_ids)
+                                    )
+                                ).all()
+                                for remaining_monitor in remaining_monitors:
+                                    self._set_monitor_skipped_after_access_verification(
+                                        remaining_monitor
+                                    )
+                            session.commit()
+                        logger.warning(
+                            "曝光 T0 刷新触发访问验证 batch=%s item=%s code=%s skipped=%s",
+                            batch_id,
+                            external_id,
+                            code,
+                            len(remote_targets) - index - 1,
+                        )
+                        break
+                    except Exception as exc:
+                        _code, detail = self._safe_collection_error(exc)
+                        failures.append(detail)
+                        with self.database.session() as session:
+                            failed_monitor = session.get(ProductMonitor, monitor.id)
+                            if failed_monitor is not None:
+                                self._set_monitor_failure(failed_monitor, exc)
+                                session.commit()
+                if failures or len(fetched) != len(remote_targets):
+                    failure_detail = (
+                        "整批 T0 刷新未全部成功；已保留安全诊断，可改用人工填写全部商品"
+                    )
+                    with self.database.session() as session:
+                        batch = session.get(ProductTrafficBatch, batch_id)
+                        if batch is None:
+                            raise ProductRecordNotFound("曝光批次不存在")
+                        replay = self._existing_batch_event(
+                            session,
+                            request_id=request_id,
+                            event_type="baseline",
+                            payload_hash=payload_hash,
+                        )
+                        if replay is None:
+                            self._record_batch_event(
+                                session,
+                                batch_id=batch.id,
+                                request_id=request_id,
+                                event_type="baseline",
+                                payload_hash=payload_hash,
+                                summary={
+                                    "mode": mode,
+                                    "item_count": len(remote_targets),
+                                    "successful_count": len(fetched),
+                                    "status": "failed",
+                                },
+                                result={
+                                    "batch_id": batch.id,
+                                    "status": "failed",
+                                    "detail": failure_detail,
+                                },
+                            )
+                            session.commit()
+                    raise ProductCollectionUnavailable(failure_detail)
+                captured_at = max(value[4] for value in fetched.values())
+
+        with self.database.session() as session:
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            self._require_batch_revision(batch, expected_updated_at)
+            batch_items = session.scalars(
+                select(ProductTrafficBatchItem).where(
+                    ProductTrafficBatchItem.batch_id == batch.id
+                )
+            ).all()
+            for batch_item in batch_items:
+                if mode == "manual":
+                    counts = manual_values[batch_item.item_id]
+                    item_captured_at = captured_at
+                else:
+                    counts = fetched[batch_item.item_id][:4]
+                    item_captured_at = fetched[batch_item.item_id][4]
+                (
+                    batch_item.baseline_browse_count,
+                    batch_item.baseline_collect_count,
+                    batch_item.baseline_want_count,
+                    batch_item.baseline_inquiry_count,
+                ) = counts
+                batch_item.baseline_captured_at = item_captured_at
+                batch_item.baseline_source = mode
+            batch.baseline_prepared_at = captured_at
+            batch.updated_at = captured_at
+            result = self._traffic_batch_view(session, batch)
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="baseline",
+                payload_hash=payload_hash,
+                summary={"mode": mode, "item_count": len(batch_items)},
+                result={"batch_id": batch.id, "baseline_prepared_at": captured_at.isoformat()},
+            )
+            session.commit()
+        self.event_hub.publish_nowait(
+            {"type": "product_traffic_batch_updated", "batch_id": batch_id}
+        )
+        return result
+
     def _exposure_analytics(
         self,
         session,
@@ -2969,7 +6884,9 @@ class ProductIntelligenceService:
             .where(
                 ProductTrafficBatch.started_at.is_not(None),
                 ProductTrafficBatch.started_at >= cutoff,
-                ProductTrafficBatch.status.in_(("running", "observing", "closed")),
+                ProductTrafficBatch.status.in_(
+                    ("running", "observing", "closed", "invalidated")
+                ),
             )
             .order_by(ProductTrafficBatch.started_at.desc())
             .limit(120)
@@ -2978,9 +6895,18 @@ class ProductIntelligenceService:
         mature = [
             batch
             for batch in views
-            if batch.observation_checkpoint in {"h24", "h72"}
+            if batch.observation_checkpoint in {"h24", "h48", "h72"}
         ]
         eligible = [batch for batch in mature if batch.analysis_eligible]
+        excluded = [
+            batch
+            for batch in views
+            if batch.status == "invalidated"
+            or (
+                batch.observation_checkpoint in {"h24", "h48", "h72"}
+                and not batch.analysis_eligible
+            )
+        ]
         total_spent = round(sum(batch.actual_cost for batch in views), 2)
         observed_cost = round(sum(batch.actual_cost for batch in eligible), 2)
         browse_delta = sum(batch.browse_delta for batch in eligible)
@@ -2999,6 +6925,7 @@ class ProductIntelligenceService:
                 "stale_baseline",
                 "inconsistent",
                 "confounded",
+                "invalidated",
             }:
                 continue
             for checkpoint in batch.checkpoint_metrics:
@@ -3110,7 +7037,19 @@ class ProductIntelligenceService:
             if eligible_count >= 6
             else "low"
         )
-        if eligible_count == 0:
+        invalidated_count = sum(
+            1 for batch in views if batch.status == "invalidated"
+        )
+        all_started_batches_invalidated = bool(
+            eligible_count == 0 and views and invalidated_count == len(views)
+        )
+        if all_started_batches_invalidated:
+            summary = (
+                f"近 {window_days} 天的 {invalidated_count} 个真实投放批次均因基线无效"
+                "终止观察；费用与历史事实仍保留，已终止批次无需继续补录，"
+                "后续从可靠 T0 的新批次重新积累。"
+            )
+        elif eligible_count == 0:
             summary = (
                 "尚无可比较的 +24h 或 +72h 批次。先补齐长尾检查点，"
                 "系统不会用 1 小时套餐结束时的数据冒充最终效果。"
@@ -3130,9 +7069,12 @@ class ProductIntelligenceService:
                 f"当前 {best_bucket.time_range} 的平滑后表现相对更好；"
                 f"该窗口已有 {best_bucket.batch_count} 批，仍应结合单位咨询成本和交付容量逐批验证。"
             )
-        excluded_count = max(0, len(mature) - eligible_count)
-        if excluded_count:
-            summary += f" 另有 {excluded_count} 批因基线过旧、数据倒退或投放重叠未进入时段结论。"
+        excluded_count = len(excluded)
+        if excluded_count and not all_started_batches_invalidated:
+            summary += (
+                f" 另有 {excluded_count} 批因基线无效、数据倒退或投放重叠"
+                "未进入时段结论。"
+            )
         return ProductExposureAnalyticsView(
             window_days=window_days,
             total_spent=total_spent,
@@ -3198,6 +7140,22 @@ class ProductIntelligenceService:
                 )
                 or 0
             ),
+            planned_batch_count=int(
+                session.scalar(
+                    select(func.count(ProductTrafficBatch.id)).where(
+                        ProductTrafficBatch.status == "planned"
+                    )
+                )
+                or 0
+            ),
+            observation_batch_count=int(
+                session.scalar(
+                    select(func.count(ProductTrafficBatch.id)).where(
+                        ProductTrafficBatch.status.in_(("running", "observing"))
+                    )
+                )
+                or 0
+            ),
             due_checkpoint_count=due_count,
             spent_this_week=spent,
             analysis_stage=stage,
@@ -3240,7 +7198,10 @@ class ProductIntelligenceService:
         actual_cost: float,
         plan_slot_id: str | None,
         note: str,
+        checkpoint_collection_mode: str = "auto",
     ) -> ProductTrafficBatchView:
+        if checkpoint_collection_mode not in {"auto", "manual"}:
+            raise ProductTrafficConflict("不支持的检查点采集方式")
         unique_ids = list(dict.fromkeys(item_external_ids))
         if len(unique_ids) != len(item_external_ids):
             raise ProductTrafficConflict("同一商品不能在一个曝光批次中重复选择")
@@ -3248,6 +7209,16 @@ class ProductIntelligenceService:
             raise ProductTrafficConflict(
                 f"一个批次最多选择 {self.settings.product_traffic_batch_max_items} 件商品"
             )
+        create_payload_hash = self._payload_hash(
+            {
+                "item_external_ids": unique_ids,
+                "planned_at": self._utc(planned_at).isoformat(),
+                "actual_cost": round(actual_cost, 2),
+                "plan_slot_id": plan_slot_id,
+                "note": note.strip(),
+                "checkpoint_collection_mode": checkpoint_collection_mode,
+            }
+        )
         with self.database.session() as session:
             existing = session.scalar(
                 select(ProductTrafficBatch).where(
@@ -3255,6 +7226,22 @@ class ProductIntelligenceService:
                 )
             )
             if existing:
+                existing_hash = self._payload_hash(
+                    {
+                        "item_external_ids": self._batch_external_ids(
+                            session, existing.id
+                        ),
+                        "planned_at": self._utc(existing.planned_at).isoformat(),
+                        "actual_cost": round(existing.actual_cost, 2),
+                        "plan_slot_id": existing.plan_slot_id,
+                        "note": existing.note,
+                        "checkpoint_collection_mode": existing.checkpoint_collection_mode,
+                    }
+                )
+                if existing_hash != create_payload_hash:
+                    raise ProductTrafficConflict(
+                        "相同 request_id 已用于不同的曝光批次内容"
+                    )
                 return self._traffic_batch_view(session, existing)
             monitors = session.scalars(
                 select(ProductMonitor)
@@ -3293,6 +7280,8 @@ class ProductIntelligenceService:
                 planned_at=self._utc(planned_at),
                 actual_cost=round(actual_cost, 2),
                 note=note.strip(),
+                checkpoint_collection_mode=checkpoint_collection_mode,
+                observation_window_hours=72,
                 created_at=utcnow(),
             )
             session.add(batch)
@@ -3310,58 +7299,940 @@ class ProductIntelligenceService:
                         batch_id=batch.id,
                         item_id=monitor.item_id,
                         position=index,
-                        baseline_browse_count=snapshot.browse_count if snapshot else 0,
-                        baseline_collect_count=snapshot.collect_count if snapshot else 0,
-                        baseline_want_count=snapshot.want_count if snapshot else 0,
-                        baseline_inquiry_count=snapshot.inquiry_count if snapshot else 0,
-                        baseline_captured_at=snapshot.captured_at if snapshot else None,
+                        # A planned batch has no T0.  The baseline is fixed only
+                        # after a complete remote refresh or an explicit manual
+                        # entry immediately before the user starts the spend.
+                        baseline_browse_count=0,
+                        baseline_collect_count=0,
+                        baseline_want_count=0,
+                        baseline_inquiry_count=0,
+                        baseline_captured_at=None,
+                        baseline_source="pending",
                     )
                 )
+            session.flush()
+            if slot and self.traffic_growth is not None:
+                try:
+                    self.traffic_growth.bind_plan_batch_in_session(
+                        session,
+                        slot=slot,
+                        batch=batch,
+                    )
+                except RuntimeError as exc:
+                    raise ProductTrafficConflict(str(exc)) from None
             if slot:
                 slot.status = "scheduled"
             session.commit()
             result = self._traffic_batch_view(session, batch)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {"type": "product_traffic_batch_updated", "batch_id": result.id}
         )
         return result
 
-    def start_traffic_batch(self, batch_id: str) -> ProductTrafficBatchView:
+    async def record_traffic_batch_now(
+        self,
+        *,
+        request_id: str,
+        item_external_ids: list[str],
+        actual_cost: float,
+        plan_slot_id: str | None,
+        note: str,
+        confirmed_already_purchased: bool,
+        checkpoint_collection_mode: str = "auto",
+    ) -> ProductTrafficBatchView:
+        """Record one already-purchased batch at the server confirmation minute.
+
+        The final confirmation performs one serialized, read-only remote T0
+        collection for every selected listing.  Only a complete live T0 may
+        enter the transaction that creates the batch, expense and audit event.
+        """
+
+        if not confirmed_already_purchased:
+            raise ProductTrafficConflict("请先确认这批曝光已经在闲鱼真实购买")
+        if plan_slot_id:
+            raise ProductTrafficConflict("新投流记录不再接受经营计划关联")
+        if checkpoint_collection_mode not in {"auto", "manual"}:
+            raise ProductTrafficConflict("不支持的检查点采集方式")
+        unique_ids = list(dict.fromkeys(item_external_ids))
+        if not unique_ids:
+            raise ProductTrafficConflict("至少选择一件商品")
+        if len(unique_ids) != len(item_external_ids):
+            raise ProductTrafficConflict("同一商品不能在一个曝光批次中重复选择")
+        if len(unique_ids) > self.settings.product_traffic_batch_max_items:
+            raise ProductTrafficConflict(
+                f"一个批次最多选择 {self.settings.product_traffic_batch_max_items} 件商品"
+            )
+        payload = {
+            "item_external_ids": unique_ids,
+            "actual_cost": round(actual_cost, 2),
+            "plan_slot_id": None,
+            "observation_window_hours": 48,
+            "note": note.strip(),
+            "confirmed_already_purchased": True,
+            "checkpoint_collection_mode": checkpoint_collection_mode,
+        }
+        payload_hash = self._payload_hash(payload)
+        ledger_revision = None
+        ledger_changed = False
+        async with self._collection_lock:
+            with self.database.session() as session:
+                replay = self._existing_batch_event(
+                    session,
+                    request_id=request_id,
+                    event_type="record_start",
+                    payload_hash=payload_hash,
+                )
+                if replay:
+                    stored = session.get(ProductTrafficBatch, replay.batch_id)
+                    if stored is None:
+                        raise ProductRecordNotFound("曝光批次不存在")
+                    return self._traffic_batch_view(session, stored)
+                existing = session.scalar(
+                    select(ProductTrafficBatch).where(
+                        ProductTrafficBatch.request_id == request_id
+                    )
+                )
+                if existing is not None:
+                    raise ProductTrafficConflict(
+                        "相同 request_id 已用于其他曝光批次，请刷新后重试"
+                    )
+                monitors = session.scalars(
+                    select(ProductMonitor)
+                    .join(Item, Item.id == ProductMonitor.item_id)
+                    .where(Item.external_id.in_(unique_ids))
+                ).all()
+                by_external_id = {
+                    monitor.item.external_id: monitor for monitor in monitors
+                }
+                missing = [
+                    external_id
+                    for external_id in unique_ids
+                    if external_id not in by_external_id
+                ]
+                if missing:
+                    raise ProductRecordNotFound("有商品不存在或尚未加入监测")
+                if any(
+                    monitor.ownership_status != "owned" or not monitor.enabled
+                    for monitor in by_external_id.values()
+                ):
+                    raise ProductOwnershipRestricted(
+                        "只能选择已确认属于本人且启用监测的商品"
+                    )
+                remote_targets = [
+                    (
+                        by_external_id[external_id].id,
+                        by_external_id[external_id].item_id,
+                        external_id,
+                    )
+                    for external_id in unique_ids
+                ]
+
+            failures: list[str] = []
+            fetched: dict[int, tuple[int, int, int, int, datetime]] = {}
+            for index, (monitor_id, item_id, external_id) in enumerate(remote_targets):
+                snapshot_date = self._day_key()
+                try:
+                    ownership = await self._collect_monitor(
+                        monitor_id=monitor_id,
+                        item_id=item_id,
+                        external_id=external_id,
+                        snapshot_date=snapshot_date,
+                        source="remote_manual",
+                    )
+                    if ownership != "owned":
+                        raise ProductOwnershipRestricted(
+                            "商品归属不再是当前账号"
+                        )
+                    captured_at = self._now().astimezone(timezone.utc)
+                    with self.database.session() as session:
+                        snapshot = session.scalar(
+                            select(ProductDailySnapshot).where(
+                                ProductDailySnapshot.item_id == item_id,
+                                ProductDailySnapshot.snapshot_date == snapshot_date,
+                            )
+                        )
+                        if snapshot is None:
+                            raise ProductCollectionUnavailable(
+                                "实时采集未形成可用 T0"
+                            )
+                        snapshot.captured_at = captured_at
+                        fetched[item_id] = (
+                            snapshot.browse_count,
+                            snapshot.collect_count,
+                            snapshot.want_count,
+                            snapshot.inquiry_count,
+                            captured_at,
+                        )
+                        session.commit()
+                except AdapterAccessVerificationError as exc:
+                    code, detail = self._safe_collection_error(exc)
+                    failures.append(detail)
+                    with self.database.session() as session:
+                        failed_monitor = session.get(ProductMonitor, monitor_id)
+                        if failed_monitor is not None:
+                            self._set_monitor_failure(failed_monitor, exc)
+                        remaining_ids = [
+                            value[1] for value in remote_targets[index + 1 :]
+                        ]
+                        if remaining_ids:
+                            remaining_monitors = session.scalars(
+                                select(ProductMonitor).where(
+                                    ProductMonitor.item_id.in_(remaining_ids)
+                                )
+                            ).all()
+                            for remaining_monitor in remaining_monitors:
+                                self._set_monitor_skipped_after_access_verification(
+                                    remaining_monitor
+                                )
+                        session.commit()
+                    logger.warning(
+                        "实际投流 T0 触发访问验证 request=%s item=%s code=%s skipped=%s",
+                        request_id,
+                        external_id,
+                        code,
+                        len(remote_targets) - index - 1,
+                    )
+                    break
+                except ProductOwnershipRestricted:
+                    raise
+                except Exception as exc:
+                    _code, detail = self._safe_collection_error(exc)
+                    failures.append(detail)
+                    with self.database.session() as session:
+                        failed_monitor = session.get(ProductMonitor, monitor_id)
+                        if failed_monitor is not None:
+                            self._set_monitor_failure(failed_monitor, exc)
+                            session.commit()
+
+            if failures or len(fetched) != len(remote_targets):
+                raise ProductCollectionUnavailable(
+                    "整批实时 T0 未全部成功；本次未创建曝光批次或费用，且不会自动重试"
+                )
+
+            captured_at = max(value[4] for value in fetched.values())
+            transaction_now = max(
+                self._now().astimezone(timezone.utc),
+                captured_at,
+            )
+            started_at = self._minute_utc(transaction_now)
+            planned_at = started_at
+
+            with self.database.session() as session:
+                replay = self._existing_batch_event(
+                    session,
+                    request_id=request_id,
+                    event_type="record_start",
+                    payload_hash=payload_hash,
+                )
+                if replay:
+                    stored = session.get(ProductTrafficBatch, replay.batch_id)
+                    if stored is None:
+                        raise ProductRecordNotFound("曝光批次不存在")
+                    return self._traffic_batch_view(session, stored)
+                existing = session.scalar(
+                    select(ProductTrafficBatch).where(
+                        ProductTrafficBatch.request_id == request_id
+                    )
+                )
+                if existing is not None:
+                    raise ProductTrafficConflict(
+                        "相同 request_id 已用于其他曝光批次，请刷新后重试"
+                    )
+                monitors = session.scalars(
+                    select(ProductMonitor)
+                    .join(Item, Item.id == ProductMonitor.item_id)
+                    .where(Item.external_id.in_(unique_ids))
+                ).all()
+                by_external_id = {
+                    monitor.item.external_id: monitor for monitor in monitors
+                }
+                if any(
+                    external_id not in by_external_id
+                    for external_id in unique_ids
+                ):
+                    raise ProductRecordNotFound("有商品不存在或尚未加入监测")
+                if any(
+                    monitor.ownership_status != "owned" or not monitor.enabled
+                    for monitor in by_external_id.values()
+                ):
+                    raise ProductOwnershipRestricted(
+                        "只能选择已确认属于本人且启用监测的商品"
+                    )
+
+                batch = ProductTrafficBatch(
+                    id=f"traffic-batch-{uuid4()}",
+                    request_id=request_id,
+                    plan_slot_id=None,
+                    status="running",
+                    planned_at=planned_at,
+                    started_at=started_at,
+                    baseline_prepared_at=captured_at,
+                    recording_mode="actual_now",
+                    observation_window_hours=48,
+                    actual_cost=round(actual_cost, 2),
+                    note=note.strip(),
+                    checkpoint_collection_mode=checkpoint_collection_mode,
+                    created_at=started_at,
+                    updated_at=transaction_now,
+                )
+                session.add(batch)
+                session.flush()
+                for index, external_id in enumerate(unique_ids):
+                    monitor = by_external_id[external_id]
+                    values = fetched[monitor.item_id]
+                    session.add(
+                        ProductTrafficBatchItem(
+                            batch_id=batch.id,
+                            item_id=monitor.item_id,
+                            position=index,
+                            baseline_browse_count=values[0],
+                            baseline_collect_count=values[1],
+                            baseline_want_count=values[2],
+                            baseline_inquiry_count=values[3],
+                            baseline_captured_at=values[4],
+                            baseline_source="remote_refresh",
+                        )
+                    )
+                session.flush()
+                overlap = self._traffic_overlap_details(
+                    session,
+                    batch,
+                    anchor_at=started_at,
+                    include_later_batches=False,
+                )
+                if overlap["items"]:
+                    batch.recording_mode = "actual_overlap"
+                    batch.attribution_status = "overlap"
+                self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
+                ledger_revision, ledger_changed = self._sync_traffic_expense_in_session(
+                    session,
+                    batch,
+                )
+                self._record_batch_event(
+                    session,
+                    batch_id=batch.id,
+                    request_id=request_id,
+                    event_type="record_start",
+                    payload_hash=payload_hash,
+                    summary={
+                        "item_count": len(unique_ids),
+                        "baseline_source": "live_remote_refresh",
+                        "overlap_item_count": len(
+                            {value["item_id"] for value in overlap["items"]}
+                        ),
+                        "server_time_authoritative": True,
+                        "observation_window_hours": 48,
+                    },
+                    result={
+                        "batch_id": batch.id,
+                        "started_at": started_at.isoformat(),
+                        "status": batch.status,
+                        "observation_window_hours": 48,
+                    },
+                )
+                session.flush()
+                result = self._traffic_batch_view(session, batch)
+                session.commit()
+        self._maintain_plans_after_write()
+        self.event_hub.publish_nowait(
+            {"type": "product_traffic_batch_updated", "batch_id": result.id}
+        )
+        if ledger_changed:
+            self.event_hub.publish_nowait(
+                {
+                    "type": "ledger_updated",
+                    "revision": ledger_revision,
+                    "source": "product_traffic",
+                }
+            )
+        return result
+
+    def correct_traffic_batch_start_from_created_at(
+        self,
+        batch_id: str,
+        *,
+        request_id: str,
+        expected_created_at: datetime,
+        expected_started_at: datetime,
+    ) -> ProductTrafficBatchView:
+        """Audited repair for a historical start recorded after batch creation."""
+
+        payload = {
+            "batch_id": batch_id,
+            "expected_created_at": self._utc(expected_created_at).isoformat(),
+            "expected_started_at": self._utc(expected_started_at).isoformat(),
+            "target": "created_at_minute",
+        }
+        payload_hash = self._payload_hash(payload)
         ledger_revision = None
         ledger_changed = False
         with self.database.session() as session:
+            replay = self._existing_batch_event(
+                session,
+                request_id=request_id,
+                event_type="correct_start",
+                payload_hash=payload_hash,
+            )
+            if replay:
+                stored = session.get(ProductTrafficBatch, replay.batch_id)
+                if stored is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                return self._traffic_batch_view(session, stored)
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            if batch.started_at is None:
+                raise ProductTrafficConflict("未开始批次没有可更正的实际时间")
+            if not self._same_timestamp(batch.created_at, expected_created_at):
+                raise ProductTrafficConflict("批次建立时间已变化，请停止更正并重新核对")
+            if not self._same_timestamp(batch.started_at, expected_started_at):
+                raise ProductTrafficConflict("批次实际时间已变化，请停止更正并重新核对")
+            target = self._minute_utc(batch.created_at)
+            current = self._utc(batch.started_at)
+            assert current is not None
+            if target > current:
+                raise ProductTrafficConflict("建立时间晚于实际投放时间，不能自动倒置历史事实")
+            transaction_now = self._now().astimezone(timezone.utc)
+            batch.started_at = target
+            batch.updated_at = transaction_now
+            batch_items = list(
+                session.scalars(
+                    select(ProductTrafficBatchItem).where(
+                        ProductTrafficBatchItem.batch_id == batch.id
+                    )
+                ).all()
+            )
+            reason = self._traffic_baseline_invalidation_reason(batch, batch_items)
+            if reason:
+                self._invalidate_batch_in_session(
+                    session,
+                    batch,
+                    reason=reason,
+                    invalidated_at=transaction_now,
+                )
+            ledger_revision, ledger_changed = self._sync_traffic_expense_in_session(
+                session,
+                batch,
+            )
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="correct_start",
+                payload_hash=payload_hash,
+                summary={
+                    "source": "created_at_minute",
+                    "baseline_rechecked": True,
+                    "facts_preserved": True,
+                },
+                result={
+                    "batch_id": batch.id,
+                    "started_at": target.isoformat(),
+                    "status": batch.status,
+                    "invalidation_reason": batch.invalidation_reason,
+                },
+            )
+            session.flush()
+            result = self._traffic_batch_view(session, batch)
+            session.commit()
+        self._maintain_plans_after_write()
+        self.event_hub.publish_nowait(
+            {"type": "product_traffic_batch_updated", "batch_id": result.id}
+        )
+        if ledger_changed:
+            self.event_hub.publish_nowait(
+                {
+                    "type": "ledger_updated",
+                    "revision": ledger_revision,
+                    "source": "product_traffic_time_correction",
+                }
+            )
+        return result
+
+    def restore_traffic_batch_exploratory_observation(
+        self,
+        batch_id: str,
+        *,
+        request_id: str,
+        snapshot_date: str,
+    ) -> ProductTrafficBatchView:
+        """Restore factual checkpoints from an explicitly weak day snapshot.
+
+        This is an audited repair path for a real spend whose immediate T0 was
+        missed.  It never upgrades the batch to decision-grade attribution.
+        """
+
+        try:
+            datetime.fromisoformat(snapshot_date).date()
+        except ValueError as exc:
+            raise ProductTrafficConflict("探索参考日期格式不正确") from exc
+        payload = {
+            "batch_id": batch_id,
+            "snapshot_date": snapshot_date,
+            "analysis_boundary": "exploratory_only",
+        }
+        payload_hash = self._payload_hash(payload)
+        with self.database.session() as session:
+            replay = self._existing_batch_event(
+                session,
+                request_id=request_id,
+                event_type="exploratory_restore",
+                payload_hash=payload_hash,
+            )
+            if replay:
+                stored = session.get(ProductTrafficBatch, replay.batch_id)
+                if stored is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                return self._traffic_batch_view(session, stored)
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            if batch.status != "invalidated" or batch.started_at is None:
+                raise ProductTrafficConflict("只有已真实投放且基线无效的批次可以恢复探索观察")
+            if batch.invalidation_reason not in {
+                "missing_baseline",
+                "legacy_baseline",
+                "stale_baseline",
+                "invalid_baseline_time",
+            }:
+                raise ProductTrafficConflict("当前终止原因不支持探索观察恢复")
+            started_at = self._utc(batch.started_at)
+            assert started_at is not None
+            batch_items = list(
+                session.scalars(
+                    select(ProductTrafficBatchItem)
+                    .where(ProductTrafficBatchItem.batch_id == batch.id)
+                    .order_by(ProductTrafficBatchItem.position)
+                ).all()
+            )
+            snapshot_by_item: dict[int, ProductDailySnapshot] = {}
+            for batch_item in batch_items:
+                snapshot = session.scalar(
+                    select(ProductDailySnapshot)
+                    .where(
+                        ProductDailySnapshot.item_id == batch_item.item_id,
+                        ProductDailySnapshot.snapshot_date == snapshot_date,
+                        ProductDailySnapshot.captured_at <= started_at,
+                        ProductDailySnapshot.source != "cached_baseline",
+                    )
+                    .order_by(ProductDailySnapshot.captured_at.desc())
+                    .limit(1)
+                )
+                if snapshot is not None:
+                    snapshot_by_item[batch_item.item_id] = snapshot
+            if not batch_items or len(snapshot_by_item) != len(batch_items):
+                raise ProductTrafficConflict("指定日期没有覆盖整批商品的投放前参考快照")
+            reference_times: list[datetime] = []
+            for batch_item in batch_items:
+                snapshot = snapshot_by_item[batch_item.item_id]
+                batch_item.baseline_browse_count = snapshot.browse_count
+                batch_item.baseline_collect_count = snapshot.collect_count
+                batch_item.baseline_want_count = snapshot.want_count
+                batch_item.baseline_inquiry_count = snapshot.inquiry_count
+                batch_item.baseline_captured_at = snapshot.captured_at
+                batch_item.baseline_source = "daily_exploratory"
+                reference_times.append(self._utc(snapshot.captured_at))
+            transaction_now = self._now().astimezone(timezone.utc)
+            batch.baseline_prepared_at = max(reference_times)
+            batch.status = "running" if batch.completed_at is None else "observing"
+            batch.recording_mode = "exploratory_recovery"
+            batch.attribution_status = "exploratory"
+            batch.invalidated_at = None
+            batch.invalidation_reason = None
+            batch.updated_at = transaction_now
+            self._mark_plan_slot_executed(session, batch, transaction_now)
+            for job in session.scalars(
+                select(ProductTrafficCheckpointJob).where(
+                    ProductTrafficCheckpointJob.batch_id == batch.id,
+                    ProductTrafficCheckpointJob.last_error_code == "baseline_invalidated",
+                )
+            ).all():
+                job.status = "scheduled"
+                job.completed_at = None
+                job.last_error_code = None
+                job.last_error_detail = ""
+                job.updated_at = transaction_now
+            self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="exploratory_restore",
+                payload_hash=payload_hash,
+                summary={
+                    "snapshot_date": snapshot_date,
+                    "reference_item_count": len(batch_items),
+                    "analysis_boundary": "exploratory_only",
+                    "prior_invalidation_preserved_in_audit": True,
+                },
+                result={
+                    "batch_id": batch.id,
+                    "status": batch.status,
+                    "attribution_status": batch.attribution_status,
+                },
+            )
+            session.commit()
+            result = self._traffic_batch_view(session, batch)
+        self._maintain_plans_after_write()
+        self.event_hub.publish_nowait(
+            {"type": "product_traffic_batch_updated", "batch_id": batch_id}
+        )
+        return result
+
+    def start_traffic_batch(
+        self,
+        batch_id: str,
+        *,
+        request_id: str | None = None,
+        expected_updated_at: datetime | None = None,
+        expected_baseline_captured_at: datetime | None = None,
+    ) -> ProductTrafficBatchView:
+        # Compatibility for existing local Python callers and historical test
+        # fixtures.  The public HTTP route always supplies all three v2.4
+        # guards, so a new browser flow can never enter this branch.
+        legacy_internal = (
+            request_id is None
+            and expected_updated_at is None
+            and expected_baseline_captured_at is None
+        )
+        if legacy_internal:
+            with self.database.session() as session:
+                batch = session.get(ProductTrafficBatch, batch_id)
+                if batch is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                if batch.status == "planned":
+                    prepared_at = self._now().astimezone(timezone.utc)
+                    batch_items = session.scalars(
+                        select(ProductTrafficBatchItem).where(
+                            ProductTrafficBatchItem.batch_id == batch.id
+                        )
+                    ).all()
+                    for batch_item in batch_items:
+                        snapshot = session.scalar(
+                            select(ProductDailySnapshot)
+                            .where(ProductDailySnapshot.item_id == batch_item.item_id)
+                            .order_by(
+                                ProductDailySnapshot.snapshot_date.desc(),
+                                ProductDailySnapshot.captured_at.desc(),
+                            )
+                            .limit(1)
+                        )
+                        if snapshot:
+                            batch_item.baseline_browse_count = snapshot.browse_count
+                            batch_item.baseline_collect_count = snapshot.collect_count
+                            batch_item.baseline_want_count = snapshot.want_count
+                            batch_item.baseline_inquiry_count = snapshot.inquiry_count
+                            batch_item.baseline_captured_at = prepared_at
+                            batch_item.baseline_source = "legacy_snapshot"
+                    batch.baseline_prepared_at = prepared_at
+                    batch.updated_at = prepared_at
+                    session.commit()
+                expected_updated_at = batch.updated_at
+                expected_baseline_captured_at = batch.baseline_prepared_at
+            request_id = f"legacy-start-{uuid4()}"
+        assert request_id is not None
+        assert expected_updated_at is not None
+        assert expected_baseline_captured_at is not None
+        payload = {
+            "batch_id": batch_id,
+            "expected_updated_at": self._utc(expected_updated_at).isoformat(),
+            "expected_baseline_captured_at": self._utc(
+                expected_baseline_captured_at
+            ).isoformat(),
+        }
+        payload_hash = self._payload_hash(payload)
+        ledger_revision = None
+        ledger_changed = False
+        with self.database.session() as session:
+            replay = self._existing_batch_event(
+                session,
+                request_id=request_id,
+                event_type="start",
+                payload_hash=payload_hash,
+            )
+            if replay:
+                batch = session.get(ProductTrafficBatch, replay.batch_id)
+                if batch is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                return self._traffic_batch_view(session, batch)
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
             if batch.status == "cancelled":
                 raise ProductTrafficConflict("已取消的批次不能开始")
-            if batch.status == "planned":
-                batch.started_at = utcnow()
-                batch.status = "running"
-                batch_items = session.scalars(
-                    select(ProductTrafficBatchItem).where(
-                        ProductTrafficBatchItem.batch_id == batch.id
+            if batch.status != "planned":
+                if legacy_internal:
+                    return self._traffic_batch_view(session, batch)
+                raise ProductTrafficConflict("批次已经开始；请刷新页面查看实际开始时间")
+            self._require_batch_revision(batch, expected_updated_at)
+            (
+                blocked_items,
+                blocked_until,
+                unfinished_observation,
+                global_attribution_gate,
+            ) = (
+                self._traffic_start_conflict(session, batch)
+            )
+            blocked_reason = self._traffic_start_block_reason(
+                blocked_items,
+                blocked_until,
+                unfinished_observation,
+                global_attribution_gate,
+            )
+            if blocked_reason:
+                raise ProductTrafficConflict(blocked_reason)
+            prepared_at = self._utc(batch.baseline_prepared_at)
+            expected_prepared = self._utc(expected_baseline_captured_at)
+            if prepared_at is None or not self._same_timestamp(
+                prepared_at, expected_prepared
+            ):
+                raise ProductTrafficConflict("T0 已变化，请刷新开始预览后重试")
+            transaction_now = self._now().astimezone(timezone.utc)
+            if prepared_at + timedelta(
+                minutes=self.settings.product_traffic_baseline_max_age_minutes
+            ) < transaction_now:
+                raise ProductTrafficConflict("T0 已超过 30 分钟，请重新刷新或填写")
+            batch_items = session.scalars(
+                select(ProductTrafficBatchItem).where(
+                    ProductTrafficBatchItem.batch_id == batch.id
+                )
+            ).all()
+            if not batch_items or any(
+                value.baseline_captured_at is None
+                or value.baseline_source
+                not in ({"remote_refresh", "manual", "legacy_snapshot"} if legacy_internal else {"remote_refresh", "manual"})
+                for value in batch_items
+            ):
+                raise ProductTrafficConflict("整批 T0 尚未准备完成")
+            monitors = {
+                value.item_id: value
+                for value in session.scalars(
+                    select(ProductMonitor).where(
+                        ProductMonitor.item_id.in_([item.item_id for item in batch_items])
                     )
                 ).all()
-                for batch_item in batch_items:
-                    snapshot = session.scalar(
-                        select(ProductDailySnapshot)
-                        .where(ProductDailySnapshot.item_id == batch_item.item_id)
-                        .order_by(ProductDailySnapshot.snapshot_date.desc())
-                        .limit(1)
+            }
+            if any(
+                (monitor := monitors.get(item.item_id)) is None
+                or monitor.ownership_status != "owned"
+                or not monitor.enabled
+                for item in batch_items
+            ):
+                raise ProductOwnershipRestricted("批次包含未验证为本人或未启用的商品")
+            started_at = self._minute_utc(transaction_now)
+            batch.started_at = started_at
+            batch.status = "running"
+            batch.updated_at = transaction_now
+            if self.traffic_growth is not None:
+                try:
+                    self.traffic_growth.sync_started_batch_in_session(
+                        session,
+                        batch=batch,
                     )
-                    if snapshot:
-                        batch_item.baseline_browse_count = snapshot.browse_count
-                        batch_item.baseline_collect_count = snapshot.collect_count
-                        batch_item.baseline_want_count = snapshot.want_count
-                        batch_item.baseline_inquiry_count = snapshot.inquiry_count
-                        batch_item.baseline_captured_at = snapshot.captured_at
+                except RuntimeError as exc:
+                    raise ProductTrafficConflict(str(exc)) from None
+            self._mark_plan_slot_executed(session, batch, transaction_now)
+            self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
             ledger_revision, ledger_changed = self._sync_traffic_expense_in_session(
                 session,
                 batch,
             )
+            result = self._traffic_batch_view(session, batch)
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="start",
+                payload_hash=payload_hash,
+                summary={
+                    "item_count": len(batch_items),
+                    "baseline_source": sorted(
+                        {value.baseline_source for value in batch_items}
+                    ),
+                },
+                result={
+                    "batch_id": batch.id,
+                    "started_at": started_at.isoformat(),
+                },
+            )
+            session.commit()
+        self._maintain_plans_after_write()
+        self.event_hub.publish_nowait(
+            {"type": "product_traffic_batch_updated", "batch_id": batch_id}
+        )
+        if ledger_changed:
+            self.event_hub.publish_nowait(
+                {
+                    "type": "ledger_updated",
+                    "revision": ledger_revision,
+                    "source": "product_traffic",
+                }
+            )
+        return result
+
+    def record_actual_overlap_start(
+        self,
+        batch_id: str,
+        *,
+        request_id: str,
+        expected_updated_at: datetime,
+        actual_started_at: datetime | None,
+        confirmed_already_purchased: bool,
+        items: list[dict],
+    ) -> ProductTrafficBatchView:
+        """Record a purchase that already happened despite an overlap guard.
+
+        This is deliberately separate from the clean start path: it records a
+        factual spend but permanently excludes the batch from attribution.
+        """
+
+        if not confirmed_already_purchased:
+            raise ProductTrafficConflict("请先确认这笔曝光已经在闲鱼真实购买")
+        if actual_started_at is not None:
+            raise ProductTrafficConflict(
+                "实际投放时间改为确认时由系统记录，请刷新页面后重新确认"
+            )
+        canonical_items = sorted(
+            [dict(value) for value in items],
+            key=lambda value: str(value.get("external_id", "")),
+        )
+        payload = {
+            "batch_id": batch_id,
+            "expected_updated_at": self._utc(expected_updated_at).isoformat(),
+            "confirmed_already_purchased": True,
+            "items": canonical_items,
+        }
+        payload_hash = self._payload_hash(payload)
+        ledger_revision = None
+        ledger_changed = False
+        with self.database.session() as session:
+            replay = self._existing_batch_event(
+                session,
+                request_id=request_id,
+                event_type="actual_start",
+                payload_hash=payload_hash,
+            )
+            if replay:
+                stored = session.get(ProductTrafficBatch, replay.batch_id)
+                if stored is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                return self._traffic_batch_view(session, stored)
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            if batch.status != "planned":
+                raise ProductTrafficConflict("只有尚未开始的批次可以补记实际投放")
+            self._require_batch_revision(batch, expected_updated_at)
+            transaction_now = self._now().astimezone(timezone.utc)
+            started_at = self._minute_utc(transaction_now)
+            batch_items = session.scalars(
+                select(ProductTrafficBatchItem)
+                .where(ProductTrafficBatchItem.batch_id == batch.id)
+                .order_by(ProductTrafficBatchItem.position)
+            ).all()
+            monitors = {
+                value.item_id: value
+                for value in session.scalars(
+                    select(ProductMonitor).where(
+                        ProductMonitor.item_id.in_([item.item_id for item in batch_items])
+                    )
+                ).all()
+            }
+            if not batch_items or any(
+                (monitor := monitors.get(item.item_id)) is None
+                or monitor.ownership_status != "owned"
+                or not monitor.enabled
+                for item in batch_items
+            ):
+                raise ProductOwnershipRestricted(
+                    "批次包含未验证为本人或未启用的商品"
+                )
+            overlap = self._traffic_overlap_details(
+                session,
+                batch,
+                anchor_at=started_at,
+                include_later_batches=True,
+            )
+            if not overlap["items"]:
+                raise ProductTrafficConflict(
+                    "该实际时间没有重叠商品，请使用正常的 T0 准备与开始流程"
+                )
+            if canonical_items:
+                manual_values = self._manual_baseline_values(
+                    session, batch, canonical_items
+                )
+                for batch_item in batch_items:
+                    (
+                        batch_item.baseline_browse_count,
+                        batch_item.baseline_collect_count,
+                        batch_item.baseline_want_count,
+                        batch_item.baseline_inquiry_count,
+                    ) = manual_values[batch_item.item_id]
+                    batch_item.baseline_captured_at = started_at
+                    batch_item.baseline_source = "manual"
+                batch.baseline_prepared_at = started_at
+                baseline_source = "manual"
+            else:
+                for batch_item in batch_items:
+                    batch_item.baseline_browse_count = 0
+                    batch_item.baseline_collect_count = 0
+                    batch_item.baseline_want_count = 0
+                    batch_item.baseline_inquiry_count = 0
+                    batch_item.baseline_captured_at = None
+                    batch_item.baseline_source = "missing"
+                batch.baseline_prepared_at = None
+                baseline_source = "missing"
+            batch.started_at = started_at
+            batch.status = "running"
+            batch.recording_mode = "actual_overlap"
+            batch.attribution_status = "overlap"
+            batch.updated_at = transaction_now
+            if self.traffic_growth is not None:
+                try:
+                    self.traffic_growth.sync_started_batch_in_session(
+                        session,
+                        batch=batch,
+                    )
+                except RuntimeError as exc:
+                    raise ProductTrafficConflict(str(exc)) from None
+            self._mark_plan_slot_executed(session, batch, transaction_now)
+            ledger_revision, ledger_changed = self._sync_traffic_expense_in_session(
+                session, batch
+            )
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="actual_start",
+                payload_hash=payload_hash,
+                summary={
+                    "item_count": len(batch_items),
+                    "overlap_item_count": len(
+                        {value["item_id"] for value in overlap["items"]}
+                    ),
+                    "conflicting_batch_count": len(overlap["batches"]),
+                    "baseline_source": baseline_source,
+                    "recording_mode": "actual_overlap",
+                },
+                result={
+                    "batch_id": batch.id,
+                    "started_at": started_at.isoformat(),
+                    "attribution_status": "overlap",
+                },
+            )
+            if baseline_source == "missing":
+                self._invalidate_batch_in_session(
+                    session,
+                    batch,
+                    reason="missing_baseline",
+                    invalidated_at=transaction_now,
+                )
+            else:
+                self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
             session.commit()
             result = self._traffic_batch_view(session, batch)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {"type": "product_traffic_batch_updated", "batch_id": batch_id}
         )
@@ -3379,7 +8250,7 @@ class ProductIntelligenceService:
         self,
         batch_id: str,
         *,
-        completed_at: datetime,
+        completed_at: datetime | None,
         actual_cost: float,
         total_exposure: int | None,
         note: str,
@@ -3390,11 +8261,16 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
+            if batch.status == "invalidated":
+                raise ProductTrafficConflict(
+                    "该批次已因基线无效终止观察，不能再记录套餐完成"
+                )
             if batch.status == "planned":
                 raise ProductTrafficConflict("请先点击“开始批次”记录 T0 基线")
             if batch.status == "cancelled":
                 raise ProductTrafficConflict("已取消的批次不能记录完成")
-            batch.completed_at = self._utc(completed_at)
+            completed = self._utc(completed_at) or self._now().astimezone(timezone.utc)
+            batch.completed_at = completed
             batch.actual_cost = round(actual_cost, 2)
             batch.total_exposure = total_exposure
             if note.strip():
@@ -3407,6 +8283,7 @@ class ProductIntelligenceService:
             )
             session.commit()
             result = self._traffic_batch_view(session, batch)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {"type": "product_traffic_batch_updated", "batch_id": batch_id}
         )
@@ -3425,7 +8302,7 @@ class ProductIntelligenceService:
         batch_id: str,
         *,
         checkpoint: str,
-        recorded_at: datetime,
+        recorded_at: datetime | None,
         items: list[dict],
         note: str,
     ) -> ProductTrafficBatchView:
@@ -3435,6 +8312,13 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
+            checkpoint_order = self._checkpoint_order_for_batch(batch)
+            if checkpoint not in checkpoint_order:
+                raise ProductTrafficConflict("该批次协议不包含这个观察检查点")
+            if batch.status == "invalidated":
+                raise ProductTrafficConflict(
+                    "该批次已因基线无效终止观察，不能新增或修改检查点"
+                )
             if batch.status not in {"running", "observing", "closed"}:
                 raise ProductTrafficConflict("批次尚未开始，不能记录观察数据")
             batch_items = session.scalars(
@@ -3448,7 +8332,19 @@ class ProductIntelligenceService:
             submitted = {str(value["external_id"]) for value in items}
             if submitted != set(by_external_id):
                 raise ProductTrafficConflict("每个检查点需要填写该批次的全部商品")
-            recorded = self._utc(recorded_at) or utcnow()
+            recorded = self._utc(recorded_at) or self._now().astimezone(timezone.utc)
+            started_at = self._utc(batch.started_at)
+            if started_at is None:
+                raise ProductTrafficConflict("批次缺少实际开始时间，不能记录检查点")
+            due_at = started_at + timedelta(hours=CHECKPOINT_HOURS[checkpoint])
+            if recorded < due_at:
+                due_label = self._traffic_datetime_label(due_at)
+                raise ProductTrafficConflict(
+                    f"{checkpoint.upper()} 尚未到记录时间；最早可在北京时间 {due_label} 保存"
+                )
+            now_utc = self._now().astimezone(timezone.utc)
+            if recorded > now_utc + timedelta(minutes=5):
+                raise ProductTrafficConflict("检查点记录时间不能晚于当前北京时间")
             for value in items:
                 batch_item = by_external_id[str(value["external_id"])]
                 submitted_counts = (
@@ -3477,9 +8373,11 @@ class ProductIntelligenceService:
                         ProductTrafficCheckpoint.checkpoint != checkpoint,
                     )
                 ).all()
-                submitted_rank = CHECKPOINT_ORDER.index(checkpoint)
+                submitted_rank = checkpoint_order.index(checkpoint)
                 for other in other_checkpoints:
-                    other_rank = CHECKPOINT_ORDER.index(other.checkpoint)
+                    if other.checkpoint not in checkpoint_order:
+                        continue
+                    other_rank = checkpoint_order.index(other.checkpoint)
                     other_counts = (
                         other.browse_count,
                         other.collect_count,
@@ -3522,12 +8420,43 @@ class ProductIntelligenceService:
                 existing.recorded_at = recorded
                 existing.source = "manual"
                 existing.note = note.strip()
-            if checkpoint == "h72":
+            job = session.scalar(
+                select(ProductTrafficCheckpointJob).where(
+                    ProductTrafficCheckpointJob.batch_id == batch.id,
+                    ProductTrafficCheckpointJob.checkpoint == checkpoint,
+                )
+            )
+            if job is not None:
+                job_rows = session.scalars(
+                    select(ProductTrafficCheckpointJobItem).where(
+                        ProductTrafficCheckpointJobItem.job_id == job.id
+                    )
+                ).all()
+                for row in job_rows:
+                    row.status = "completed"
+                    row.captured_at = recorded
+                    row.error_code = None
+                    row.error_detail = ""
+                    row.updated_at = recorded
+                job.status = "completed"
+                job.collected_count = len(job_rows)
+                job.total_count = len(job_rows)
+                job.captured_at = recorded
+                job.completed_at = recorded
+                job.capture_delay_minutes = max(
+                    0,
+                    int((recorded - self._utc(job.scheduled_for)).total_seconds() // 60),
+                )
+                job.last_error_code = None
+                job.last_error_detail = ""
+                job.updated_at = recorded
+            if checkpoint == self._terminal_checkpoint_for_batch(batch):
                 batch.status = "closed"
             elif batch.status == "running":
                 batch.status = "observing"
             session.commit()
             result = self._traffic_batch_view(session, batch)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {
                 "type": "product_traffic_checkpoint_recorded",
@@ -3537,11 +8466,164 @@ class ProductIntelligenceService:
         )
         return result
 
+    def update_traffic_checkpoint_collection_mode(
+        self,
+        batch_id: str,
+        *,
+        request_id: str,
+        expected_updated_at: datetime,
+        mode: str,
+    ) -> ProductTrafficBatchView:
+        if mode not in {"auto", "manual"}:
+            raise ProductTrafficConflict("不支持的检查点采集方式")
+        payload_hash = self._payload_hash(
+            {
+                "batch_id": batch_id,
+                "expected_updated_at": self._utc(expected_updated_at).isoformat(),
+                "mode": mode,
+            }
+        )
+        with self.database.session() as session:
+            replay = self._existing_batch_event(
+                session,
+                request_id=request_id,
+                event_type="checkpoint_mode",
+                payload_hash=payload_hash,
+            )
+            if replay:
+                stored = session.get(ProductTrafficBatch, replay.batch_id)
+                if stored is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                return self._traffic_batch_view(session, stored)
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            if batch.status in {"cancelled", "invalidated", "closed"}:
+                raise ProductTrafficConflict("该批次已结束，不能修改采集方式")
+            self._require_batch_revision(batch, expected_updated_at)
+            now = self._now().astimezone(timezone.utc)
+            batch.checkpoint_collection_mode = mode
+            batch.updated_at = now
+            jobs = self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
+            for job in jobs:
+                if job.status == "completed":
+                    continue
+                if mode == "manual" and self._utc(job.scheduled_for) <= now:
+                    job.status = "waiting_manual"
+                elif (
+                    mode == "auto"
+                    and job.status == "waiting_manual"
+                    and job.attempt_count == 0
+                ):
+                    job.status = "scheduled"
+                job.updated_at = now
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="checkpoint_mode",
+                payload_hash=payload_hash,
+                summary={"mode": mode},
+                result={"batch_id": batch.id, "mode": mode},
+            )
+            session.commit()
+            return self._traffic_batch_view(session, batch)
+
+    async def retry_traffic_checkpoint_collection(
+        self,
+        batch_id: str,
+        checkpoint: str,
+        *,
+        request_id: str,
+        expected_updated_at: datetime,
+    ) -> ProductTrafficBatchView:
+        if checkpoint not in CHECKPOINT_HOURS:
+            raise ProductTrafficConflict("不支持的观察检查点")
+        payload_hash = self._payload_hash(
+            {
+                "batch_id": batch_id,
+                "checkpoint": checkpoint,
+                "expected_updated_at": self._utc(expected_updated_at).isoformat(),
+            }
+        )
+        with self.database.session() as session:
+            replay = self._existing_batch_event(
+                session,
+                request_id=request_id,
+                event_type="checkpoint_retry",
+                payload_hash=payload_hash,
+            )
+            if replay:
+                stored = session.get(ProductTrafficBatch, replay.batch_id)
+                if stored is None:
+                    raise ProductRecordNotFound("曝光批次不存在")
+                return self._traffic_batch_view(session, stored)
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            if checkpoint not in self._checkpoint_order_for_batch(batch):
+                raise ProductTrafficConflict("该批次协议不包含这个观察检查点")
+            if batch.status not in {"running", "observing"}:
+                raise ProductTrafficConflict("该批次不再允许补采")
+            self._require_batch_revision(batch, expected_updated_at)
+            if batch.checkpoint_collection_mode != "auto":
+                raise ProductTrafficConflict("请先切换到自动采集方式")
+            job = session.scalar(
+                select(ProductTrafficCheckpointJob).where(
+                    ProductTrafficCheckpointJob.batch_id == batch.id,
+                    ProductTrafficCheckpointJob.checkpoint == checkpoint,
+                )
+            )
+            if job is None:
+                raise ProductRecordNotFound("检查点任务不存在")
+            if job.status == "completed":
+                return self._traffic_batch_view(session, batch)
+            rows = session.scalars(
+                select(ProductTrafficCheckpointJobItem).where(
+                    ProductTrafficCheckpointJobItem.job_id == job.id,
+                    ProductTrafficCheckpointJobItem.status != "completed",
+                )
+            ).all()
+            if not rows:
+                raise ProductTrafficConflict("没有需要补采的商品")
+            now = self._now().astimezone(timezone.utc)
+            for row in rows:
+                row.status = "pending"
+                row.error_code = None
+                row.error_detail = ""
+                row.updated_at = now
+            job.status = "scheduled"
+            job.last_error_code = None
+            job.last_error_detail = ""
+            job.updated_at = now
+            batch.updated_at = now
+            self._record_batch_event(
+                session,
+                batch_id=batch.id,
+                request_id=request_id,
+                event_type="checkpoint_retry",
+                payload_hash=payload_hash,
+                summary={"checkpoint": checkpoint, "missing_item_count": len(rows)},
+                result={"batch_id": batch.id, "checkpoint": checkpoint},
+            )
+            job_id = job.id
+            session.commit()
+        await self._run_traffic_checkpoint_job(job_id)
+        with self.database.session() as session:
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            return self._traffic_batch_view(session, batch)
+
     def cancel_traffic_batch(self, batch_id: str) -> ProductTrafficBatchView:
         with self.database.session() as session:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
+            if batch.status == "invalidated":
+                raise ProductTrafficConflict(
+                    "该批次已因基线无效终止观察，必须保留终止状态和真实投放事实"
+                )
             if batch.status in {"running", "observing", "closed"}:
                 raise ProductTrafficConflict("已经开始的批次不能取消，可继续补齐观察数据")
             batch.status = "cancelled"
@@ -3551,6 +8633,7 @@ class ProductIntelligenceService:
                     slot.status = "planned"
             session.commit()
             result = self._traffic_batch_view(session, batch)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {"type": "product_traffic_batch_updated", "batch_id": batch_id}
         )
@@ -3565,12 +8648,24 @@ class ProductIntelligenceService:
             slot = session.get(ProductOperatingPlanSlot, slot_id)
             if slot is None:
                 raise ProductRecordNotFound("经营计划日期不存在")
+            now_local = self._now()
             try:
                 slot_day = datetime.fromisoformat(slot.slot_date).date()
+                scheduled_hour, scheduled_minute = [
+                    int(value) for value in slot.scheduled_time.split(":", 1)
+                ]
+                slot_local = datetime.combine(
+                    slot_day,
+                    time(scheduled_hour, scheduled_minute),
+                    tzinfo=self.timezone,
+                )
             except ValueError:
-                slot_day = self._now().date()
-            if not locked and slot_day <= self._now().date() + timedelta(days=1):
-                raise ProductTrafficConflict("今天和未来 24 小时的计划保持稳定，不能解锁")
+                slot_local = now_local
+            if (
+                not locked
+                and now_local <= slot_local <= now_local + timedelta(hours=24)
+            ):
+                raise ProductTrafficConflict("未来 24 小时内的有效计划保持稳定，暂不能取消固定")
             slot.locked = locked
             session.commit()
             plan = session.get(ProductOperatingPlan, slot.plan_id)
@@ -3788,7 +8883,7 @@ class ProductIntelligenceService:
         effective_batch_count = int(
             session.scalar(
                 select(func.count(distinct(ProductTrafficCheckpoint.batch_id))).where(
-                    ProductTrafficCheckpoint.checkpoint.in_(("h24", "h72"))
+                    ProductTrafficCheckpoint.checkpoint.in_(("h24", "h48", "h72"))
                 )
             )
             or 0
@@ -4524,8 +9619,16 @@ class ProductIntelligenceService:
 
     def market_reference(self) -> ProductMarketReferenceView:
         with self.database.session() as session:
-            plan = self._ensure_market_keyword_plan(session)
-            session.commit()
+            plan = session.scalar(
+                select(ProductMarketKeywordPlan)
+                .where(ProductMarketKeywordPlan.plan_date == self._day_key())
+                .order_by(ProductMarketKeywordPlan.created_at.desc())
+                .limit(1)
+            )
+            if plan is None:
+                raise ProductRecordNotFound(
+                    "今日市场参考方案尚未初始化，请重启本机服务后重试"
+                )
             return self._market_reference_view(session, plan)
 
     def update_market_keyword(
@@ -4571,7 +9674,7 @@ class ProductIntelligenceService:
             else captured_at.astimezone(self.timezone)
         )
         if captured_local.date() != self._now().date():
-            raise ProductMarketConflict("只能导入今天在现有 Edge 中取得的搜索参考")
+            raise ProductMarketConflict("只能导入今天在现有 Ego Lite 中取得的搜索参考")
         if captured_local > self._now() + timedelta(minutes=5):
             raise ProductMarketConflict("采集时间不能晚于当前北京时间")
         with self.database.session() as session:
@@ -4645,6 +9748,7 @@ class ProductIntelligenceService:
                 reminder.snoozed_until = None
             session.commit()
             result_view = self._market_reference_view(session, plan)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {
                 "type": "product_market_reference_updated",
@@ -5258,6 +10362,7 @@ class ProductIntelligenceService:
             )
             session.commit()
             result = self._experiment_view(experiment)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {
                 "type": "product_modification_updated",
@@ -5320,6 +10425,7 @@ class ProductIntelligenceService:
                 experiment.status = "completed"
             session.commit()
             view = self._experiment_view(experiment)
+        self._maintain_plans_after_write()
         self.event_hub.publish_nowait(
             {
                 "type": "product_modification_updated",
@@ -5402,8 +10508,9 @@ class ProductIntelligenceService:
         excluded_collection_views = (
             current.collection_views_excluded if current else 0
         )
-        inquiries = current.inquiry_count if current else 0
-        converted = current.converted_project_count if current else 0
+        live_metrics = self._business_metrics(session, item.id)
+        inquiries = int(live_metrics["inquiry_count"])
+        converted = int(live_metrics["converted_project_count"])
         signal = self._product_signal_state(session, monitor, list(history_desc))
         return ProductView(
             external_id=item.external_id,
@@ -5431,10 +10538,14 @@ class ProductIntelligenceService:
                 else None
             ),
             inquiry_count=inquiries,
-            inbound_message_count=current.inbound_message_count if current else 0,
+            inbound_message_count=int(live_metrics["inbound_message_count"]),
             converted_project_count=converted,
-            revenue_total=current.revenue_total if current else 0,
-            profit_total=current.profit_total if current else 0,
+            revenue_total=float(live_metrics["revenue_total"]),
+            profit_total=float(live_metrics["profit_total"]),
+            project_expense_total=float(live_metrics["project_expense_total"]),
+            project_refund_total=float(live_metrics["project_refund_total"]),
+            profit_is_realtime=True,
+            linked_projects=list(live_metrics["linked_projects"]),
             inquiry_rate=round(inquiries / browse * 100, 2) if browse else None,
             deal_rate=round(converted / inquiries * 100, 2) if inquiries else None,
             snapshot_count=signal["snapshot_count"],
@@ -5472,7 +10583,6 @@ class ProductIntelligenceService:
         )
 
     def product(self, external_id: str) -> ProductView:
-        self.bootstrap_cached_state()
         with self.database.session() as session:
             item = session.scalar(select(Item).where(Item.external_id == external_id))
             if item is None:
@@ -5485,7 +10595,6 @@ class ProductIntelligenceService:
             return self._product_view(session, item, monitor)
 
     def overview(self) -> ProductIntelligenceView:
-        self.bootstrap_cached_state()
         with self.database.session() as session:
             monitors = session.scalars(
                 select(ProductMonitor).order_by(ProductMonitor.enabled.desc(), ProductMonitor.id)
@@ -5590,9 +10699,22 @@ class ProductIntelligenceService:
             )
             publish_timing = self._publish_timing(session)
             demand_opportunities = self._demand_opportunities(session)
-            plan = self._ensure_operating_plan(session)
-            market_plan = self._ensure_market_keyword_plan(session)
-            session.commit()
+            plan = session.scalar(
+                select(ProductOperatingPlan)
+                .where(ProductOperatingPlan.status == "current")
+                .order_by(ProductOperatingPlan.generated_at.desc())
+                .limit(1)
+            )
+            market_plan = session.scalar(
+                select(ProductMarketKeywordPlan)
+                .where(ProductMarketKeywordPlan.plan_date == today)
+                .order_by(ProductMarketKeywordPlan.created_at.desc())
+                .limit(1)
+            )
+            if plan is None or market_plan is None:
+                raise ProductRecordNotFound(
+                    "商品经营方案尚未初始化，请重启本机服务后重试"
+                )
             operating_plan = self._operating_plan_view(session, plan)
             traffic_batches = self._recent_traffic_batches(session)
             traffic_summary = self._traffic_summary(session, traffic_batches)

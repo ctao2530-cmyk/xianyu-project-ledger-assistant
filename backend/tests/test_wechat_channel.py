@@ -76,6 +76,29 @@ async def test_wechat_adapter_normalizes_mock_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wecom_image_normalization_keeps_media_id_ephemeral() -> None:
+    adapter = WeChatAdapter()
+    message = await adapter.receive_wecom_message(
+        {
+            "msgid": "wecom-image-1",
+            "external_userid": "wx-customer-image",
+            "open_kfid": "wk-image",
+            "send_time": 1785816000,
+            "origin": 3,
+            "msgtype": "image",
+            "image": {"media_id": "ephemeral-media-id"},
+        },
+        customer_name="微信图片客户",
+    )
+
+    assert message.message_type == "image"
+    assert message.direction == "inbound"
+    assert len(message.media) == 1
+    assert message.media[0].locator_type == "wecom_media_id"
+    assert message.media[0].locator == "ephemeral-media-id"
+
+
+@pytest.mark.asyncio
 async def test_wechat_webhook_reuses_message_ai_and_draft_pipeline(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'wechat-pipeline.db'}")
     database.create_all()

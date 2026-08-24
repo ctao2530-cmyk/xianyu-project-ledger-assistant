@@ -4,6 +4,7 @@ import type {
   CustomerUpdateValue,
   PaymentConfirmationValue,
   ProjectChangeOrderValue,
+  ProjectProductPreview,
   QuickAccountingFormValue,
   SettlementIssueValue,
 } from "../types";
@@ -174,6 +175,11 @@ export const mockLedgerService = {
           last_contact_at: value.lastContactAt,
           level: value.level,
           tags: value.tags,
+          current_need: value.currentNeed,
+          price_type: value.priceType,
+          price_amount: value.priceAmount,
+          next_action: value.nextAction,
+          notes: value.notes,
         }),
       });
     } catch {
@@ -257,6 +263,75 @@ export const mockLedgerService = {
     }
     if (!response.ok) {
       const detail = await responseMessage(response, `关系修正失败（${response.status}）`);
+      throw new Error(detail.message);
+    }
+    const payload = await response.json() as { revision: number; snapshot: LedgerSnapshot };
+    backendRevision = payload.revision;
+    backendConnected = true;
+    return cloneSnapshot(payload.snapshot);
+  },
+
+  async previewProjectProduct(
+    projectId: string,
+    targetItemExternalId: string | null,
+  ): Promise<ProjectProductPreview> {
+    if (!backendConnected || backendRevision === null) {
+      throw new LedgerBackendRequiredError("利润归属预览需要连接本机经营服务");
+    }
+    let response: Response;
+    try {
+      response = await fetch("/api/ledger/project-products/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_revision: backendRevision,
+          project_id: projectId,
+          target_item_external_id: targetItemExternalId,
+        }),
+      });
+    } catch {
+      throw new LedgerBackendRequiredError("本机经营服务暂时无法连接，无法预览利润归属");
+    }
+    if (response.status === 409) {
+      const detail = await responseMessage(response, "经营数据已经变化，请刷新后重新预览利润归属");
+      throw new LedgerRevisionConflictError(detail.message, detail.revision);
+    }
+    if (!response.ok) {
+      const detail = await responseMessage(response, `利润归属预览失败（${response.status}）`);
+      throw new Error(detail.message);
+    }
+    return response.json() as Promise<ProjectProductPreview>;
+  },
+
+  async commitProjectProduct(
+    preview: ProjectProductPreview,
+    requestId: string,
+  ): Promise<LedgerSnapshot> {
+    if (!backendConnected || backendRevision === null) {
+      throw new LedgerBackendRequiredError("确认利润归属需要连接本机经营服务");
+    }
+    let response: Response;
+    try {
+      response = await fetch("/api/ledger/project-products/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_id: requestId,
+          expected_revision: preview.revision,
+          preview_token: preview.preview_token,
+          project_id: preview.project_id,
+          target_item_external_id: preview.target_item_external_id,
+        }),
+      });
+    } catch {
+      throw new LedgerBackendRequiredError("本机经营服务暂时无法连接，本次利润归属没有修改");
+    }
+    if (response.status === 409) {
+      const detail = await responseMessage(response, "利润归属预览已经失效，请刷新后重试");
+      throw new LedgerRevisionConflictError(detail.message, detail.revision);
+    }
+    if (!response.ok) {
+      const detail = await responseMessage(response, `利润归属修改失败（${response.status}）`);
       throw new Error(detail.message);
     }
     const payload = await response.json() as { revision: number; snapshot: LedgerSnapshot };

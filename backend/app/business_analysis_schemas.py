@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .prediction.schemas import PredictionResult
+
 
 RecommendationStatus = Literal[
     "pending",
@@ -67,6 +69,12 @@ class ProjectAnalysisMetrics(BaseModel):
     contract_total: float
     confirmed_income: float
     outstanding_receivables: float
+    verified_progress_average: float = 0
+    actual_hours: float = 0
+    rework_hours: float = 0
+    blocker_count: int = 0
+    test_failure_count: int = 0
+    outcome_sample_count: int = 0
 
 
 class PeriodMetric(BaseModel):
@@ -206,6 +214,9 @@ class BusinessAnalysisOverview(BaseModel):
     data_sources: list[BusinessAnalysisDataSource]
     future_fields: list[BusinessAnalysisFutureField]
     data_gaps: list[str]
+    predictions: list[PredictionResult] = Field(default_factory=list)
+    prediction_run_id: str | None = None
+    prediction_snapshot_hash: str | None = None
     analysis_method: Literal[
         "evidence_rules_v1",
         "rules_plus_deepseek_v1",

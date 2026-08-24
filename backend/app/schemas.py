@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from .ai.requirements import RequirementAnalysisResult
 from .requirement_blueprints import RequirementBlueprintV2
@@ -79,6 +79,27 @@ class AIProviderStatusView(BaseModel):
     lead_model: str | None = None
 
 
+class XianyuConnectionRecoverRequest(BaseModel):
+    cookie: SecretStr
+
+
+class DeepSeekConnectionRecoverRequest(BaseModel):
+    api_key: SecretStr
+
+
+class ConnectionReloadRequest(BaseModel):
+    provider: Literal["xianyu", "deepseek"]
+
+
+class ConnectionRecoveryView(BaseModel):
+    provider: Literal["xianyu", "deepseek", "codex_cli"]
+    status: str
+    detail: str
+    configured: bool
+    persisted: bool
+    repair_command: str | None = None
+
+
 class ConversationListItem(BaseModel):
     id: int
     channel: str
@@ -102,6 +123,73 @@ class ConversationDetail(BaseModel):
     pending_message_id: int | None
     drafts: list[DraftView]
     ai_task: AITaskView | None
+
+
+class ConversationHistorySearchRequest(BaseModel):
+    query: str = Field(default="", max_length=100)
+    days: Literal[7, 30, 90, 365] = 30
+    limit: int = Field(default=100, ge=1, le=200)
+
+
+class ConversationHistorySearchItem(BaseModel):
+    external_conversation_id: str
+    customer_name: str
+    item_title: str | None
+    last_message: str
+    last_message_at: datetime
+    direction: Literal["inbound", "outbound"]
+    existing_conversation_id: int | None
+    known_message_count: int
+
+
+class ConversationHistoryPreviewRequest(BaseModel):
+    external_conversation_id: str = Field(min_length=1, max_length=128)
+    message_limit: int = Field(default=100, ge=1, le=200)
+
+
+class ConversationHistoryPreviewMessage(BaseModel):
+    platform_message_id: str
+    sender_name: str
+    direction: Literal["inbound", "outbound"]
+    message_type: str
+    content: str
+    received_at: datetime
+    import_status: Literal["new", "existing", "unsupported"]
+
+
+class ConversationHistoryPreviewView(BaseModel):
+    token: str
+    expires_at: datetime
+    external_conversation_id: str
+    customer_name: str
+    item: ItemView | None
+    item_warning: str | None = None
+    messages: list[ConversationHistoryPreviewMessage]
+    platform_message_count: int
+    existing_count: int
+    new_count: int
+    unsupported_count: int
+
+
+class ConversationHistoryCommitRequest(BaseModel):
+    request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,128}$")
+    preview_token: str = Field(min_length=16, max_length=256)
+    mark_latest_pending: bool = False
+
+
+class ConversationHistoryCommitView(BaseModel):
+    conversation_id: int
+    created_conversation: bool
+    platform_message_count: int
+    imported_count: int
+    existing_count: int
+    pending_message_id: int | None
+    draft_task_queued: bool
+    draft_task_id: int | None
+    image_candidate_count: int
+    image_stored_count: int
+    image_failed_count: int
+    idempotent: bool
 
 
 class SendRequest(BaseModel):
@@ -266,6 +354,8 @@ class StatusView(BaseModel):
     ai_reasoning_effort: str | None = None
     reply_mode: str = "custom"
     effective_reply_model: str | None = None
+    customer_reply_drafts_enabled: bool = False
+    customer_quote_conversion_enabled: bool = False
     reply_high_risk_routing_enabled: bool = True
     style_learning_enabled: bool = True
     style_sample_count: int = 0

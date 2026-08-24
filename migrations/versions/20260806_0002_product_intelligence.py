@@ -27,7 +27,14 @@ NEW_TABLES = (
 
 
 def upgrade() -> None:
-    Base.metadata.create_all(bind=op.get_bind(), checkfirst=True)
+    # Keep this revision temporally isolated from tables added by later
+    # migrations.  ``Base.metadata`` reflects today's model, not the 0002
+    # snapshot, so creating all metadata here would poison the remaining chain.
+    Base.metadata.create_all(
+        bind=op.get_bind(),
+        tables=[Base.metadata.tables[name] for name in NEW_TABLES],
+        checkfirst=True,
+    )
 
 
 def downgrade() -> None:

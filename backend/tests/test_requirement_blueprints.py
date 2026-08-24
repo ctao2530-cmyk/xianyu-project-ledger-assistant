@@ -24,6 +24,8 @@ from backend.app.models import (
     RequirementCase,
     RequirementCaseSource,
     RequirementDocumentVersion,
+    LedgerMutationRequest,
+    SalesLead,
 )
 from backend.app.requirement_blueprints import RequirementBlueprintV2
 from backend.app.schema_migrations import backfill_requirement_cases
@@ -162,6 +164,92 @@ def test_requirement_exchange_redacts_and_commits_idempotently(tmp_path) -> None
 
     assert view.document.schema_version == "2.0"
     assert view.document.title == "订单管理系统"
+
+
+def test_requirement_customer_is_created_only_after_explicit_confirmation(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'requirement-customer.db'}")
+    database.create_all()
+    ledger = LedgerService(database, tmp_path)
+    revision, _snapshot = ledger.get()
+    with database.session() as session:
+        session.add(
+            BusinessCustomer(id="same-name-existing", name="同名客户", source="xianyu")
+        )
+        conversation = Conversation(
+            channel="xianyu",
+            external_id="conversation-new-customer",
+            customer_id="external-new-customer",
+            customer_name="同名客户",
+        )
+        session.add(conversation)
+        session.commit()
+        conversation_id = conversation.id
+
+    service = RequirementExchangeService(database, ledger)
+    before = service.requirement_customer_status(conversation_id)
+    assert before["binding_status"] == "needs_confirmation"
+    assert before["will_create_customer"] is True
+
+    with database.session() as session:
+        assert len(list(session.scalars(select(BusinessCustomer)))) == 1
+        assert session.scalar(select(CustomerChannelIdentity)) is None
+
+    result = service.confirm_requirement_customer(
+        conversation_id,
+        request_id="requirement-customer-create-001",
+        expected_revision=revision,
+    )
+    repeated = service.confirm_requirement_customer(
+        conversation_id,
+        request_id="requirement-customer-create-001",
+        expected_revision=revision,
+    )
+
+    assert result["binding_status"] == "linked"
+    assert result["customer_id"] != "same-name-existing"
+    assert result["revision"] == revision + 1
+    assert result["idempotent"] is False
+    assert repeated["customer_id"] == result["customer_id"]
+    assert repeated["idempotent"] is True
+
+    with database.session() as session:
+        customers = list(session.scalars(select(BusinessCustomer)))
+        identities = list(session.scalars(select(CustomerChannelIdentity)))
+        requests = list(session.scalars(select(LedgerMutationRequest)))
+        assert len(customers) == 2
+        assert len(identities) == 1
+        assert identities[0].customer_id == result["customer_id"]
+        assert len(requests) == 1
+        assert session.scalar(select(SalesLead)) is None
+
+
+def test_requirement_customer_confirmation_is_revision_protected(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'requirement-customer-revision.db'}")
+    database.create_all()
+    ledger = LedgerService(database, tmp_path)
+    revision, _snapshot = ledger.get()
+    with database.session() as session:
+        conversation = Conversation(
+            channel="wechat",
+            external_id="conversation-revision",
+            customer_id="wechat-revision",
+            customer_name="版本客户",
+        )
+        session.add(conversation)
+        session.commit()
+        conversation_id = conversation.id
+
+    service = RequirementExchangeService(database, ledger)
+    with pytest.raises(RevisionConflict):
+        service.confirm_requirement_customer(
+            conversation_id,
+            request_id="requirement-customer-stale-001",
+            expected_revision=revision + 1,
+        )
+
+    with database.session() as session:
+        assert session.scalar(select(CustomerChannelIdentity)) is None
+        assert session.scalar(select(LedgerMutationRequest)) is None
 
 
 def test_conversation_detail_resolves_customer_from_requirement_case_source(tmp_path) -> None:

@@ -634,7 +634,7 @@ def test_business_analysis_alembic_migration_upgrades_existing_0013_database(
             )
         }
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-    assert version == ("20260811_0016",)
+        assert version == ("20260820_0036",)
     assert tables == {
         "business_analysis_records",
         "business_analysis_recommendation_events",

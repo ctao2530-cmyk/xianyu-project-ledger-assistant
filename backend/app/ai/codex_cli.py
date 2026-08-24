@@ -83,6 +83,12 @@ class CodexCliProvider(AIProvider):
         candidate = Path(configured).expanduser()
         return str(candidate) if candidate.is_file() else None
 
+    def _effective_timeout(self, timeout: float | None) -> float:
+        """Keep deep Codex jobs independent from fast-provider deadlines."""
+        if timeout is None:
+            return self.settings.codex_timeout_seconds
+        return max(timeout, self.settings.codex_timeout_seconds)
+
     async def _run_probe(
         self,
         *args: str,
@@ -228,7 +234,11 @@ class CodexCliProvider(AIProvider):
 
             self.health = ProviderHealth(
                 status="connected",
-                detail="Codex CLI 已安装、已登录且可执行",
+                detail=(
+                    "Codex CLI 已安装、已登录且可执行"
+                    if validate_execution
+                    else "Codex CLI 已安装并已登录"
+                ),
                 installed=True,
                 logged_in=True,
                 checked_at=datetime.now(timezone.utc),
@@ -361,6 +371,7 @@ class CodexCliProvider(AIProvider):
                 repair_command="npm install -g @openai/codex",
             )
         started = time.monotonic()
+        effective_timeout = self._effective_timeout(timeout)
         selection = model_selection or self.model_selection
         with tempfile.TemporaryDirectory(prefix="xianyu-codex-") as temp_dir:
             artifact_dir = Path(temp_dir)
@@ -393,7 +404,7 @@ class CodexCliProvider(AIProvider):
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(prompt.encode("utf-8")),
-                    timeout=timeout or self.settings.codex_timeout_seconds,
+                    timeout=effective_timeout,
                 )
             except asyncio.TimeoutError as exc:
                 process.kill()
@@ -406,7 +417,7 @@ class CodexCliProvider(AIProvider):
                 )
                 raise AIProviderError(
                     "codex_timeout",
-                    f"Codex 生成超时（{int(timeout or self.settings.codex_timeout_seconds)} 秒）",
+                    f"Codex 生成超时（{int(effective_timeout)} 秒）",
                     retryable=True,
                 ) from exc
             except asyncio.CancelledError:

@@ -37,8 +37,15 @@ NEW_TABLES = (
 def upgrade() -> None:
     # This first migration upgrades a mature pre-existing reply database. Using
     # SQLAlchemy metadata here is intentionally additive: existing message,
-    # draft and requirement tables are never recreated or altered.
-    Base.metadata.create_all(bind=op.get_bind(), checkfirst=True)
+    # draft and requirement tables are never recreated or altered.  Restrict
+    # creation to the tables owned by this revision; using the entire *current*
+    # metadata would accidentally create tables from future revisions and make
+    # a clean 0001 -> head migration fail on duplicate table creation.
+    Base.metadata.create_all(
+        bind=op.get_bind(),
+        tables=[Base.metadata.tables[name] for name in NEW_TABLES],
+        checkfirst=True,
+    )
 
 
 def downgrade() -> None:

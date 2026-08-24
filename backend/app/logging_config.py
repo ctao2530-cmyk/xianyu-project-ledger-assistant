@@ -18,6 +18,12 @@ class SecretRedactionFilter(logging.Filter):
         super().__init__()
         self.secrets = tuple(secret for secret in secrets if len(secret) >= 6)
 
+    def add_secret(self, secret: str) -> None:
+        """Register a credential that was updated while the service is running."""
+        if len(secret) < 6 or secret in self.secrets:
+            return
+        self.secrets = (*self.secrets, secret)
+
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
         for secret in self.secrets:
@@ -72,3 +78,13 @@ def configure_logging(
     # application logs while retaining warnings and errors.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def register_runtime_secret(secret: str) -> None:
+    """Extend every active redaction filter without logging the secret itself."""
+    if len(secret) < 6:
+        return
+    for handler in logging.getLogger().handlers:
+        for handler_filter in handler.filters:
+            if isinstance(handler_filter, SecretRedactionFilter):
+                handler_filter.add_secret(secret)

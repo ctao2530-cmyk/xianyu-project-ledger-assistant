@@ -34,12 +34,15 @@ from ..business_analysis_schemas import (
 )
 from ..database import Database
 from ..ledger import LedgerService
-from ..models import Conversation, LedgerState, ProductDailySnapshot, ProductMonitor
+from ..models import BusinessProject, Conversation, LedgerState, ProductDailySnapshot, ProductMonitor
+from ..prediction.schemas import PredictionResult
+from ..prediction.service import PredictionService
 from .business_analysis_reasoning import (
     BusinessAnalysisEvidenceError,
     BusinessAnalysisReasoningService,
 )
 from .ai_models import AIModelSettingsService
+from .project_outcomes import ProjectOutcomeService
 
 
 ANALYSIS_TIMEZONE = "Asia/Shanghai"
@@ -152,6 +155,8 @@ class BusinessAnalysisService:
         provider_selections: dict[str, AIModelSelection] | None = None,
         provider_enabled: dict[str, bool] | None = None,
         reasoning_timeout_seconds: float = 20,
+        predictions: PredictionService | None = None,
+        outcomes: ProjectOutcomeService | None = None,
     ) -> None:
         self.database = database
         self.ledger = ledger
@@ -164,6 +169,8 @@ class BusinessAnalysisService:
         self.provider_selections = dict(provider_selections or {})
         self.provider_enabled = dict(provider_enabled or {})
         self.reasoning_timeout_seconds = reasoning_timeout_seconds
+        self.predictions = predictions
+        self.outcomes = outcomes or ProjectOutcomeService()
 
     async def _resolve_reasoning(
         self,
@@ -288,7 +295,12 @@ class BusinessAnalysisService:
             projects=projects,
             finance=finance,
         )
-        insights, recommendations, data_gaps = self._decision_layer(metrics)
+        prediction_run = self.predictions.preview(now=generated_at) if self.predictions else None
+        prediction_rows = prediction_run.results if prediction_run else []
+        insights, recommendations, data_gaps = self._decision_layer(
+            metrics,
+            predictions=prediction_rows,
+        )
         recommendations = self._explain_recommendations(
             recommendations,
             insights=insights,
@@ -327,6 +339,11 @@ class BusinessAnalysisService:
             data_sources=[ledger_source, product_source, conversation_stats["source"]],
             future_fields=self._future_fields(),
             data_gaps=data_gaps,
+            predictions=prediction_rows,
+            prediction_run_id=prediction_run.id if prediction_run else None,
+            prediction_snapshot_hash=(
+                prediction_run.input_snapshot_hash if prediction_run else None
+            ),
             ledger_revision=revision,
             period=BusinessAnalysisPeriod(
                 timezone=self.timezone_name,
@@ -347,6 +364,8 @@ class BusinessAnalysisService:
                 label = "商品经营快照"
             elif reference.startswith("conversations"):
                 label = "客户沟通时间元数据"
+            elif reference.startswith("prediction."):
+                label = "本地预测引擎"
             elif reference.startswith("ledger.customers"):
                 label = "客户关系账本"
             elif reference.startswith("ledger.projects"):
@@ -435,6 +454,20 @@ class BusinessAnalysisService:
             "metrics": result.metrics.model_dump(mode="json"),
             "data_sources": [row.model_dump(mode="json") for row in result.data_sources],
             "data_gaps": result.data_gaps,
+            "prediction_snapshot_hash": result.prediction_snapshot_hash,
+            "predictions": [
+                {
+                    "target": row.target,
+                    "entity_type": row.entity_type,
+                    "entity_id": row.entity_id,
+                    "prediction_value": row.prediction_value,
+                    "score": row.score,
+                    "risk_level": row.risk_level,
+                    "data_sufficiency": row.data_sufficiency,
+                    "model_version": row.model_version,
+                }
+                for row in result.predictions
+            ],
         }
         encoded = json.dumps(
             payload,
@@ -505,6 +538,18 @@ class BusinessAnalysisService:
             return existing.result
 
         baseline = self.overview(now=now)
+        if self.predictions is not None:
+            prediction_run = self.predictions.run(
+                request_id=f"prediction:{request_id}",
+                now=now,
+            )
+            baseline = baseline.model_copy(
+                update={
+                    "predictions": prediction_run.results,
+                    "prediction_run_id": prediction_run.id,
+                    "prediction_snapshot_hash": prediction_run.input_snapshot_hash,
+                }
+            )
         snapshot_hash = self.snapshot_hash(baseline)
         result = baseline
         reasoning = await self._resolve_reasoning(
@@ -883,6 +928,23 @@ class BusinessAnalysisService:
                 if row.get("projectId") == project_id
             )
             outstanding += max(0.0, _number(project.get("totalAmount")) - gross - uncollectible)
+        outcome_rows = []
+        with self.database.session() as session:
+            relational_projects = {
+                row.id: row for row in session.scalars(select(BusinessProject))
+            }
+            for project in projects:
+                project_id = str(project.get("id") or "")
+                relational = relational_projects.get(project_id)
+                if not relational:
+                    continue
+                outcome_rows.append(
+                    self.outcomes.build(
+                        session,
+                        project_id,
+                        verified_progress=max(0, min(100, int(relational.progress or 0))),
+                    )
+                )
         return ProjectAnalysisMetrics(
             total=len(projects),
             status_counts=dict(statuses),
@@ -894,6 +956,15 @@ class BusinessAnalysisService:
             ),
             confirmed_income=finance.all_time_income,
             outstanding_receivables=_round_money(outstanding),
+            verified_progress_average=(
+                round(sum(row.verified_progress for row in outcome_rows) / len(outcome_rows), 2)
+                if outcome_rows else 0
+            ),
+            actual_hours=round(sum(row.actual_hours for row in outcome_rows), 4),
+            rework_hours=round(sum(row.rework_hours for row in outcome_rows), 4),
+            blocker_count=sum(row.blocker_count for row in outcome_rows),
+            test_failure_count=sum(row.test_failure_count for row in outcome_rows),
+            outcome_sample_count=len(outcome_rows),
         )
 
     def _ledger_source(self, snapshot: dict[str, Any]) -> BusinessAnalysisDataSource:
@@ -932,6 +1003,8 @@ class BusinessAnalysisService:
     def _decision_layer(
         self,
         metrics: BusinessAnalysisMetrics,
+        *,
+        predictions: list[PredictionResult] | None = None,
     ) -> tuple[
         list[BusinessAnalysisInsight],
         list[BusinessAnalysisRecommendation],
@@ -944,6 +1017,7 @@ class BusinessAnalysisService:
         customers = metrics.customers
         projects = metrics.projects
         finance = metrics.finance
+        prediction_rows = predictions or []
 
         if products.owned_products == 0:
             data_gaps.append("缺少已验证属于当前卖家的商品")
@@ -1250,6 +1324,172 @@ class BusinessAnalysisService:
                     reason=f"当前仍可收余额为 ¥{projects.outstanding_receivables:.2f}，需要保持合同额与确认到账口径一致。",
                     target_page="收入记录",
                     evidence_refs=["ledger.projects.outstanding_receivables"],
+                )
+            )
+
+        workload = next(
+            (row for row in prediction_rows if row.target == "workload_14d"),
+            None,
+        )
+        if workload is not None and workload.risk_level in {"high", "overloaded"}:
+            workload_value = workload.prediction_value or 0
+            workload_ref = "prediction.workload_14d.prediction_value"
+            workload_evidence = [workload_ref, *workload.evidence_refs]
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="predicted-workload-pressure",
+                    domain="projects",
+                    severity="critical" if workload.risk_level == "overloaded" else "warning",
+                    title="未来 14 天工作负载偏高",
+                    reason=(
+                        f"本地规则预计未来 14 天负载率为 {workload_value:.1f}%，"
+                        f"当前等级为 {workload.risk_level}；这是容量预测，不是项目延期概率。"
+                    ),
+                    evidence_refs=workload_evidence,
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="review-future-workload",
+                    domain="projects",
+                    priority="high",
+                    title="人工校准未来两周排期",
+                    action="核对剩余工时、每日可用工时和交付顺序，人工调整排期或范围。",
+                    reason="容量规则显示未来两周接近或超过可用工时，应先验证排期再承诺新增交付。",
+                    target_page="项目管理",
+                    execution_mode="manual",
+                    evidence_refs=workload_evidence,
+                )
+            )
+
+        project_risks = [
+            row
+            for row in prediction_rows
+            if row.target == "project_delay_risk"
+            and row.risk_level == "high"
+            and row.entity_id
+        ]
+        if project_risks:
+            highest_project = max(
+                project_risks,
+                key=lambda row: (row.score or 0, row.entity_id or ""),
+            )
+            project_ref = f"prediction.project_delay_risk.{highest_project.entity_id}.score"
+            project_evidence = [project_ref, *highest_project.evidence_refs]
+            insights.append(
+                BusinessAnalysisInsight(
+                    id=f"predicted-project-delay-{highest_project.entity_id}",
+                    domain="projects",
+                    severity="critical",
+                    title="存在高延期风险分项目",
+                    reason=(
+                        f"{highest_project.entity_label or '当前项目'}的延期风险分为 "
+                        f"{highest_project.score or 0:.0f}/100；该分数来自透明规则，不是延期概率。"
+                    ),
+                    evidence_refs=project_evidence,
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id=f"review-project-delay-{highest_project.entity_id}",
+                    domain="projects",
+                    entity_type="project",
+                    entity_id=highest_project.entity_id,
+                    entity_label=highest_project.entity_label,
+                    target_scope="entity",
+                    priority="high",
+                    title="人工复核高风险项目",
+                    action="核对剩余任务、可用工时、交付边界和待确认事项，再决定是否调整计划。",
+                    reason="延期风险分已进入高风险区间，需要人工确认真实阻塞和可执行的收口节点。",
+                    target_page="项目管理",
+                    execution_mode="manual",
+                    evidence_refs=project_evidence,
+                )
+            )
+
+        urgent_customers = [
+            row
+            for row in prediction_rows
+            if row.target == "customer_followup_priority"
+            and row.risk_level == "urgent"
+            and row.entity_id
+        ]
+        if urgent_customers:
+            highest_customer = max(
+                urgent_customers,
+                key=lambda row: (row.score or 0, row.entity_id or ""),
+            )
+            customer_ref = (
+                f"prediction.customer_followup_priority.{highest_customer.entity_id}.score"
+            )
+            customer_evidence = [customer_ref, *highest_customer.evidence_refs]
+            insights.append(
+                BusinessAnalysisInsight(
+                    id=f"predicted-customer-priority-{highest_customer.entity_id}",
+                    domain="customers",
+                    severity="warning",
+                    title="存在今日优先跟进客户",
+                    reason=(
+                        f"{highest_customer.entity_label or '当前客户'}的跟进优先级为 "
+                        f"{highest_customer.score or 0:.0f}/100；这是处理顺序，不是成交概率。"
+                    ),
+                    evidence_refs=customer_evidence,
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id=f"review-customer-priority-{highest_customer.entity_id}",
+                    domain="customers",
+                    entity_type="customer",
+                    entity_id=highest_customer.entity_id,
+                    entity_label=highest_customer.entity_label,
+                    target_scope="entity",
+                    priority="high",
+                    title="人工处理今日优先客户",
+                    action="打开客户记录核对等待回复、需求和报价状态，再由你决定是否跟进。",
+                    reason="本地规则根据已绑定关系和沟通元数据将该客户列为今日优先处理项。",
+                    target_page="客户管理",
+                    execution_mode="manual",
+                    evidence_refs=customer_evidence,
+                )
+            )
+
+        cashflow = next(
+            (row for row in prediction_rows if row.target == "cashflow_30d"),
+            None,
+        )
+        if (
+            cashflow is not None
+            and cashflow.data_sufficiency in {"medium", "high"}
+            and cashflow.prediction_value is not None
+            and cashflow.prediction_value < 0
+        ):
+            cashflow_ref = "prediction.cashflow_30d.prediction_value"
+            cashflow_evidence = [cashflow_ref, *cashflow.evidence_refs]
+            insights.append(
+                BusinessAnalysisInsight(
+                    id="predicted-negative-cashflow",
+                    domain="finance",
+                    severity="critical",
+                    title="未来 30 天现金流预测为负",
+                    reason=(
+                        f"已知现金流与合格历史基线合计预测为 ¥{cashflow.prediction_value:.2f}；"
+                        "该结果不包含虚构订单收入。"
+                    ),
+                    evidence_refs=cashflow_evidence,
+                )
+            )
+            recommendations.append(
+                BusinessAnalysisRecommendation(
+                    id="review-predicted-cashflow",
+                    domain="finance",
+                    priority="high",
+                    title="人工复核未来 30 天现金安排",
+                    action="核对确定性待回款和已知支出，必要时调整支出节奏或回款跟进。",
+                    reason="现金流基线为负时应优先核对已知事实，不自动修改账本或项目。",
+                    target_page="收入记录",
+                    execution_mode="manual",
+                    evidence_refs=cashflow_evidence,
                 )
             )
 

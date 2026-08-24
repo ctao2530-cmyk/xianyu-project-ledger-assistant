@@ -72,6 +72,27 @@ def sample_input(message: str = "能做一个网页吗？") -> AIInput:
     )
 
 
+def test_codex_model_timeout_is_independent_from_fast_channel_deadlines() -> None:
+    settings = Settings(
+        _env_file=None,
+        codex_command="codex",
+        codex_timeout_seconds=300,
+    )
+    provider = CodexCliProvider(settings)
+
+    assert provider._effective_timeout(None) == 300
+    assert provider._effective_timeout(15) == 300
+    assert provider._effective_timeout(20) == 300
+    assert provider._effective_timeout(420) == 420
+
+
+def test_deepseek_fast_timeout_remains_independent() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.deepseek_timeout_seconds == 12
+    assert settings.codex_timeout_seconds == 300
+
+
 @pytest.mark.asyncio
 async def test_codex_provider_uses_login_and_retries_invalid_json_once(tmp_path: Path) -> None:
     script, counter = make_fake_codex(

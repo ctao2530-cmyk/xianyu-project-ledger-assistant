@@ -12,7 +12,9 @@ from backend.app.codex_plan_schemas import CodexDevelopmentPlanDocument
 from backend.app.database import Database
 from backend.app.ledger import LedgerService
 from backend.app.models import (
+    BusinessProject,
     BusinessTask,
+    CodexAcceptancePoint,
     CodexDevelopmentPlan,
     CodexProjectBinding,
     RequirementCase,
@@ -215,7 +217,7 @@ async def test_plan_generation_edit_and_confirm_are_versioned_and_idempotent(tmp
     assert len(confirmed["task_ids"]) == 1
     assert repeated["idempotent"] is True
     current_revision, snapshot = ledger.get()
-    assert current_revision == revision + 1
+    assert current_revision == revision + 2
     assert len([row for row in snapshot["tasks"] if row["projectId"] == confirmed["project_id"]]) == 1
     assert next(row for row in snapshot["projects"] if row["id"] == confirmed["project_id"])["estimatedHours"] == 7
     with database.session() as session:
@@ -224,6 +226,58 @@ async def test_plan_generation_edit_and_confirm_are_versioned_and_idempotent(tmp
         assert task is not None and task.task_key == "DEV-001"
         assert task.actual_hours == 0
         assert plan is not None and plan.status == "confirmed"
+
+    # A later plan version must immediately reweight verified delivery while
+    # preserving the stable task and its already verified acceptance point.
+    with database.session() as session:
+        point = session.scalar(select(CodexAcceptancePoint))
+        assert point is not None
+        point.status = "verified"
+        session.flush()
+        current_revision, _ = service.progress.sync_verified_progress(
+            session,
+            ledger,
+            confirmed["project_id"],
+            expected_revision=current_revision,
+        )
+        session.commit()
+
+    generated_v2 = await service.generate(
+        request_id="generate-plan-002",
+        requirement_case_id="case-1",
+        expected_requirement_version=1,
+        binding_id=None,
+    )
+    draft_v2 = generated_v2.document.model_copy(deep=True)
+    draft_v2.tasks[0].estimated_hours = 7
+    added_task = draft_v2.tasks[0].model_copy(deep=True)
+    added_task.task_key = "DEV-002"
+    added_task.title = "补充订单回归"
+    added_task.acceptance_points[0].point_key = "DEV-002-AC1"
+    added_task.acceptance_points[0].title = "回归测试通过"
+    draft_v2.tasks.append(added_task)
+    updated_v2 = service.update_draft(
+        generated_v2.id,
+        request_id="update-plan-002",
+        expected_updated_at=generated_v2.updated_at,
+        document=draft_v2,
+    )
+    confirmed_v2 = service.confirm(
+        generated_v2.id,
+        request_id="confirm-plan-002",
+        expected_updated_at=updated_v2.updated_at,
+        expected_requirement_version=1,
+        expected_revision=current_revision,
+    )
+    assert confirmed_v2["revision"] == current_revision + 2
+    with database.session() as session:
+        project = session.get(BusinessProject, confirmed["project_id"])
+        points = list(session.scalars(select(CodexAcceptancePoint)))
+        assert project is not None and project.progress == 50
+        assert {point.point_key: point.status for point in points} == {
+            "DEV-001-AC1": "verified",
+            "DEV-002-AC1": "pending",
+        }
 
 
 @pytest.mark.asyncio

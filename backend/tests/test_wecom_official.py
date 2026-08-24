@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from backend.app.channels.base import ChannelMedia
 from backend.app.channels.wechat import WeChatAdapter, WechatMockProvider
 from backend.app.channels.wecom import (
     WeComAPIClient,
@@ -332,3 +333,31 @@ async def test_wecom_healthcheck_verifies_customer_service_permission(tmp_path) 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         client = WeComAPIClient(settings, http_client=http_client)
         await client.healthcheck()
+
+
+@pytest.mark.asyncio
+async def test_wecom_media_download_refreshes_expired_token_without_exposing_media_id(tmp_path) -> None:
+    settings = wecom_settings(tmp_path)
+    tokens = iter(["expired-token", "fresh-token"])
+    requested_media_ids: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/cgi-bin/gettoken":
+            return httpx.Response(
+                200,
+                json={"errcode": 0, "access_token": next(tokens), "expires_in": 7200},
+            )
+        if request.url.path == "/cgi-bin/media/get":
+            requested_media_ids.append(request.url.params["media_id"])
+            if request.url.params["access_token"] == "expired-token":
+                return httpx.Response(200, json={"errcode": 42001, "errmsg": "token expired"})
+            return httpx.Response(200, content=b"original-wecom-image", headers={"content-type": "image/png"})
+        raise AssertionError(request.url.path)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = WeComAPIClient(settings, http_client=http_client)
+        content = await client.fetch_media(ChannelMedia("wecom_media_id", "ephemeral-media-id"))
+
+    assert content.data == b"original-wecom-image"
+    assert content.mime_type == "image/png"
+    assert requested_media_ids == ["ephemeral-media-id", "ephemeral-media-id"]

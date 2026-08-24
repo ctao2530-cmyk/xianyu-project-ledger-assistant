@@ -7,7 +7,6 @@ import {
   CaretRight,
   ChartBar,
   CheckCircle,
-  CheckSquare,
   CloudArrowUp,
   ChatCircleDots,
   Copy,
@@ -22,12 +21,13 @@ import {
   GearSix,
   Heart,
   Info,
+  Key,
   Lock,
   MagnifyingGlass,
   Palette,
   PencilSimple,
+  PlugsConnected,
   Plus,
-  RocketLaunch,
   ShieldCheck,
   SquaresFour,
   Sparkle,
@@ -36,9 +36,9 @@ import {
   Student,
   Table,
   Target,
+  Timer,
   Trash,
   TrendUp,
-  Trophy,
   User,
   UserPlus,
   WechatLogo,
@@ -63,11 +63,11 @@ import {
   YAxis,
 } from "recharts";
 import { type FormEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import type { CustomerLevel, LedgerSnapshot, ProjectKind } from "../types";
+import type { LedgerSnapshot, ProjectKind } from "../types";
 import type { CustomerRequirementRoute } from "../App";
 import { getBusinessSummary } from "../data/businessMetrics";
 import { acceptMigratedLedger, getLegacyLedgerSnapshot, isLedgerBackendConnected } from "../data/mockService";
-import { localPlatformService, type AIProviderStatus, type MigrationPreview, type PlatformStatus, type ProductIntelligenceView, type ProductSnapshotView, type ProductView } from "../data/localPlatformService";
+import { localPlatformService, type AIProviderStatus, type ConnectionRecoveryResult, type ConnectionRecoveryTarget, type MigrationPreview, type PlatformStatus, type ProductIntelligenceView, type ProductSnapshotView, type ProductView } from "../data/localPlatformService";
 import { runPageTransition } from "../utils/pageTransition";
 import {
   AIWorkspacePage,
@@ -82,6 +82,9 @@ import { CustomerMessagesPage } from "./CustomerMessagesPage";
 import { ProductIntelligencePage } from "./ProductIntelligencePage";
 import { CustomerRequirementBlueprintPage } from "./CustomerRequirementBlueprintPage";
 import { BusinessAnalysisPage } from "./BusinessAnalysisPage";
+import { ConnectionRecoveryDrawer } from "./ConnectionRecoveryDrawer";
+import { GlobalAgentSettingsCard } from "../components/GlobalAgentSettingsCard";
+import { CustomerCreateDialog } from "../components/CustomerCreateDialog";
 
 export type OtherPageName =
   | "客户消息"
@@ -92,7 +95,6 @@ export type OtherPageName =
   | "客户管理"
   | "数据统计"
   | "经营分析中心"
-  | "目标计划"
   | "AI经营助手"
   | "设置中心";
 
@@ -111,6 +113,7 @@ export type SettingsSectionName =
   | "界面主题";
 
 type ActionKind = "project" | "expense" | "customer";
+type CrudActionKind = Exclude<ActionKind, "customer">;
 
 interface OtherPagesProps {
   page: OtherPageName;
@@ -289,9 +292,8 @@ interface CrudValue {
   durationDays: string;
   projectId: string;
   category: string;
-  source: string;
-  level: CustomerLevel;
   projectKind: ProjectKind;
+  sourceItemExternalId: string;
 }
 
 function localDateTimeInput(value?: string) {
@@ -301,9 +303,9 @@ function localDateTimeInput(value?: string) {
   return date.toISOString().slice(0, 16);
 }
 
-function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "client", onClose, onCreated }: { kind: ActionKind; snapshot: LedgerSnapshot; editingExpenseId?: string | null; initialProjectKind?: ProjectKind; onClose: () => void; onCreated: (kind: ActionKind, value: CrudValue) => void }) {
+function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "client", onClose, onCreated }: { kind: CrudActionKind; snapshot: LedgerSnapshot; editingExpenseId?: string | null; initialProjectKind?: ProjectKind; onClose: () => void; onCreated: (kind: CrudActionKind, value: CrudValue) => void }) {
   const editingExpense = snapshot.expenses.find((item) => item.id === editingExpenseId);
-  const labels = kind === "project" ? { title: "新建项目", name: "项目名称", amount: "项目预算" } : kind === "expense" ? { title: editingExpenseId ? "编辑支出" : "记录支出", name: "支出项目", amount: "支出金额" } : { title: "新增客户", name: "客户名称", amount: "联系电话" };
+  const labels = kind === "project" ? { title: "新建项目", name: "项目名称", amount: "项目预算" } : { title: editingExpenseId ? "编辑支出" : "记录支出", name: "支出项目", amount: "支出金额" };
   const [name, setName] = useState(editingExpense?.name || "");
   const [amount, setAmount] = useState(editingExpense ? String(editingExpense.amount) : "");
   const [paidAt, setPaidAt] = useState(localDateTimeInput(editingExpense?.paidAt));
@@ -312,28 +314,43 @@ function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "cli
   const [durationDays, setDurationDays] = useState(String(snapshot.settings.defaultDurationDays || 30));
   const [projectId, setProjectId] = useState(editingExpense?.projectId || snapshot.projects[0]?.id || "");
   const [category, setCategory] = useState(editingExpense?.category || "other");
-  const [source, setSource] = useState("xianyu");
-  const [level, setLevel] = useState<CustomerLevel>("C");
   const [projectKind, setProjectKind] = useState<ProjectKind>(initialProjectKind);
+  const [sourceItemExternalId, setSourceItemExternalId] = useState("");
+  const [ownedProducts, setOwnedProducts] = useState<ProductView[]>([]);
+  const [productsLoading, setProductsLoading] = useState(false);
   const [error, setError] = useState("");
+  useEffect(() => {
+    if (kind !== "project" || projectKind !== "client") return;
+    let active = true;
+    setProductsLoading(true);
+    void localPlatformService.productIntelligence()
+      .then((value) => {
+        if (active) setOwnedProducts(value.products.filter((product) => product.ownership_status === "owned"));
+      })
+      .catch(() => {
+        if (active) setOwnedProducts([]);
+      })
+      .finally(() => {
+        if (active) setProductsLoading(false);
+      });
+    return () => { active = false; };
+  }, [kind, projectKind]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!name.trim()) { setError("请填写名称"); return; }
-    if (kind === "customer" && !amount.trim()) { setError("请填写联系电话"); return; }
     if (kind === "expense" && (!amount.trim() || Number(amount) <= 0)) { setError("金额必须大于 0"); return; }
     if (kind === "expense" && !paidAt) { setError("请选择支出时间"); return; }
     if (kind === "project" && projectKind === "client" && (!amount.trim() || Number(amount) <= 0)) { setError("请填写大于 0 的项目预算"); return; }
     if (kind === "project" && projectKind === "client" && !customerName.trim()) { setError("请填写关联客户"); return; }
-    onCreated(kind, { name: name.trim(), amount: kind === "project" && projectKind === "personal" ? "0" : amount.trim(), paidAt, notes: notes.trim(), customerName: projectKind === "personal" ? "" : customerName.trim(), durationDays, projectId, category, source, level, projectKind });
+    onCreated(kind, { name: name.trim(), amount: kind === "project" && projectKind === "personal" ? "0" : amount.trim(), paidAt, notes: notes.trim(), customerName: projectKind === "personal" ? "" : customerName.trim(), durationDays, projectId, category, projectKind, sourceItemExternalId: projectKind === "client" ? sourceItemExternalId : "" });
   };
   return <div className="page-modal-layer"><button className="page-modal-backdrop" aria-label="关闭弹窗" onClick={onClose} /><form className="page-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label={labels.title}>
     <div className="page-modal-head"><div><span>快速录入</span><h2>{labels.title}</h2></div><button type="button" aria-label="关闭" onClick={onClose}><X size={20} /></button></div>
     {kind === "project" && <div className="modal-project-kind" role="group" aria-label="项目分类"><span>项目分类</span><div><button type="button" className={projectKind === "personal" ? "active" : ""} aria-pressed={projectKind === "personal"} onClick={() => setProjectKind("personal")}><Student size={17} />个人项目</button><button type="button" className={projectKind === "client" ? "active" : ""} aria-pressed={projectKind === "client"} onClick={() => setProjectKind("client")}><Briefcase size={17} />接单项目</button></div><small>{projectKind === "personal" ? "管理产品、开源项目或个人成长计划" : "关联客户、报价、回款与交付"}</small></div>}
     <label><span>{labels.name}</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder={`请输入${labels.name}`} autoFocus /></label>
     {(kind !== "project" || projectKind === "client") && <label><span>{labels.amount}</span><input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={`请输入${labels.amount}`} /></label>}
-    {kind === "project" && <>{projectKind === "client" && <label><span>关联客户</span><input list="modal-customer-options" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="选择或输入客户名称" /><datalist id="modal-customer-options">{snapshot.customers.map((customer) => <option value={customer.name} key={customer.id} />)}</datalist></label>}<label><span>预计工期（天）</span><input type="number" min="1" value={durationDays} onChange={(event) => setDurationDays(event.target.value)} /></label></>}
+    {kind === "project" && <>{projectKind === "client" && <><label><span>关联客户</span><input list="modal-customer-options" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="选择或输入客户名称" /><datalist id="modal-customer-options">{snapshot.customers.map((customer) => <option value={customer.name} key={customer.id} />)}</datalist></label><label><span>来源商品（可选）</span><select aria-label="来源商品" disabled={productsLoading} value={sourceItemExternalId} onChange={(event) => setSourceItemExternalId(event.target.value)}><option value="">{productsLoading ? "正在读取本人商品…" : "暂不关联，可稍后在驾驶舱绑定"}</option>{ownedProducts.map((product) => <option value={product.external_id} key={product.external_id}>{product.title}</option>)}</select><small className="page-modal-field-note">只显示当前账号已确认的本人商品；一件商品可汇总多个项目。</small></label></>}<label><span>预计工期（天）</span><input type="number" min="1" value={durationDays} onChange={(event) => setDurationDays(event.target.value)} /></label></>}
     {kind === "expense" && <><label><span>支出时间</span><input type="datetime-local" value={paidAt} onChange={(event) => setPaidAt(event.target.value)} /></label><label><span>支出类别</span><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)}><option value="software">软件订阅</option><option value="outsourcing">外包服务</option><option value="server">服务器</option><option value="office">办公支出</option><option value="traffic">流量曝光</option><option value="refund">退款</option><option value="other">其他</option></select></label><label><span>关联项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">不关联项目</option>{snapshot.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label></>}
-    {kind === "customer" && <><label><span>客户来源</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="xianyu">闲鱼</option><option value="wechat">微信</option><option value="referral">转介绍</option><option value="other">其他</option></select></label><label><span>客户等级</span><select value={level} onChange={(event) => setLevel(event.target.value as CustomerLevel)}><option value="A">A 级</option><option value="B">B 级</option><option value="C">C 级</option></select></label></>}
     <label><span>备注</span><textarea rows={4} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="补充说明（可选）" /></label>
     {error && <p className="page-modal-error"><Warning size={15} />{error}</p>}
     <button className="page-modal-submit" type="submit"><CheckCircle size={19} weight="fill" />{kind === "expense" && editingExpenseId ? "保存支出修改" : "保存记录"}</button>
@@ -404,7 +421,7 @@ function ExpenseRecordsPage({ snapshot, onAction, extraRows }: { snapshot: Ledge
   return <div className="other-page"><MetricsRow metrics={metrics} /><div className="page-content-grid with-right-rail"><div><FilterBar><SearchField value={search} onChange={setSearch} placeholder="搜索支出项目或关联项目" /><SelectButton>全部类别</SelectButton><span className="range-field"><CalendarBlank size={16} />2025-05-01 ~ 2025-05-31</span><SelectButton>全部方式</SelectButton><SelectButton>全部状态</SelectButton><PrimaryButton onClick={() => onAction("expense")}>记录支出</PrimaryButton></FilterBar><SectionCard className="page-table-card"><PanelHeader title="支出记录明细" /><DataTable columns={columns} rows={tableRows} /><TableFooter total={56 + extraRows.length} /></SectionCard></div><aside className="page-right-rail"><SectionCard><PanelHeader title="支出分类占比" action={<button className="panel-link">查看全部 <CaretRight size={13} /></button>} /><div className="donut-panel"><Donut data={expenseDonut} center="¥8,760" sub="本月支出" /><DonutLegend data={expenseDonut} /></div></SectionCard><SectionCard><PanelHeader title="本月利润对比" /><div className="profit-grid"><p><span>本月收入</span><b className="money-green">¥12,040.00</b></p><p><span>本月支出</span><b className="danger-text">¥8,760.00</b></p><p><span>本月利润</span><b>¥3,280.00</b></p><p><span>利润率</span><b>27.2%</b></p></div></SectionCard><SectionCard><PanelHeader title="高成本项目 TOP5" /><ol className="ranking-list">{["电商后台管理系统", "数据可视化后台", "校园二手交易平台", "个人博客系统开发", "餐饮点餐小程序"].map((item, index) => <li key={item}><span>{item}</span><b>¥{[4860, 1980, 1199, 859, 602][index]}.00</b></li>)}</ol></SectionCard><SectionCard><PanelHeader title="预算预警" /><div className="budget-alert"><Warning size={23} weight="fill" /><span>电商后台管理系统<br /><b>预算已使用 92%</b></span><i /></div><div className="budget-alert"><Warning size={23} weight="fill" /><span>数据可视化后台<br /><b>预算已使用 85%</b></span><i /></div></SectionCard></aside></div></div>;
 }
 
-function CleanExpenseRecordsPage({ snapshot, onAction, extraRows, globalSearch, onViewExpense, onEditExpense, onDeleteExpense }: { snapshot: LedgerSnapshot; onAction: (kind: ActionKind) => void; extraRows: string[][]; globalSearch: string; onViewExpense: (id: string) => void; onEditExpense: (id: string) => void; onDeleteExpense: (id: string) => void }) {
+function CleanExpenseRecordsPage({ snapshot, onAction, extraRows, globalSearch, onViewExpense, onEditExpense, onDeleteExpense }: { snapshot: LedgerSnapshot; onAction: (kind: "expense") => void; extraRows: string[][]; globalSearch: string; onViewExpense: (id: string) => void; onEditExpense: (id: string) => void; onDeleteExpense: (id: string) => void }) {
   const [search, setSearch] = useState("");
   const formatMoney = (value: number) => value.toLocaleString("zh-CN", { style: "currency", currency: "CNY", minimumFractionDigits: 2 });
   const categoryLabels: Record<string, string> = { software: "软件订阅", outsourcing: "外包服务", server: "服务器", office: "办公支出", traffic: "流量曝光", refund: "退款", other: "其他" };
@@ -714,36 +731,6 @@ function DataStatisticsHub({ snapshot }: { snapshot: LedgerSnapshot }) {
   </div>;
 }
 
-function CleanGoalPlanPage({ snapshot, onEditGoal }: { snapshot: LedgerSnapshot; onEditGoal: () => void }) {
-  const monthIncome = getBusinessSummary(snapshot).monthlyIncome;
-  const goal = snapshot.settings.monthlyIncomeGoal;
-  const progress = goal ? Math.min(100, Math.round((monthIncome / goal) * 100)) : 0;
-  const activeProjects = snapshot.projects.filter((project) => project.status === "in_progress");
-  const completedTasks = snapshot.tasks.filter((task) => task.status === "done").length;
-  const metrics: MetricData[] = [
-    { title: "本月收入目标", value: goal ? `¥${goal.toLocaleString("zh-CN", { minimumFractionDigits: 2 })}` : "未设置", detail: <>本月已收 <b>¥{monthIncome.toLocaleString("zh-CN")}</b>{goal > 0 && <Progress value={progress} />}</>, tone: "purple", image: "/assets/metrics-v2/income-wallet-3d.png" },
-    { title: "已完成比例", value: `${progress}%`, detail: <>按真实收款计算</>, tone: "green", image: "/assets/page-metrics-v2/goal-progress-ring.png" },
-    { title: "本周交付目标", value: `${activeProjects.length} 个项目`, detail: <>进行中项目</>, tone: "blue", image: "/assets/page-metrics-v2/goal-delivery-calendar.png" },
-    { title: "任务完成情况", value: `${completedTasks}/${snapshot.tasks.length} 项`, detail: <>项目任务进度</>, tone: "purple", image: "/assets/page-metrics-v2/goal-task-book.png" },
-    { title: "重点项目数", value: `${activeProjects.length} 个`, detail: <>当前进行中项目</>, tone: "orange", image: "/assets/page-metrics-v2/goal-focus-folder.png" },
-  ];
-  return <div className="other-page goal-page"><MetricsRow metrics={metrics} /><EmptyLedgerNotice icon={Target} title={goal || snapshot.projects.length || snapshot.tasks.length ? "目标看板已连接真实数据" : "从自己的目标开始"} description={goal || snapshot.projects.length || snapshot.tasks.length ? "当前只展示你录入的项目、收入和任务，不再补入任何示例目标。" : "示例目标、任务和学习计划已经清空。先设置月度收入目标，再导入自己的经营数据。"} action={<button className="page-primary" onClick={onEditGoal}><PencilSimple size={16} />{goal ? "编辑月度目标" : "设置月度目标"}</button>} /></div>;
-}
-
-function GoalPlanPage({ snapshot }: { snapshot: LedgerSnapshot }) {
-  if (!snapshot.projects.length && !snapshot.payments.length && !snapshot.tasks.length) return <div className="other-page goal-page"><MetricsRow metrics={[{ title: "本月收入目标", value: "未设置", detail: <>等待设置目标</>, tone: "purple", image: "/assets/metric-wallet-purple.png" }, { title: "已完成比例", value: "0%", detail: <>暂无收入数据</>, tone: "green", image: "/assets/pages/goal-ring.png" }, { title: "本周交付目标", value: "0 个项目", detail: <>暂无项目数据</>, tone: "blue", image: "/assets/pages/project-calendar.png" }, { title: "学习成长计划", value: "0 项", detail: <>暂无计划</>, tone: "purple", image: "/assets/pages/goal-book.png" }, { title: "重点项目数", value: "0 个", detail: <>暂无进行中项目</>, tone: "orange", image: "/assets/pages/goal-folder.png" }]} /><EmptyLedgerNotice icon={Target} title="从自己的目标开始" description="示例目标、任务和学习计划已经清空。导入项目与收入后即可建立真实经营目标。" /></div>;
-  const goalData = [{ day: "05/01", value: 500 }, { day: "05/06", value: 3800 }, { day: "05/11", value: 7200 }, { day: "05/16", value: 8800 }, { day: "05/21", value: 10400 }, { day: "05/26", value: 9200 }, { day: "05/31", value: 12000 }];
-  const metrics: MetricData[] = [
-    { title: "本月收入目标", value: "¥12,000.00", detail: <>目标 <b>¥15,000</b><Progress value={80} /></>, tone: "purple", image: "/assets/metric-wallet-purple.png" },
-    { title: "已完成比例", value: "80%", detail: <>已完成 <b>¥12,000</b><Progress value={80} tone="green" /></>, tone: "green", image: "/assets/pages/goal-ring.png" },
-    { title: "本周交付目标", value: "5 个项目", detail: <>已完成 <b>3 个</b><Progress value={60} /></>, tone: "blue", image: "/assets/pages/project-calendar.png" },
-    { title: "学习成长计划", value: "进行中 3 项", detail: <>已完成 <b>1 项</b><Progress value={33} tone="purple" /></>, tone: "purple", image: "/assets/pages/goal-book.png" },
-    { title: "重点项目数", value: "4 个", detail: <>进行中项目</>, tone: "orange", image: "/assets/pages/goal-folder.png" },
-  ];
-  const taskGroups = [{ title: "待开始（2）", tone: "blue", items: [["校园二手交易平台", "UI设计稿", "05-21 截止"], ["数据可视化后台", "接口联调", "05-22 截止"]] }, { title: "进行中（3）", tone: "purple", items: [["餐饮点餐小程序", "功能开发中", "进度 40%"], ["个人博客系统开发", "页面开发中", "进度 30%"], ["电商后台管理系统", "测试与优化", "进度 60%"]] }, { title: "已完成（3）", tone: "green", items: [["活动报名小程序", "已完成并交付", "05-18 完成"], ["在线教育平台开发", "已完成并交付", "05-15 完成"], ["数据可视化后台", "已完成并交付", "05-14 完成"]] }];
-  return <div className="other-page goal-page"><MetricsRow metrics={metrics} /><section className="goal-top-grid"><SectionCard><PanelHeader title="收入目标进度（本月）" /><div className="goal-chart-copy"><span>● 实际收入　⌁ 目标收入</span><b>¥12,000 <small>/ ¥15,000</small></b></div><div className="goal-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={goalData}><CartesianGrid vertical={false} stroke="#e9edf5" strokeDasharray="3 3" /><XAxis dataKey="day" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Area type="monotone" dataKey="value" stroke="#6646f3" fill="#6b4bf3" fillOpacity={0.12} strokeWidth={3} dot={{ fill: "#6544f4", r: 4 }} /></AreaChart></ResponsiveContainer></div><div className="milestone-track"><b>里程碑节点</b>{[3000, 6000, 9000, 12000, 15000].map((value, index) => <p key={value} className={index < 4 ? "done" : ""}><i /><span>¥{value.toLocaleString()}<small>5月{5 + index * 7}日前</small></span><CheckCircle size={15} weight={index < 3 ? "fill" : "regular"} /></p>)}</div></SectionCard><SectionCard className="task-board-card"><PanelHeader title="本周任务看板" action={<button className="panel-link">查看全部 <CaretRight size={13} /></button>} /><div className="task-board">{taskGroups.map((group) => <div key={group.title}><h3>{group.title}</h3>{group.items.map((item, index) => <article key={item[0]}><b>{item[0]}</b><span>{item[1]}</span><small>{item[2]}</small>{group.title.includes("进行中") && <Progress value={[40, 30, 60][index]} />}</article>)}{group.title.includes("待开始") && <button><Plus size={14} />新建任务</button>}</div>)}</div></SectionCard><SectionCard className="achievement-card"><PanelHeader title="成就奖杯" /><img src="/assets/goal-trophy.png" alt="本月成就奖杯" /><h3>本月已达成 3 项成就</h3><ul><li>收入突破 ¥10,000</li><li>连续 7 天按时打卡</li><li>完成 3 个项目交付</li></ul><button>查看全部成就 <CaretRight size={14} /></button></SectionCard></section><section className="goal-mid-grid"><SectionCard><PanelHeader title="项目路线图（未来计划）" /><div className="roadmap"><div className="roadmap-months"><span>5月（进行中）</span><span>6月（规划中）</span><span>7月（规划中）</span></div>{["校园二手交易平台", "餐饮点餐小程序", "个人博客系统开发", "电商后台管理系统"].map((name, index) => <p key={name}><b>{name}</b><span><i className={`road-${index}`} /><i className={`road-${index}`} /><i className={`road-${index}`} /></span></p>)}</div></SectionCard><SectionCard><PanelHeader title="即将到期" /><ul className="due-list">{[["校园二手交易平台", "UI设计稿", "2 天后截止"], ["餐饮点餐小程序", "功能开发", "5 天后截止"], ["数据可视化后台", "接口联调", "6 天后截止"], ["个人博客系统开发", "页面开发", "12 天后截止"]].map((item, index) => <li key={item[0]}><i className={`row-icon color-${index}`}><CalendarBlank size={15} /></i><span><b>{item[0]}</b><small>{item[1]}</small></span><em>{item[2]}</em></li>)}</ul></SectionCard><aside className="goal-side-stack"><SectionCard><PanelHeader title="本周重点" /><ul className="focus-list">{["校园二手交易平台", "餐饮点餐小程序", "个人博客系统开发", "电商后台管理系统"].map((item, index) => <li key={item}><i className={`row-icon color-${index}`}><Target size={15} /></i><span>{item}<small>工期：剩余 {2 + index * 4} 天</small></span><StatusPill tone={index === 0 ? "purple" : index === 1 ? "orange" : "blue"}>{["高优先级", "中优先级", "中优先级", "低优先级"][index]}</StatusPill></li>)}</ul></SectionCard><SectionCard><PanelHeader title="提醒清单" /><ul className="check-list">{["更新项目进度", "跟进客户需求", "学习新技能", "复盘本周工作"].map((item, index) => <li key={item}><CheckSquare size={17} weight={index < 2 ? "fill" : "regular"} /><span>{item}</span><time>{index < 2 ? "今天" : index === 2 ? "明天" : "周日"}</time></li>)}</ul></SectionCard></aside></section><SectionCard className="growth-card"><PanelHeader title="学习成长计划（提升接单效率）" /><div className="growth-progress"><div className="round-progress">33%</div><span><b>本月学习进度</b><small>已完成 1/3 项</small></span></div>{[["Master UI设计提升课", 60, "05-30"], ["微信小程序实战开发", 20, "06-15"], ["高效沟通与需求管理", 0, "06-25"]].map(([name, progress, date]) => <article key={String(name)}><b>{name}</b><Progress value={Number(progress)} /><small>预计 {date} 完成</small></article>)}<button><Plus size={16} />添加学习计划</button></SectionCard></div>;
-}
-
 interface SettingRowProps { icon: PhosphorIcon; title: string; description: string; control: ReactNode; tone?: string }
 function SettingRow({ icon: Icon, title, description, control, tone = "purple" }: SettingRowProps) {
   return <div className="setting-row"><i className={`setting-icon setting-${tone}`}><Icon size={18} weight="duotone" /></i><span><b>{title}</b><small>{description}</small></span>{control}</div>;
@@ -751,36 +738,6 @@ function SettingRow({ icon: Icon, title, description, control, tone = "purple" }
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
   return <button type="button" aria-label={label} aria-pressed={checked} className={`toggle ${checked ? "on" : ""}`} onClick={onChange}><i /></button>;
-}
-
-function SettingsCenterPage({ snapshot, onSnapshotChange, onToast }: { snapshot: LedgerSnapshot; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onToast: (message: string) => void }) {
-  const [section, setSection] = useState("记账设置");
-  const [theme, setTheme] = useState(snapshot.settings.themeColor || "#6544f4");
-  const toggles = { days: true, message: snapshot.settings.notificationsEnabled ?? true, payment: snapshot.settings.paymentRemindersEnabled ?? true, goal: snapshot.settings.goalRemindersEnabled ?? true, backup: snapshot.settings.autoBackupEnabled ?? true };
-  const updateSettings = (changes: Partial<LedgerSnapshot["settings"]>) => onSnapshotChange({ ...snapshot, settings: { ...snapshot.settings, ...changes } });
-  const flip = (key: keyof typeof toggles) => {
-    if (key === "message") updateSettings({ notificationsEnabled: !toggles.message });
-    if (key === "payment") updateSettings({ paymentRemindersEnabled: !toggles.payment });
-    if (key === "goal") updateSettings({ goalRemindersEnabled: !toggles.goal });
-    if (key === "backup") updateSettings({ autoBackupEnabled: !toggles.backup });
-  };
-  useEffect(() => {
-    document.documentElement.style.setProperty("--purple", snapshot.settings.themeColor || "#6544f4");
-    document.documentElement.dataset.theme = snapshot.settings.colorMode || "light";
-  }, [snapshot.settings.colorMode, snapshot.settings.themeColor]);
-  const exportData = () => {
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `咸鱼经营数据-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    onToast("经营数据备份已导出");
-  };
-  const recordCount = snapshot.projects.length + snapshot.payments.length + snapshot.expenses.length + snapshot.customers.length;
-  const menu = [["个人资料", User], ["记账设置", GearSix], ["项目默认值", SquaresFour], ["提醒通知", Bell], ["数据与同步", CloudArrowUp], ["界面主题", Palette]] as Array<[string, PhosphorIcon]>;
-  return <div className="other-page settings-page"><div className="settings-layout"><SectionCard className="settings-nav">{menu.map(([label, Icon]) => <button className={section === label ? "active" : ""} onClick={() => { setSection(label); document.getElementById(`settings-${label}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); }} key={label}><Icon size={18} />{label}</button>)}</SectionCard><main className="settings-main"><SectionCard id="settings-记账设置" className="settings-group"><PanelHeader title="记账与偏好设置" /><SettingRow icon={CalendarBlank} title="闲鱼开始运营日期" description="用于计算运营天数与阶段数据" control={<span className="setting-control">{snapshot.settings.xianyuStartedAt} <CalendarBlank size={15} /></span>} /><SettingRow icon={ArrowClockwise} title="默认工期" description="新建项目时的默认工期" control={<SelectButton>30 天</SelectButton>} tone="blue" /><SettingRow icon={Database} title="默认收款类型" description="新建项目收款方式的默认选项" control={<SelectButton>全款收取</SelectButton>} tone="green" /><SettingRow icon={Target} title="月度目标金额" description="设置每月收入目标，助力达成计划" control={<span className="setting-control">{snapshot.settings.monthlyIncomeGoal ? `¥ ${snapshot.settings.monthlyIncomeGoal.toLocaleString()}` : "未设置"}</span>} tone="orange" /><SettingRow icon={ChartBar} title="自动计算运营天数" description="根据运营开始日期，自动计算运营天数" control={<Toggle checked={toggles.days} onChange={() => flip("days")} label="自动计算运营天数" />} /><SettingRow icon={ChartBar} title="显示数据小数位" description="金额与比例的小数位数" control={<SelectButton>2 位小数</SelectButton>} tone="blue" /></SectionCard><SectionCard id="settings-提醒通知" className="settings-group"><PanelHeader title="提醒与通知设置" /><SettingRow icon={Bell} title="消息提醒" description="开启后将接收站内消息提醒" control={<Toggle checked={toggles.message} onChange={() => flip("message")} label="消息提醒" />} tone="blue" /><SettingRow icon={Bell} title="项目到期提醒" description="项目即将到期或逾期时提醒" control={<SelectButton>提前 3 天</SelectButton>} tone="orange" /><SettingRow icon={Bell} title="收款提醒" description="有收款记录或到账时提醒" control={<Toggle checked={toggles.payment} onChange={() => flip("payment")} label="收款提醒" />} tone="green" /><SettingRow icon={Bell} title="月度目标进度提醒" description="每月进度达成 50%、80%、100% 时提醒" control={<Toggle checked={toggles.goal} onChange={() => flip("goal")} label="目标进度提醒" />} /></SectionCard><SectionCard id="settings-数据与同步" className="settings-group"><PanelHeader title="数据与备份设置" /><SettingRow icon={CloudArrowUp} title="自动备份" description="每日自动备份数据，保障数据安全" control={<Toggle checked={toggles.backup} onChange={() => flip("backup")} label="自动备份" />} tone="blue" /><SettingRow icon={ArrowClockwise} title="备份时间" description="选择每日自动备份的时间点" control={<SelectButton>23:30</SelectButton>} tone="orange" /><SettingRow icon={DownloadSimple} title="导出数据" description="将所有数据导出为 Excel 文件" control={<button className="outline-action" onClick={() => onToast("数据导出任务已创建")}>导出 Excel</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="清理本地缓存，释放空间" control={<button className="outline-action" onClick={() => onToast("缓存已清理")}>清理缓存</button>} tone="red" /></SectionCard><SectionCard id="settings-界面主题" className="theme-settings"><PanelHeader title="界面主题与外观" /><div className="mode-choice"><span><i />深浅主题<small>选择你喜欢的界面模式</small></span><button className="active">浅色模式</button><button>深色模式</button></div><div className="theme-colors"><span><b>主题色彩</b><small>自定义主题主色</small></span>{["#6544f4", "#4c8cf5", "#25c879", "#ffac18", "#f35b68", "#12b9cd"].map((color) => <button aria-label={`选择主题色 ${color}`} className={theme === color ? "active" : ""} style={{ background: color }} onClick={() => { setTheme(color); onToast("主题色已更新"); }} key={color} />)}<button className="rainbow" aria-label="自定义主题色" /></div></SectionCard></main><aside className="settings-right"><SectionCard className="security-card"><PanelHeader title="账户安全" /><img src="/assets/pages/settings-shield.png" alt="账户安全盾牌" /><h3><i />安全等级：高</h3><p>您的账户安全状态良好</p><Progress value={78} tone="green" /><SettingRow icon={Lock} title="登录密码" description="未设置" control={<button className="text-action">设置</button>} tone="green" /><SettingRow icon={DesktopTower} title="手机绑定" description="未绑定" control={<button className="text-action">绑定</button>} tone="green" /><SettingRow icon={Envelope} title="邮箱绑定" description="未绑定" control={<button className="text-action">绑定</button>} tone="green" /><SettingRow icon={DesktopTower} title="登录设备管理" description="当前设备" control={<button className="text-action">管理</button>} tone="green" /></SectionCard><SectionCard className="sync-card"><PanelHeader title="数据同步状态" /><img src="/assets/pages/settings-cloud.png" alt="云端同步插画" /><h3><CheckCircle size={16} weight="fill" />本地数据正常</h3><p>你的业务数据保存在当前设备</p><ul><li><ArrowClockwise size={16} />数据状态 <time>已就绪</time></li><li><CloudArrowUp size={16} />同步来源 <time>本地设备</time></li><li><Database size={16} />业务数据量 <time>{recordCount} 条记录</time></li><li><DesktopTower size={16} />本地缓存 <time>已启用</time></li></ul><button className="sync-now" onClick={() => onToast("本地数据已保存")}><ArrowClockwise size={17} />立即保存</button></SectionCard></aside></div></div>;
 }
 
 function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, initialSection = "个人资料" }: { snapshot: LedgerSnapshot; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onToast: (message: string) => void; initialSection?: SettingsSectionName }) {
@@ -791,6 +748,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(null);
   const [providerStatuses, setProviderStatuses] = useState<AIProviderStatus[]>([]);
   const [providerRefreshBusy, setProviderRefreshBusy] = useState(false);
+  const [recoveryTarget, setRecoveryTarget] = useState<ConnectionRecoveryTarget | null>(null);
   const [productInsight, setProductInsight] = useState<ProductIntelligenceView | null>(null);
   const [migrationPreview, setMigrationPreview] = useState<MigrationPreview | null>(null);
   const [migrationResolutions, setMigrationResolutions] = useState<Record<string, "sqlite" | "browser">>({});
@@ -875,6 +833,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
   };
 
   const deepseekProvider = providerStatuses.find((item) => item.provider === "deepseek");
+  const codexProvider = providerStatuses.find((item) => item.provider === "codex_cli");
   const deepseekBaseUrl = deepseekProvider?.base_url || "https://api.deepseek.com";
   const deepseekReplyModel = deepseekProvider?.model || "deepseek-v4-flash";
   const deepseekLeadModel = deepseekProvider?.lead_model || deepseekReplyModel;
@@ -902,7 +861,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
     ].join("\n");
     try {
       await navigator.clipboard.writeText(template);
-      onToast("DeepSeek 配置模板已复制；请在 .env 中补上 API Key");
+      onToast("DeepSeek 配置模板已复制；也可以直接使用“更新 API Key”");
     } catch {
       onToast("配置模板复制失败，请检查浏览器剪贴板权限");
     }
@@ -914,10 +873,11 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
       const rows = await localPlatformService.providers(true);
       setProviderStatuses(rows);
       const deepseek = rows.find((item) => item.provider === "deepseek");
+      const codex = rows.find((item) => item.provider === "codex_cli");
       onToast(!deepseek?.configured
-        ? "尚未读取到 DEEPSEEK_API_KEY，请配置并重启本机服务"
+        ? "尚未配置 DeepSeek，可使用连接恢复中心更新 API Key"
         : deepseek.status === "connected"
-          ? "DeepSeek 已连接，可以生成快速草稿"
+          ? `DeepSeek 已连接；Codex ${codex?.status === "connected" ? "已登录" : "需要检查"}`
           : deepseek.detail || "DeepSeek 连接异常，请检查配置");
     } catch {
       onToast("本机服务未连接，暂时无法检测 DeepSeek");
@@ -925,6 +885,32 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
       setProviderRefreshBusy(false);
     }
   };
+
+  const handleConnectionRecovered = (result: ConnectionRecoveryResult) => {
+    onToast(result.detail);
+    void localPlatformService.status().then(setPlatformStatus).catch(() => setPlatformStatus(null));
+    if (result.provider !== "xianyu") {
+      void localPlatformService.providers().then(setProviderStatuses).catch(() => setProviderStatuses([]));
+    }
+  };
+
+  const recoveryCurrent = recoveryTarget === "xianyu"
+    ? {
+      status: platformStatus?.listener || "unknown",
+      detail: platformStatus?.listener_detail || "等待读取闲鱼监听状态",
+      configured: platformStatus?.listener !== "config_required",
+    }
+    : recoveryTarget === "deepseek"
+      ? {
+        status: deepseekProvider?.status || "not_configured",
+        detail: deepseekProvider?.detail || "DeepSeek API 尚未配置",
+        configured: Boolean(deepseekProvider?.configured),
+      }
+      : {
+        status: codexProvider?.status || platformStatus?.model || "checking",
+        detail: codexProvider?.detail || platformStatus?.model_detail || "等待检测 Codex 登录状态",
+        configured: Boolean(codexProvider?.configured && platformStatus?.codex_logged_in),
+      };
 
   const aiReplySettingsPanel = <SectionCard id="settings-live-AI与回复" className="settings-group settings-panel-card platform-settings-card">
     <PanelHeader title="AI 与回复" />
@@ -942,9 +928,9 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
       </header>
       <div className="deepseek-connection-grid">
         <ol className="deepseek-setup-steps">
-          <li><i>1</i><span><b>复制配置模板</b><small>模板不含密钥，不会把 API Key 写进网页。</small></span></li>
-          <li><i>2</i><span><b>写入本机 .env</b><small>只需补充 DEEPSEEK_API_KEY，并保存文件。</small></span></li>
-          <li><i>3</i><span><b>重启 8877 服务</b><small>重启后点击“检测连接”，状态会通过 /models 校验。</small></span></li>
+          <li><i>1</i><span><b>打开连接恢复</b><small>在密码型输入框粘贴 API Key，网页不会长期保存。</small></span></li>
+          <li><i>2</i><span><b>候选 Key 先验证</b><small>只访问官方 /models，不发送客户对话或业务数据。</small></span></li>
+          <li><i>3</i><span><b>验证成功后生效</b><small>原子更新本机 .env，无需盲目重启或更换端口。</small></span></li>
         </ol>
         <dl className="deepseek-path-list">
           <div><dt>配置文件</dt><dd><code>{deepseekProvider?.config_file || "项目根目录/.env"}</code></dd></div>
@@ -958,12 +944,15 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
         <p><ShieldCheck size={16} weight="fill" />API Key 只由 FastAPI 从未跟踪的 `.env` 读取，不进入前端、SQLite、日志或备份。</p>
         <div className="deepseek-setup-actions">
           <button type="button" className="outline-action" onClick={() => void copyDeepSeekTemplate()}><Copy size={15} />复制配置模板</button>
+          <button type="button" className="outline-action connection-open-action" onClick={() => setRecoveryTarget("deepseek")}><Key size={15} />更新 API Key</button>
           <button type="button" className="outline-action" disabled={providerRefreshBusy} onClick={() => void refreshAIProviders()}><ArrowClockwise className={providerRefreshBusy ? "spin" : ""} size={15} />{providerRefreshBusy ? "检测中…" : "检测连接"}</button>
         </div>
       </footer>
     </section>
+    <SettingRow icon={CheckCircle} title="Codex 本机登录" description={codexProvider?.detail || "Codex 登录由本机 CLI 管理，不在网页输入 ChatGPT 密码"} control={<button type="button" className="outline-action" onClick={() => setRecoveryTarget("codex_cli")}><ArrowClockwise size={15} />登录与检测</button>} tone="purple" />
     <SettingRow icon={Sparkle} title="Codex 回复速度档位" description="仅在手动选择 Codex 深度草稿时使用" control={<select aria-label="回复速度档位" className="setting-control" value={settings.replySpeedMode || "balanced"} onChange={(event) => update({ replySpeedMode: event.target.value as LedgerSnapshot["settings"]["replySpeedMode"] })}><option value="fast">极速</option><option value="balanced">平衡</option><option value="quality">高质量</option><option value="custom">自定义</option></select>} tone="blue" />
     <SettingRow icon={ShieldCheck} title="真实发送" description="无论 DeepSeek 或 Codex，价格与交付等风险始终由本地规则复查" control={<span className="setting-control">默认人工确认</span>} tone="green" />
+    <GlobalAgentSettingsCard onToast={onToast} />
   </SectionCard>;
 
   const previewLegacyMigration = async () => {
@@ -1006,30 +995,50 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
     <header className="settings-section-intro"><span>SETTINGS</span><h2>{section}</h2><p>{sectionDescriptions[section]}</p></header>
     {section === "个人资料" && <SectionCard id="settings-live-个人资料" className="settings-group settings-panel-card profile-settings-card"><PanelHeader title="个人资料" /><form className="profile-settings-form" onSubmit={saveProfile}><label><span>显示名称</span><small>保存后会同步显示在右上角头像区域</small><input aria-label="显示名称" value={profileDraft.name} onChange={(event) => setProfileDraft((value) => ({ ...value, name: event.target.value }))} placeholder="例如：张同学" /></label><label><span>职业身份</span><small>用于描述你的个人开发者定位</small><input aria-label="职业身份" value={profileDraft.role} onChange={(event) => setProfileDraft((value) => ({ ...value, role: event.target.value }))} placeholder="例如：全栈开发者" /></label><label><span>联系电话</span><small>仅保存在当前设备，不会公开展示</small><input aria-label="联系电话" value={profileDraft.phone} onChange={(event) => setProfileDraft((value) => ({ ...value, phone: event.target.value }))} placeholder="选填" /></label><label className="profile-bio-field"><span>个人简介</span><small>记录你的服务方向或经营定位</small><textarea aria-label="个人简介" rows={3} value={profileDraft.bio} onChange={(event) => setProfileDraft((value) => ({ ...value, bio: event.target.value }))} placeholder="介绍你的服务方向" /></label><button className="business-primary profile-save" type="submit"><CheckCircle size={16} weight="fill" />保存个人资料</button></form></SectionCard>}
     {section === "账号设置" && <SectionCard id="settings-live-账号设置" className="settings-group settings-panel-card account-settings-card"><PanelHeader title="账号设置" /><form className="account-settings-form" onSubmit={saveAccount}><SettingRow icon={Envelope} title="账号邮箱" description="用于标记本地经营账号与备份文件" control={<input aria-label="账号邮箱" className="setting-control" type="email" value={accountEmail} onChange={(event) => setAccountEmail(event.target.value)} placeholder="name@example.com" />} tone="blue" /><SettingRow icon={Star} title="当前版本" description="当前经营助手的功能版本" control={<span className="setting-control">{settings.accountPlan || "高级版"}</span>} tone="orange" /><SettingRow icon={DesktopTower} title="数据归属" description="业务数据保存在当前浏览器与设备" control={<span className="setting-control">本地账号</span>} tone="green" /><div className="account-setting-actions"><button className="outline-action" type="button" onClick={exportBackup}><DownloadSimple size={16} />导出账号数据</button><button className="business-primary" type="submit"><CheckCircle size={16} weight="fill" />保存账号设置</button></div></form></SectionCard>}
-    {section === "记账设置" && <SectionCard id="settings-live-记账设置" className="settings-group settings-panel-card"><PanelHeader title="记账与偏好设置" /><SettingRow icon={CalendarBlank} title="闲鱼开始运营日期" description="用于计算运营天数与阶段数据" control={<input aria-label="闲鱼开始运营日期" className="setting-control" type="date" value={settings.xianyuStartedAt} onChange={(event) => update({ xianyuStartedAt: event.target.value })} />} /><SettingRow icon={Target} title="月度目标金额" description="首页与目标计划会实时读取" control={<input aria-label="月度目标金额" className="setting-control" type="number" min="0" value={settings.monthlyIncomeGoal} onChange={(event) => update({ monthlyIncomeGoal: Math.max(0, Number(event.target.value) || 0) })} />} tone="orange" /><SettingRow icon={ChartBar} title="显示数据小数位" description="金额与比例的小数位数" control={<select aria-label="显示数据小数位" className="setting-control" value={settings.decimalPlaces ?? 2} onChange={(event) => update({ decimalPlaces: Number(event.target.value) })}><option value="0">0 位</option><option value="2">2 位</option></select>} tone="blue" /></SectionCard>}
-    {section === "项目默认值" && <SectionCard id="settings-live-项目默认值" className="settings-group settings-panel-card"><PanelHeader title="项目默认值" /><SettingRow icon={ArrowClockwise} title="默认工期" description="新建项目时自动填入" control={<input aria-label="默认工期" className="setting-control" type="number" min="1" value={settings.defaultDurationDays || 30} onChange={(event) => update({ defaultDurationDays: Math.max(1, Number(event.target.value) || 30) })} />} tone="blue" /><SettingRow icon={Database} title="默认收款类型" description="快速记账的默认选项" control={<select aria-label="默认收款类型" className="setting-control" value={settings.defaultPaymentType || "full"} onChange={(event) => update({ defaultPaymentType: event.target.value as LedgerSnapshot["settings"]["defaultPaymentType"] })}><option value="deposit">定金</option><option value="milestone">阶段款</option><option value="final">尾款</option><option value="full">全款</option></select>} tone="green" /></SectionCard>}
+    {section === "记账设置" && <SectionCard id="settings-live-记账设置" className="settings-group settings-panel-card"><PanelHeader title="记账与偏好设置" /><SettingRow icon={CalendarBlank} title="闲鱼开始运营日期" description="用于计算运营天数与阶段数据" control={<input aria-label="闲鱼开始运营日期" className="setting-control" type="date" value={settings.xianyuStartedAt} onChange={(event) => update({ xianyuStartedAt: event.target.value })} />} /><SettingRow icon={Target} title="月度目标金额" description="首页月度目标卡会实时读取" control={<input aria-label="月度目标金额" className="setting-control" type="number" min="0" value={settings.monthlyIncomeGoal} onChange={(event) => update({ monthlyIncomeGoal: Math.max(0, Number(event.target.value) || 0) })} />} tone="orange" /><SettingRow icon={ChartBar} title="显示数据小数位" description="金额与比例的小数位数" control={<select aria-label="显示数据小数位" className="setting-control" value={settings.decimalPlaces ?? 2} onChange={(event) => update({ decimalPlaces: Number(event.target.value) })}><option value="0">0 位</option><option value="2">2 位</option></select>} tone="blue" /></SectionCard>}
+    {section === "项目默认值" && <SectionCard id="settings-live-项目默认值" className="settings-group settings-panel-card"><PanelHeader title="项目默认值" /><SettingRow icon={ArrowClockwise} title="默认工期" description="新建项目时自动填入" control={<input aria-label="默认工期" className="setting-control" type="number" min="1" value={settings.defaultDurationDays || 30} onChange={(event) => update({ defaultDurationDays: Math.max(1, Number(event.target.value) || 30) })} />} tone="blue" /><SettingRow icon={Timer} title="每日可用工时" description="用于未来 14 天负载与延期风险基线；修改后重新生成预测才形成新快照" control={<input aria-label="每日可用工时" className="setting-control" type="number" min="1" max="24" value={settings.defaultDailyAvailableHours || 8} onChange={(event) => update({ defaultDailyAvailableHours: Math.min(24, Math.max(1, Number(event.target.value) || 8)) })} />} tone="purple" /><SettingRow icon={Database} title="默认收款类型" description="快速记账的默认选项" control={<select aria-label="默认收款类型" className="setting-control" value={settings.defaultPaymentType || "full"} onChange={(event) => update({ defaultPaymentType: event.target.value as LedgerSnapshot["settings"]["defaultPaymentType"] })}><option value="deposit">定金</option><option value="milestone">阶段款</option><option value="final">尾款</option><option value="full">全款</option></select>} tone="green" /></SectionCard>}
     {section === "提醒通知" && <SectionCard id="settings-live-提醒通知" className="settings-group settings-panel-card"><PanelHeader title="提醒与通知设置" /><SettingRow icon={Bell} title="消息提醒" description="控制顶部经营提醒数量" control={<Toggle checked={settings.notificationsEnabled ?? true} onChange={() => update({ notificationsEnabled: !(settings.notificationsEnabled ?? true) })} label="消息提醒" />} tone="blue" /><SettingRow icon={Bell} title="项目到期提醒" description="决定临近交付项目的提醒范围" control={<select aria-label="项目到期提醒" className="setting-control" value={settings.reminderDays || 3} onChange={(event) => update({ reminderDays: Number(event.target.value) })}><option value="1">提前 1 天</option><option value="3">提前 3 天</option><option value="7">提前 7 天</option></select>} tone="orange" /><SettingRow icon={Bell} title="收款提醒" description="控制待收节点和回款提醒列表" control={<Toggle checked={settings.paymentRemindersEnabled ?? true} onChange={() => update({ paymentRemindersEnabled: !(settings.paymentRemindersEnabled ?? true) })} label="收款提醒" />} tone="green" /></SectionCard>}
-    {section === "渠道连接" && <SectionCard id="settings-live-渠道连接" className="settings-group settings-panel-card platform-settings-card"><PanelHeader title="渠道连接" /><div className="platform-status-list"><article><span className="platform-mark xianyu"><ChatCircleDots size={20} weight="fill" /></span><div><strong>闲鱼消息监听</strong><small>{platformStatus?.listener_detail || "通过 Cookie、MTop 与 WebSocket 在本机运行"}</small></div><b className={platformStatus?.listener === "connected" ? "connected" : "attention"}>{platformStatus?.listener === "connected" ? "监听中" : "未连接"}</b></article><article><span className="platform-mark wechat"><WechatLogo size={20} weight="fill" /></span><div><strong>微信客服</strong><small>{platformStatus?.wechat_provider === "wecom" ? "企业微信官方微信客服" : "当前使用安全的本机 Mock 渠道"}</small></div><b className={platformStatus?.wechat_status === "connected" ? "connected" : "muted"}>{platformStatus?.wechat_status || "mock"}</b></article></div><p className="local-secret-note"><ShieldCheck size={17} weight="fill" />Cookie 与企业微信密钥只从未跟踪的本机 `.env` 读取，不会进入网页、SQLite 或备份。</p><button className="outline-action" onClick={() => void localPlatformService.status().then((value) => { setPlatformStatus(value); onToast("渠道状态已刷新"); }).catch(() => onToast("本机服务未连接"))}><ArrowClockwise size={16} />刷新连接状态</button></SectionCard>}
+    {section === "渠道连接" && <SectionCard id="settings-live-渠道连接" className="settings-group settings-panel-card platform-settings-card">
+      <PanelHeader title="渠道连接" />
+      <div className="platform-status-list">
+        <article>
+          <span className="platform-mark xianyu"><ChatCircleDots size={20} weight="fill" /></span>
+          <div><strong>闲鱼消息监听</strong><small>{platformStatus?.listener_detail || "通过 Cookie、MTop 与 WebSocket 在本机运行"}</small></div>
+          <div className="platform-connection-actions"><b className={platformStatus?.listener === "connected" ? "connected" : "attention"}>{platformStatus?.listener === "connected" ? "监听中" : "未连接"}</b><button type="button" onClick={() => setRecoveryTarget("xianyu")}><Key size={14} />恢复连接</button></div>
+        </article>
+        <article>
+          <span className="platform-mark wechat"><WechatLogo size={20} weight="fill" /></span>
+          <div><strong>微信客服</strong><small>{platformStatus?.wechat_provider === "wecom" ? "企业微信官方微信客服" : "当前使用安全的本机 Mock 渠道"}</small></div>
+          <b className={platformStatus?.wechat_status === "connected" ? "connected" : "muted"}>{platformStatus?.wechat_status || "mock"}</b>
+        </article>
+      </div>
+      <p className="local-secret-note"><ShieldCheck size={17} weight="fill" />Cookie 与企业微信密钥只从未跟踪的本机 `.env` 读取，不会进入网页、SQLite 或备份。</p>
+      <div className="channel-connection-footer"><button className="outline-action" onClick={() => void localPlatformService.status().then((value) => { setPlatformStatus(value); onToast("渠道状态已刷新"); }).catch(() => onToast("本机服务未连接"))}><ArrowClockwise size={16} />刷新连接状态</button><button type="button" className="business-primary" onClick={() => setRecoveryTarget("xianyu")}><PlugsConnected size={16} weight="fill" />打开连接恢复</button></div>
+    </SectionCard>}
     {section === "商品采集" && <SectionCard id="settings-live-商品采集" className="settings-group settings-panel-card platform-settings-card"><PanelHeader title="商品每日采集" /><div className="settings-status-grid"><span><CalendarBlank size={19} weight="duotone" /><b>固定频率</b><small>{productInsight?.collection.schedule || "每天一次"}</small></span><span><Database size={19} weight="duotone" /><b>监测范围</b><small>{productInsight ? `${productInsight.summary.monitored_products} 个商品` : "等待本机服务"}</small></span><span><ShieldCheck size={19} weight="duotone" /><b>执行边界</b><small>只读采集与本地建议</small></span></div><SettingRow icon={ArrowClockwise} title="最近一次采集" description={productInsight?.collection.last_run?.detail || "还没有远程采集记录"} control={<span className="setting-control">{productInsight?.collection.last_run?.run_date || "等待采集"}</span>} tone="blue" /><SettingRow icon={Storefront} title="下次采集" description="同一自然日不会重复访问闲鱼商品详情" control={<span className="setting-control">{productInsight?.collection.next_collection_at ? new Date(productInsight.collection.next_collection_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "等待计划"}</span>} tone="green" /><p className="local-secret-note"><ShieldCheck size={17} weight="fill" />系统不会自动修改、发布、重新上架、下架商品，也不会购买流量；所有建议都由你在闲鱼中手动执行。</p><button className="outline-action" onClick={() => { window.location.hash = encodeURIComponent("商品经营"); }}><Storefront size={16} />进入商品经营</button></SectionCard>}
     {section === "AI与回复" && aiReplySettingsPanel}
     {section === "报价参数" && <SectionCard id="settings-live-报价参数" className="settings-group settings-panel-card"><PanelHeader title="报价参数" /><SettingRow icon={Target} title="目标时薪" description="无历史小时收益时必须填写；不会由 AI 虚构" control={<input aria-label="目标时薪" className="setting-control" type="number" min="1" placeholder="例如 300" value={settings.targetHourlyRate || ""} onChange={(event) => update({ targetHourlyRate: event.target.value ? Math.max(1, Number(event.target.value)) : null })} />} tone="orange" /><SettingRow icon={Warning} title="风险缓冲" description="服务端报价公式中的固定经营缓冲" control={<select aria-label="报价风险缓冲" className="setting-control" value={settings.quoteRiskBuffer ?? 0.15} onChange={(event) => update({ quoteRiskBuffer: Number(event.target.value) })}><option value="0.1">10%</option><option value="0.15">15%</option><option value="0.2">20%</option><option value="0.25">25%</option></select>} tone="orange" /><div className="quote-formula"><span>服务端确定性公式</span><strong>阶段工时 × 目标时薪 ×（1 + 风险缓冲）</strong><small>金额按百元取整；付款计划默认 30% 定金 / 40% 阶段款 / 30% 尾款，最终报价仍需人工确认。</small></div></SectionCard>}
     {section === "数据迁移" && <SectionCard id="settings-live-数据迁移" className="settings-group settings-panel-card migration-settings-card"><PanelHeader title="旧数据迁移向导" /><div className="migration-source"><span><DesktopTower size={20} weight="duotone" /></span><div><strong>当前浏览器 LocalStorage</strong><small>{getLegacyLedgerSnapshot() ? "已检测到旧版记账快照" : "未检测到旧版快照"}</small></div><b>{isLedgerBackendConnected() ? "SQLite 已连接" : "仅浏览器模式"}</b></div><button className="business-primary migration-preview-button" disabled={migrationBusy || !getLegacyLedgerSnapshot() || !isLedgerBackendConnected()} onClick={() => void previewLegacyMigration()}><Database size={16} />{migrationBusy ? "正在检查…" : "预览重复与冲突"}</button>{migrationPreview && <div className="migration-preview"><div className="migration-counts"><span><b>{Object.values(migrationPreview.additions).reduce((sum, value) => sum + value, 0)}</b><small>可新增</small></span><span><b>{Object.values(migrationPreview.identical).reduce((sum, value) => sum + value, 0)}</b><small>完全相同</small></span><span className={migrationPreview.conflicts.length ? "warn" : "ok"}><b>{migrationPreview.conflicts.length}</b><small>需要确认</small></span></div>{migrationPreview.conflicts.map((conflict) => <article key={conflict.key}><div><strong>{conflict.collection} · {conflict.incoming_id || "无 ID"}</strong><small>{conflict.reason}</small></div><select aria-label={`冲突处理 ${conflict.key}`} value={migrationResolutions[conflict.key] || "sqlite"} onChange={(event) => setMigrationResolutions((value) => ({ ...value, [conflict.key]: event.target.value as "sqlite" | "browser" }))}><option value="sqlite">保留 SQLite</option><option value="browser">采用浏览器</option></select></article>)}<p><ShieldCheck size={16} weight="fill" />提交前会同时备份数据库、SQLite 快照 JSON 与浏览器快照 JSON，任何冲突都不会静默覆盖。</p><button className="business-primary" disabled={migrationBusy} onClick={() => void commitLegacyMigration()}>确认选择并导入</button></div>}</SectionCard>}
-    {section === "数据与同步" && <SectionCard id="settings-live-数据与同步" className="settings-group settings-panel-card"><PanelHeader title="数据与备份设置" /><div className="settings-status-grid"><span><CheckCircle size={19} weight="fill" /><b>数据状态</b><small>{isLedgerBackendConnected() ? "统一服务已连接" : "浏览器兼容模式"}</small></span><span><DesktopTower size={19} weight="duotone" /><b>保存位置</b><small>{isLedgerBackendConnected() ? "本机 SQLite" : "当前浏览器"}</small></span><span><Database size={19} weight="duotone" /><b>业务数据</b><small>{recordCount} 条记录</small></span></div><SettingRow icon={CloudArrowUp} title="跨浏览器同步" description="Edge 与内置浏览器连接同一本机服务后读取同一数据库" control={<span className="setting-control">{isLedgerBackendConnected() ? "已启用" : "等待本机服务"}</span>} tone="blue" /><SettingRow icon={DownloadSimple} title="导出数据" description="下载当前完整 JSON 备份" control={<button className="outline-action" onClick={exportBackup}>导出备份</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="业务数据不是缓存，不会被删除" control={<button className="outline-action" onClick={() => onToast("无需清理：经营数据已安全保留")}>检查缓存</button>} tone="red" /></SectionCard>}
+    {section === "数据与同步" && <SectionCard id="settings-live-数据与同步" className="settings-group settings-panel-card"><PanelHeader title="数据与备份设置" /><div className="settings-status-grid"><span><CheckCircle size={19} weight="fill" /><b>数据状态</b><small>{isLedgerBackendConnected() ? "统一服务已连接" : "浏览器兼容模式"}</small></span><span><DesktopTower size={19} weight="duotone" /><b>保存位置</b><small>{isLedgerBackendConnected() ? "本机 SQLite" : "当前浏览器"}</small></span><span><Database size={19} weight="duotone" /><b>业务数据</b><small>{recordCount} 条记录</small></span></div><SettingRow icon={CloudArrowUp} title="跨浏览器同步" description="Ego Lite 与其他浏览器连接同一本机服务后读取同一数据库" control={<span className="setting-control">{isLedgerBackendConnected() ? "已启用" : "等待本机服务"}</span>} tone="blue" /><SettingRow icon={DownloadSimple} title="导出数据" description="下载当前完整 JSON 备份" control={<button className="outline-action" onClick={exportBackup}>导出备份</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="业务数据不是缓存，不会被删除" control={<button className="outline-action" onClick={() => onToast("无需清理：经营数据已安全保留")}>检查缓存</button>} tone="red" /></SectionCard>}
     {section === "界面主题" && <SectionCard id="settings-live-界面主题" className="theme-settings settings-panel-card"><PanelHeader title="界面主题与外观" /><div className="mode-choice"><span><i />界面模式<small>当前产品保持浅色 SaaS 设计</small></span><button className="active" onClick={() => update({ colorMode: "light" })}>浅色模式</button><button disabled title="当前浅色设计暂未提供深色配色">深色模式</button></div><div className="theme-colors"><span><b>主题色彩</b><small>主要按钮与选中状态使用该颜色</small></span>{["#6544f4", "#4c8cf5", "#25c879", "#ffac18", "#f35b68", "#12b9cd"].map((color) => <button aria-label={`选择主题色 ${color}`} className={(settings.themeColor || "#6544f4") === color ? "active" : ""} style={{ background: color }} onClick={() => update({ themeColor: color })} key={color} />)}</div></SectionCard>}
   </section>;
 
-  return <div className="other-page settings-page"><div className="settings-layout settings-focused-layout">
-    <SectionCard className="settings-nav">{sections.map(([label, Icon]) => <button type="button" aria-current={section === label ? "page" : undefined} className={section === label ? "active" : ""} onClick={() => go(label)} key={label}><Icon size={18} />{label}</button>)}</SectionCard>
-    <main className="settings-main settings-focused-main" key={section}>{activePanel}</main>
-  </div></div>;
+  return <>
+    <div className="other-page settings-page"><div className="settings-layout settings-focused-layout">
+      <SectionCard className="settings-nav">{sections.map(([label, Icon]) => <button type="button" aria-current={section === label ? "page" : undefined} className={section === label ? "active" : ""} onClick={() => go(label)} key={label}><Icon size={18} />{label}</button>)}</SectionCard>
+      <main className="settings-main settings-focused-main" key={section}>{activePanel}</main>
+    </div></div>
+    {recoveryTarget && <ConnectionRecoveryDrawer target={recoveryTarget} current={recoveryCurrent} onClose={() => setRecoveryTarget(null)} onRecovered={handleConnectionRecovered} onToast={onToast} />}
+  </>;
 }
 
 export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, onCreateChangeOrder, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onPersistedSnapshot, onNavigate, globalSearch, initialSettingsSection, projectRoute, onProjectRouteChange, customerRoute, onCustomerRouteChange }: OtherPagesProps) {
-  const [modal, setModal] = useState<ActionKind | null>(null);
+  const [modal, setModal] = useState<CrudActionKind | null>(null);
+  const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
   const [createProjectKind, setCreateProjectKind] = useState<ProjectKind>("client");
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
-  const created = (kind: ActionKind, value: CrudValue) => {
+  const created = (kind: CrudActionKind, value: CrudValue) => {
     const next = JSON.parse(JSON.stringify(snapshot)) as LedgerSnapshot;
     const stamp = Date.now();
     const today = new Date();
@@ -1041,13 +1050,12 @@ export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, on
       }
       const due = new Date(today);
       due.setDate(due.getDate() + Math.max(1, Number(value.durationDays) || 30));
-      next.projects.unshift({ id: `p-${stamp}`, name: value.name, customerId: customer?.id || "", totalAmount: value.projectKind === "personal" ? 0 : Number(value.amount), startDate: today.toISOString().slice(0, 10), dueDate: due.toISOString().slice(0, 10), progress: 0, status: "pending", notes: value.notes || undefined, type: value.projectKind === "personal" ? "个人开发" : "定制开发", estimatedHours: Math.max(1, Number(value.durationDays) || 30) * 5, accent: value.projectKind === "personal" ? "purple" : "blue", projectKind: value.projectKind });
+      next.projects.unshift({ id: `p-${stamp}`, name: value.name, customerId: customer?.id || "", totalAmount: value.projectKind === "personal" ? 0 : Number(value.amount), startDate: today.toISOString().slice(0, 10), dueDate: due.toISOString().slice(0, 10), progress: 0, status: "pending", notes: value.notes || undefined, type: value.projectKind === "personal" ? "个人开发" : "定制开发", estimatedHours: Math.max(1, Number(value.durationDays) || 30) * 5, accent: value.projectKind === "personal" ? "purple" : "blue", projectKind: value.projectKind, itemExternalId: value.sourceItemExternalId || null });
     }
     if (kind === "expense") {
       const expense = { id: editingExpenseId || `e-${stamp}`, projectId: value.projectId || undefined, name: value.name, category: value.category as "software" | "outsourcing" | "server" | "office" | "traffic" | "refund" | "other", amount: Number(value.amount), paidAt: value.paidAt ? new Date(value.paidAt).toISOString() : today.toISOString(), notes: value.notes || undefined };
       next.expenses = editingExpenseId ? next.expenses.map((item) => item.id === editingExpenseId ? expense : item) : [expense, ...next.expenses];
     }
-    if (kind === "customer") next.customers.unshift({ id: `c-${stamp}`, name: value.name, source: value.source as "xianyu" | "wechat" | "referral" | "other", phone: value.amount, followUpStatus: "new", lastContactAt: today.toISOString(), level: value.level, tags: value.notes ? value.notes.split(/[,，]/).map((item) => item.trim()).filter(Boolean) : ["新客户"] });
     onSnapshotChange(next);
     setEditingExpenseId(null);
     setModal(null);
@@ -1057,19 +1065,18 @@ export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, on
   const content = useMemo(() => {
     if (page === "客户消息") return <CustomerMessagesPage customers={snapshot.customers} onOpenRequirement={(customerId, caseId) => onCustomerRouteChange({ customerId, caseId }, "push")} onProjectCreated={(projectId) => { window.location.hash = encodeURIComponent(`项目管理/${projectId}/immersive`); window.location.reload(); }} />;
     if (page === "商品经营") return <ProductIntelligencePage globalSearch={globalSearch} />;
-    if (page === "项目管理") return <ProjectWorkspacePage snapshot={snapshot} onCreateProject={(projectKind = "client") => { setCreateProjectKind(projectKind); setModal("project"); }} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} projectRoute={projectRoute} onProjectRouteChange={onProjectRouteChange} />;
-    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} globalSearch={globalSearch} />;
+    if (page === "项目管理") return <ProjectWorkspacePage snapshot={snapshot} onCreateProject={(projectKind = "client") => { setCreateProjectKind(projectKind); setModal("project"); }} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} onNavigate={onNavigate} globalSearch={globalSearch} projectRoute={projectRoute} onProjectRouteChange={onProjectRouteChange} />;
+    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} onNavigate={onNavigate} globalSearch={globalSearch} />;
     if (page === "支出记录") return <CleanExpenseRecordsPage snapshot={snapshot} onAction={setModal} extraRows={[]} globalSearch={globalSearch} onViewExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense) { setToast(`${expense.name} · ¥${expense.amount.toLocaleString()} · ${expense.notes || "无备注"}`); window.setTimeout(() => setToast(""), 3200); } }} onEditExpense={(id) => { setEditingExpenseId(id); setModal("expense"); }} onDeleteExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense && window.confirm(`确认删除支出“${expense.name}”？此操作无法撤销。`)) { onSnapshotChange({ ...snapshot, expenses: snapshot.expenses.filter((item) => item.id !== id) }); setToast(`${expense.name} 已删除`); window.setTimeout(() => setToast(""), 2200); } }} />;
     if (page === "客户管理") {
       const customer = customerRoute ? snapshot.customers.find((item) => item.id === customerRoute.customerId) : null;
       if (customerRoute && customer) return <CustomerRequirementBlueprintPage customer={customer} route={customerRoute} onRouteChange={onCustomerRouteChange} onSnapshotChange={onSnapshotChange} />;
-      return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setModal("customer")} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} globalSearch={globalSearch} onOpenRequirements={(customerId) => onCustomerRouteChange({ customerId, caseId: null }, "push")} />;
+      return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setCustomerCreateOpen(true)} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} onNavigate={onNavigate} globalSearch={globalSearch} onOpenRequirements={(customerId) => onCustomerRouteChange({ customerId, caseId: null }, "push")} />;
     }
     if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
     if (page === "经营分析中心") return <BusinessAnalysisPage onNavigate={onNavigate} />;
-    if (page === "目标计划") return <CleanGoalPlanPage snapshot={snapshot} onEditGoal={() => { onNavigate("设置中心"); window.setTimeout(() => document.getElementById("settings-live-记账设置")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120); }} />;
     if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} onNavigate={onNavigate} />;
     return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} initialSection={initialSettingsSection} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
   }, [customerRoute, globalSearch, initialSettingsSection, onConfirmPayment, onCreateChangeOrder, onCreatePaymentPlan, onCustomerRouteChange, onNavigate, onPersistedSnapshot, onProjectRouteChange, onQuickAdd, onRecordSettlementIssue, onSnapshotChange, page, projectRoute, snapshot]);
-  return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} initialProjectKind={createProjectKind} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
+  return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} initialProjectKind={createProjectKind} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{customerCreateOpen && <CustomerCreateDialog onClose={() => setCustomerCreateOpen(false)} onCreated={(next, customerName) => { onPersistedSnapshot(next); setCustomerCreateOpen(false); setToast(`${customerName} 已加入客户列表`); window.setTimeout(() => setToast(""), 2200); }} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
 }

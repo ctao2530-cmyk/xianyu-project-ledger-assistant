@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from .ai.base import AIModelSelection, AIProviderError
 from .ledger import (
     LedgerService,
+    LedgerValidationError,
     MigrationTokenMismatch,
     PaymentConfirmationError,
     ProjectChangeOrderError,
@@ -50,6 +51,9 @@ from .ledger_schemas import (
     RequirementExportPackageRequest,
     RequirementExportPackageView,
     RequirementExportPreviewView,
+    RequirementCustomerConfirmRequest,
+    RequirementCustomerConfirmResult,
+    RequirementCustomerStatusView,
     RequirementExportView,
     RequirementImportCommitRequest,
     RequirementImportCommitResult,
@@ -69,6 +73,7 @@ from .models import (
     CustomerChannelIdentity,
     LeadAnalysisRun,
     Message,
+    ProductMonitor,
     QuoteProposal,
     RequirementDocumentVersion,
     RequirementQuoteLink,
@@ -200,6 +205,11 @@ async def confirm_ledger_payment(
                 "revision": exc.revision,
             },
         ) from None
+    except LedgerValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"message": str(exc), "code": exc.code},
+        ) from None
     except PaymentConfirmationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -324,6 +334,11 @@ async def update_ledger_snapshot(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"message": "经营数据已在其他浏览器更新，请刷新后重试", "revision": exc.revision},
+        ) from None
+    except LedgerValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"message": str(exc), "code": exc.code},
         ) from None
     runtime_from(request).event_hub.publish_nowait(
         {"type": "ledger_updated", "revision": revision}
@@ -494,6 +509,66 @@ async def get_conversation_lead(
             select(SalesLead).where(SalesLead.conversation_id == conversation_id)
         )
         return lead_view(lead) if lead else None
+
+
+@ledger_router.get(
+    "/conversations/{conversation_id}/requirement-customer",
+    response_model=RequirementCustomerStatusView,
+)
+async def requirement_customer_status(
+    conversation_id: int,
+    request: Request,
+) -> RequirementCustomerStatusView:
+    try:
+        result = runtime_from(request).requirement_exchange.requirement_customer_status(
+            conversation_id
+        )
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    return RequirementCustomerStatusView(**result)
+
+
+@ledger_router.post(
+    "/conversations/{conversation_id}/requirement-customer/confirm",
+    response_model=RequirementCustomerConfirmResult,
+)
+async def confirm_requirement_customer(
+    conversation_id: int,
+    payload: RequirementCustomerConfirmRequest,
+    request: Request,
+) -> RequirementCustomerConfirmResult:
+    runtime = runtime_from(request)
+    try:
+        result = runtime.requirement_exchange.confirm_requirement_customer(
+            conversation_id,
+            request_id=payload.request_id,
+            expected_revision=payload.expected_revision,
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "经营数据已在其他浏览器更新，请刷新后重新确认客户",
+                "revision": exc.revision,
+            },
+        ) from None
+    except RequirementExchangeError as exc:
+        _raise_exchange_error(exc)
+    runtime.event_hub.publish_nowait(
+        {
+            "type": "ledger_updated",
+            "revision": result["revision"],
+            "source": "requirement_customer_confirmation",
+        }
+    )
+    runtime.event_hub.publish_nowait(
+        {
+            "type": "requirement_customer_confirmed",
+            "conversation_id": conversation_id,
+            "customer_id": result["customer_id"],
+        }
+    )
+    return RequirementCustomerConfirmResult(**result)
 
 
 @ledger_router.get(
@@ -1047,6 +1122,18 @@ async def convert_lead(
             or (conversation.item.title if conversation.item else None)
             or f"{conversation.customer_name}项目"
         )
+        source_item_external_id = None
+        if conversation.item:
+            source_monitor = session.scalar(
+                select(ProductMonitor)
+                .where(
+                    ProductMonitor.item_id == conversation.item.id,
+                    ProductMonitor.ownership_status == "owned",
+                )
+                .limit(1)
+            )
+            if source_monitor is not None:
+                source_item_external_id = conversation.item.external_id
         snapshot["projects"].insert(0, {
             "id": project_id,
             "name": project_name,
@@ -1062,6 +1149,7 @@ async def convert_lead(
             "accent": "blue",
             "leadId": lead.id,
             "conversationId": conversation.id,
+            "itemExternalId": source_item_external_id,
             "requirementVersionId": quote.requirement_version_id,
             "quoteId": quote.id,
         })

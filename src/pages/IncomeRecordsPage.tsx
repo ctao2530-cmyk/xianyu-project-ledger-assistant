@@ -12,6 +12,7 @@ import { daysUntil, getBusinessSummary } from "../data/businessMetrics";
 import { projectKindOf } from "../data/projectKinds";
 import { hasTerminalSettlementIssue, latestSettlementIssue, settlementIssueLabels } from "../data/settlementIssues";
 import type { LedgerSnapshot, PaymentStatus, PaymentType, Project } from "../types";
+import { PredictionSummaryStrip } from "../components/PredictionSummaryStrip";
 
 const money = new Intl.NumberFormat("zh-CN", {
   style: "currency",
@@ -70,6 +71,7 @@ export function EnhancedIncomeRecordsPage({
   onConfirmPayment,
   onRecordSettlementIssue,
   onSnapshotChange,
+  onNavigate,
   globalSearch,
 }: {
   snapshot: LedgerSnapshot;
@@ -79,6 +81,7 @@ export function EnhancedIncomeRecordsPage({
   onConfirmPayment: (projectId: string, paymentId?: string) => void;
   onRecordSettlementIssue: (projectId: string) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
+  onNavigate: (page: string) => void;
   globalSearch: string;
 }) {
   const summary = getBusinessSummary(snapshot);
@@ -175,6 +178,7 @@ export function EnhancedIncomeRecordsPage({
         <Metric label="退款 / 核销" value={money.format(0)} detail="退款 ¥0 · 核销 ¥0" tone="green" icon={WarningCircle} />
         <Metric label="净回款率" value="0%" detail="按接单项目合同额计算" tone="blue" icon={Gauge} />
       </section>
+      <PredictionSummaryStrip context="finance" onNavigate={onNavigate} />
       <Surface className="business-empty-state"><i><Wallet size={42} weight="duotone" /></i><h3>还没有接单项目</h3><p>先创建接单项目，之后即使没有付款节点，也可以直接确认真实到账。</p><button className="business-primary" onClick={onQuickAdd}><Plus size={16} />记录第一笔收款</button></Surface>
     </div>;
   }
@@ -186,6 +190,7 @@ export function EnhancedIncomeRecordsPage({
       <Metric label="退款 / 核销" value={money.format(clientRefunded + clientUncollectible)} detail={`退款 ${money.format(clientRefunded)} · 核销 ${money.format(clientUncollectible)}`} tone="green" icon={WarningCircle} />
       <Metric label="净回款率" value={`${Math.round(netCollectionRate)}%`} detail="净到账 ÷ 接单合同总额" tone="blue" icon={Gauge} />
     </section>
+    <PredictionSummaryStrip context="finance" onNavigate={onNavigate} />
 
     <Surface className="outstanding-projects-panel">
       <SurfaceTitle eyebrow="OUTSTANDING PROJECTS" title={globalSearch ? `待回款项目 · ${visibleUnsettled.length}` : "待回款项目"} action={<span className="outstanding-total">合计可收 {money.format(clientOutstanding)}</span>} />

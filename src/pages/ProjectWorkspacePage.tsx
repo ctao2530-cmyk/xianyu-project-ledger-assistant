@@ -1,89 +1,42 @@
 import {
   ArrowLeft,
   ArrowRight,
-  BellRinging,
   Briefcase,
-  CalendarBlank,
   CheckCircle,
-  Clock,
   Code,
   Coins,
-  FolderSimple,
-  Gauge,
   ListChecks,
   MagnifyingGlass,
+  PencilSimple,
   Plus,
-  Sparkle,
-  Target,
+  ShieldCheck,
+  Storefront,
   Timer,
   WarningCircle,
+  X,
 } from "@phosphor-icons/react";
-import {
-  type CSSProperties,
-  type KeyboardEvent,
-  type PointerEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { daysBetween, daysUntil, getProjectFinancials } from "../data/businessMetrics";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { daysUntil, getProjectFinancials } from "../data/businessMetrics";
+import { localPlatformService, type CodexProjectVerificationView, type ProductView } from "../data/localPlatformService";
+import { mockLedgerService } from "../data/mockService";
 import { projectKindOf } from "../data/projectKinds";
-import {
-  latestSettlementIssue,
-  latestTerminalSettlementIssue,
-  settlementIssueLabels,
-} from "../data/settlementIssues";
-import type { LedgerSnapshot, ProjectKind } from "../types";
-import {
-  ProjectDetail,
-  type ProjectPageRoute,
-  type ProjectRouteMode,
-} from "./BusinessAssistantPages";
+import { latestTerminalSettlementIssue } from "../data/settlementIssues";
+import type { CustomerRelationPreview, LedgerSnapshot, Project, ProjectKind, ProjectProductPreview } from "../types";
+import { ProjectDetail, type ProjectPageRoute, type ProjectRouteMode } from "./BusinessAssistantPages";
 
-const money = new Intl.NumberFormat("zh-CN", {
-  style: "currency",
-  currency: "CNY",
-  maximumFractionDigits: 0,
-});
+const money = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 0 });
+const shortDate = (value: string) => new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date(`${value.slice(0, 10)}T00:00:00`));
 
-const shortDate = (value: string) =>
-  new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date(`${value.slice(0, 10)}T00:00:00`));
-
-const statusLabels = {
+const statusLabels: Record<Project["status"], string> = {
   pending: "待开始",
   in_progress: "进行中",
   delivered: "已交付",
   completed: "已完成",
   overdue: "已逾期",
-} as const;
+};
 
-type PortfolioStatus = "current" | "pending" | "in_progress" | "finished" | "overdue" | "terminated";
-type ProjectFinancial = ReturnType<typeof getProjectFinancials>[number];
-type ProjectOrbitEntry =
-  | { kind: "project"; id: string; item: ProjectFinancial }
-  | { kind: "placeholder"; id: string; slot: number };
-
-const projectOrbitWindowSize = 5;
-const projectEntryTransitionMs = 220;
-
-function projectOrbitGeometry(slotOffset: number) {
-  const depth = Math.abs(slotOffset);
-  const direction = Math.sign(slotOffset);
-  const x = direction === 0
-    ? 0
-    : direction * (depth <= 1 ? 168 * depth : 168 + (depth - 1) * 97);
-  return {
-    depth,
-    x,
-    y: 6 + depth * 8,
-    z: -8 - depth * 60,
-    rotateY: direction === 0 ? 0 : direction * -Math.min(14, 4 + depth * 6),
-    scale: Math.max(.8, .98 - depth * .07),
-    opacity: Math.max(.5, 1 - depth * .16),
-    order: 78 - Math.round(depth * 5),
-  };
-}
+type ListStatus = "all" | "in_progress" | "attention" | "finished" | "terminated";
+type RelationDialog = { kind: "customer" | "product"; projectId: string } | null;
 
 interface ProjectWorkspacePageProps {
   snapshot: LedgerSnapshot;
@@ -93,572 +46,158 @@ interface ProjectWorkspacePageProps {
   onConfirmPayment: (projectId: string, paymentId?: string) => void;
   onRecordSettlementIssue: (projectId: string) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
+  onPersistedSnapshot: (snapshot: LedgerSnapshot) => void;
+  onNavigate: (page: string) => void;
   globalSearch: string;
   projectRoute: ProjectPageRoute | null;
   onProjectRouteChange: (route: ProjectPageRoute | null, mode?: ProjectRouteMode) => void;
 }
 
-function categoryMatchesStatus(status: string, filter: PortfolioStatus, terminated: boolean) {
-  if (filter === "current") return !terminated;
-  if (filter === "terminated") return terminated;
-  if (terminated) return false;
-  if (filter === "finished") return status === "completed" || status === "delivered";
-  return status === filter;
+function ProjectMetric({ icon, label, value, detail, tone }: { icon: ReactNode; label: string; value: string; detail: string; tone: "purple" | "blue" | "green" | "orange" }) {
+  return <article className={`project-hub-metric is-${tone}`}><i>{icon}</i><span><small>{label}</small><strong>{value}</strong><em>{detail}</em></span></article>;
 }
 
-function projectRisk(item: ProjectFinancial, remaining: number) {
-  const latestIssue = latestSettlementIssue(item.settlementIssues);
-  if (latestIssue) {
-    return {
-      tone: "danger",
-      title: `${settlementIssueLabels[latestIssue.type]} · 已记录 ${item.issueCount} 条异常`,
-      detail: latestIssue.reason,
-    } as const;
-  }
-  if (item.project.status === "overdue" || remaining < 0) {
-    return {
-      tone: "danger",
-      title: `项目已超期 ${Math.max(1, Math.abs(remaining))} 天`,
-      detail: "建议先收敛最小验收范围，并同步更新交付预期。",
-    } as const;
-  }
-  if (item.project.status === "delivered" && item.outstanding > 0) {
-    return {
-      tone: "warning",
-      title: `已交付，仍有 ${money.format(item.outstanding)} 待回款`,
-      detail: "交付状态与回款状态相互独立，可直接确认到账。",
-    } as const;
-  }
-  if (remaining <= 3 && item.project.status !== "completed") {
-    return {
-      tone: "warning",
-      title: `距离交付仅 ${Math.max(0, remaining)} 天`,
-      detail: "优先完成验收必需项，并确认依赖资料是否齐全。",
-    } as const;
-  }
-  return {
-    tone: "stable",
-    title: "当前节奏可控",
-    detail: "任务、日期和回款暂未出现需要立即处理的异常。",
-  } as const;
+function VerifiedMeter({ view }: { view: CodexProjectVerificationView | null | undefined }) {
+  const value = view?.progress.verified_delivery.percent ?? 0;
+  return <div className="project-verified-meter" aria-label={`已验证交付进度 ${value}%`}><span><small>VERIFIED</small><b>{value}%</b></span><i><em style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></i></div>;
 }
 
-export function ProjectWorkspacePage({
-  snapshot,
-  onCreateProject,
-  onCreatePaymentPlan,
-  onCreateChangeOrder,
-  onConfirmPayment,
-  onRecordSettlementIssue,
-  onSnapshotChange,
-  globalSearch,
-  projectRoute,
-  onProjectRouteChange,
-}: ProjectWorkspacePageProps) {
-  const routedProject = projectRoute
-    ? snapshot.projects.find((project) => project.id === projectRoute.projectId)
-    : undefined;
+function ProjectEditView({ project, snapshot, productTitle, onBack, onSave, onChangeRelation }: {
+  project: Project;
+  snapshot: LedgerSnapshot;
+  productTitle: string;
+  onBack: () => void;
+  onSave: (project: Project) => void;
+  onChangeRelation: (kind: "customer" | "product") => void;
+}) {
+  const [draft, setDraft] = useState(() => ({ name: project.name, type: project.type || "", status: project.status, startDate: project.startDate, dueDate: project.dueDate, estimatedHours: String(project.estimatedHours || 0), notes: project.notes || "" }));
+  const [error, setError] = useState("");
+  const customer = snapshot.customers.find((item) => item.id === project.customerId);
+  const isPersonal = projectKindOf(project) === "personal";
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!draft.name.trim()) return setError("请填写项目名称");
+    if (draft.dueDate < draft.startDate) return setError("交付日期不能早于开始日期");
+    setError("");
+    onSave({ ...project, name: draft.name.trim(), type: draft.type.trim(), status: draft.status, startDate: draft.startDate, dueDate: draft.dueDate, estimatedHours: Math.max(0, Number(draft.estimatedHours) || 0), notes: draft.notes.trim() });
+  };
+  return <div className="business-page project-edit-page"><form className="project-edit-shell" onSubmit={submit}>
+    <header className="project-edit-head"><button type="button" className="business-back" onClick={onBack}><ArrowLeft size={17} />返回项目详情</button><div><small>PROJECT EDIT</small><h2>编辑项目</h2><p>普通保存不会直接修改客户与商品关系。</p></div><button type="submit" className="business-primary">保存修改</button></header>
+    <section className="project-edit-section"><header><span>01</span><div><h3>基本信息</h3><p>调整项目自身的名称、类型和交付状态。</p></div></header><div className="project-edit-fields">
+      <label className="is-wide"><span>项目名称</span><input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+      <label><span>项目类型</span><input value={draft.type} onChange={(event) => setDraft((current) => ({ ...current, type: event.target.value }))} /></label>
+      <label><span>状态</span><select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value as Project["status"] }))}>{Object.entries(statusLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+      <label><span>开始日期</span><input type="date" value={draft.startDate} onChange={(event) => setDraft((current) => ({ ...current, startDate: event.target.value }))} /></label>
+      <label><span>{isPersonal ? "里程碑日期" : "交付日期"}</span><input type="date" value={draft.dueDate} onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))} /></label>
+      <label><span>预计工时</span><input type="number" min="0" step="0.5" value={draft.estimatedHours} onChange={(event) => setDraft((current) => ({ ...current, estimatedHours: event.target.value }))} /></label>
+      <label className="is-wide"><span>项目说明</span><textarea rows={4} value={draft.notes} onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))} /></label>
+    </div></section>
+    {!isPersonal && <section className="project-edit-section"><header><span>02</span><div><h3>关系设置</h3><p>关系变更会先展示影响范围，再由你单独确认。</p></div></header><div className="project-edit-relations">
+      <article><i><span>{customer?.name.slice(0, 1) || "客"}</span></i><div><small>客户关系</small><strong>{customer?.name || "未关联客户"}</strong><p>变更会同步项目、付款、追加订单与异常归属。</p></div><button type="button" onClick={() => onChangeRelation("customer")}>变更 <ArrowRight size={14} /></button></article>
+      <article><i><Storefront size={21} weight="duotone" /></i><div><small>来源商品</small><strong>{productTitle}</strong><p>保留原利润历史，按预览结果更新实时归属。</p></div><button type="button" onClick={() => onChangeRelation("product")}>变更 <ArrowRight size={14} /></button></article>
+    </div></section>}
+    <section className="project-edit-safety"><ShieldCheck size={19} weight="fill" /><span><b>版本保护</b><small>基础资料使用账本 revision 保存；关系修正额外使用 preview token 与 request-id，避免重复和并发覆盖。</small></span></section>
+    {error && <p className="project-edit-error" role="alert">{error}</p>}<footer><button type="button" onClick={onBack}>取消</button><button type="submit" className="business-primary">保存修改</button></footer>
+  </form></div>;
+}
+
+export function ProjectWorkspacePage({ snapshot, onCreateProject, onCreatePaymentPlan, onCreateChangeOrder, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onPersistedSnapshot, globalSearch, projectRoute, onProjectRouteChange }: ProjectWorkspacePageProps) {
+  const routedProject = projectRoute ? snapshot.projects.find((project) => project.id === projectRoute.projectId) : undefined;
   const [projectKind, setProjectKind] = useState<ProjectKind>(() => routedProject ? projectKindOf(routedProject) : "client");
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<PortfolioStatus>("current");
-  const [sort, setSort] = useState<"due" | "progress" | "amount">("due");
-  const [selectedByKind, setSelectedByKind] = useState<Record<ProjectKind, string>>({ personal: "", client: "" });
-  const [extractedByKind, setExtractedByKind] = useState<Record<ProjectKind, string>>({ personal: "", client: "" });
-  const [orbitWindowStartByKind, setOrbitWindowStartByKind] = useState<Record<ProjectKind, number>>({ personal: 0, client: 0 });
-  const sceneRef = useRef<HTMLDivElement>(null);
-  const dragStartX = useRef<number | null>(null);
-  const dragged = useRef(false);
-  const wheelAmount = useRef(0);
-  const parallaxFrame = useRef<number | null>(null);
-  const projectEntryTimer = useRef<number | null>(null);
-  const openingProjectId = useRef("");
+  const [status, setStatus] = useState<ListStatus>("all");
+  const [sort, setSort] = useState<"due" | "updated" | "amount">("due");
+  const [products, setProducts] = useState<ProductView[]>([]);
+  const [verification, setVerification] = useState<Record<string, CodexProjectVerificationView | null>>({});
+  const [relationDialog, setRelationDialog] = useState<RelationDialog>(null);
+  const [relationSearch, setRelationSearch] = useState("");
+  const [relationBusy, setRelationBusy] = useState(false);
+  const [relationError, setRelationError] = useState("");
+  const [productPreview, setProductPreview] = useState<ProjectProductPreview | null>(null);
+  const [customerPreview, setCustomerPreview] = useState<CustomerRelationPreview | null>(null);
+  const relationCloseRef = useRef<HTMLButtonElement>(null);
+  const relationReturnFocusRef = useRef<HTMLElement | null>(null);
   const financials = useMemo(() => getProjectFinancials(snapshot), [snapshot]);
 
-  useEffect(() => {
-    if (routedProject) setProjectKind(projectKindOf(routedProject));
-  }, [routedProject]);
+  useEffect(() => { if (routedProject) setProjectKind(projectKindOf(routedProject)); }, [routedProject]);
+  useEffect(() => { let active = true; void localPlatformService.productIntelligence().then((value) => { if (active) setProducts(value.products.filter((product) => product.ownership_status === "owned")); }).catch(() => { if (active) setProducts([]); }); return () => { active = false; }; }, []);
+  useEffect(() => { let active = true; void Promise.all(snapshot.projects.map(async (project) => { try { return [project.id, await localPlatformService.projectVerification(project.id)] as const; } catch { return [project.id, null] as const; } })).then((entries) => { if (active) setVerification(Object.fromEntries(entries)); }); return () => { active = false; }; }, [snapshot.projects]);
 
-  useEffect(() => () => {
-    if (parallaxFrame.current !== null) window.cancelAnimationFrame(parallaxFrame.current);
-    if (projectEntryTimer.current !== null) window.clearTimeout(projectEntryTimer.current);
-  }, []);
-
-  const categoryFinancials = financials.filter(({ project }) => projectKindOf(project) === projectKind);
-  const currentCategoryFinancials = categoryFinancials.filter(
-    (item) => !latestTerminalSettlementIssue(item.settlementIssues),
-  );
-  const terminatedCategoryFinancials = categoryFinancials.filter(
-    (item) => Boolean(latestTerminalSettlementIssue(item.settlementIssues)),
-  );
-  const categoryProjects = currentCategoryFinancials.map(({ project }) => project);
+  const category = financials.filter(({ project }) => projectKindOf(project) === projectKind);
   const query = (globalSearch || search).trim().toLowerCase();
-  const visible = categoryFinancials
-    .filter((item) => {
-      const { project } = item;
-      const customer = snapshot.customers.find((item) => item.id === project.customerId);
-      const haystack = `${project.name} ${project.type || ""} ${customer?.name || ""} ${project.notes || ""}`.toLowerCase();
-      const terminated = Boolean(latestTerminalSettlementIssue(item.settlementIssues));
-      return haystack.includes(query) && categoryMatchesStatus(project.status, status, terminated);
-    })
-    .sort((left, right) => {
-      if (sort === "amount") return right.project.totalAmount - left.project.totalAmount;
-      if (sort === "progress") return right.project.progress - left.project.progress;
-      return left.project.dueDate.localeCompare(right.project.dueDate);
-    });
-  const categoryTasks = snapshot.tasks.filter((task) => categoryProjects.some((project) => project.id === task.projectId));
-  const completedTasks = categoryTasks.filter((task) => task.status === "done").length;
-  const taskCompletion = categoryTasks.length ? Math.round(completedTasks / categoryTasks.length * 100) : 0;
-  const activeProjects = categoryProjects.filter((project) => project.status === "in_progress");
-  const averageProgress = categoryProjects.length
-    ? Math.round(categoryProjects.reduce((sum, project) => sum + project.progress, 0) / categoryProjects.length)
-    : 0;
-  const averageDuration = categoryProjects.length
-    ? categoryProjects.reduce((sum, project) => sum + daysBetween(project.startDate, project.dueDate), 0) / categoryProjects.length
-    : 0;
-  const totalContract = categoryProjects.reduce((sum, project) => sum + project.totalAmount, 0);
-  const outstanding = currentCategoryFinancials.reduce((sum, item) => sum + item.outstanding, 0);
-  const actualHours = currentCategoryFinancials.reduce((sum, item) => sum + item.actualHours, 0);
-  const counts: Record<ProjectKind, number> = {
-    personal: financials.filter((item) => projectKindOf(item.project) === "personal" && !latestTerminalSettlementIssue(item.settlementIssues)).length,
-    client: financials.filter((item) => projectKindOf(item.project) === "client" && !latestTerminalSettlementIssue(item.settlementIssues)).length,
-  };
-  const terminatedCounts: Record<ProjectKind, number> = {
-    personal: financials.filter((item) => projectKindOf(item.project) === "personal" && Boolean(latestTerminalSettlementIssue(item.settlementIssues))).length,
-    client: financials.filter((item) => projectKindOf(item.project) === "client" && Boolean(latestTerminalSettlementIssue(item.settlementIssues))).length,
-  };
-  const statusOptions: Array<{ key: PortfolioStatus; label: string; icon: typeof Briefcase; count: number }> = [
-    { key: "current", label: "当前合作", icon: FolderSimple, count: categoryProjects.length },
-    { key: "pending", label: "待开始", icon: Clock, count: categoryProjects.filter((project) => project.status === "pending").length },
-    { key: "in_progress", label: "进行中", icon: ListChecks, count: activeProjects.length },
-    { key: "finished", label: "已完成", icon: CheckCircle, count: categoryProjects.filter((project) => project.status === "completed" || project.status === "delivered").length },
-    { key: "overdue", label: "需关注", icon: WarningCircle, count: categoryProjects.filter((project) => project.status === "overdue").length },
-    { key: "terminated", label: "已终止", icon: WarningCircle, count: terminatedCategoryFinancials.length },
-  ];
+  const visible = category.filter((item) => {
+    const customer = snapshot.customers.find((candidate) => candidate.id === item.project.customerId);
+    const product = products.find((candidate) => candidate.external_id === item.project.itemExternalId);
+    const terminal = Boolean(latestTerminalSettlementIssue(item.settlementIssues));
+    if (!`${item.project.name} ${item.project.type || ""} ${customer?.name || ""} ${product?.title || ""}`.toLowerCase().includes(query)) return false;
+    if (status === "terminated") return terminal;
+    if (terminal) return false;
+    if (status === "in_progress") return item.project.status === "in_progress";
+    if (status === "attention") return item.project.status === "overdue" || daysUntil(item.project.dueDate) <= 3;
+    if (status === "finished") return item.project.status === "completed" || item.project.status === "delivered";
+    return true;
+  }).sort((left, right) => sort === "amount" ? right.project.totalAmount - left.project.totalAmount : sort === "updated" ? right.project.id.localeCompare(left.project.id) : left.project.dueDate.localeCompare(right.project.dueDate));
+  const active = category.filter((item) => !latestTerminalSettlementIssue(item.settlementIssues));
+  const activeProjects = active.filter((item) => item.project.status === "in_progress");
+  const totalContract = active.reduce((sum, item) => sum + item.project.totalAmount, 0);
+  const outstanding = active.reduce((sum, item) => sum + item.outstanding, 0);
+  const projectTasks = snapshot.tasks.filter((task) => active.some((item) => item.project.id === task.projectId));
+  const actualHours = projectTasks.reduce((sum, task) => sum + task.actualHours, 0);
+  const openProject = (projectId: string) => onProjectRouteChange({ projectId, tab: "overview" }, "push");
+  const editProject = (projectId: string) => onProjectRouteChange({ projectId, tab: "edit" }, "push");
 
-  const rememberedSelection = selectedByKind[projectKind];
-  const selectedProjectId = visible.some(({ project }) => project.id === rememberedSelection)
-    ? rememberedSelection
-    : visible[0]?.project.id || "";
-  const selectedIndex = Math.max(0, visible.findIndex(({ project }) => project.id === selectedProjectId));
-  const showProjectPlaceholders = status === "current" && !query;
-  const placeholderCount = showProjectPlaceholders ? Math.max(0, 3 - visible.length) : 0;
-  const projectOrbitEntries: ProjectOrbitEntry[] = visible.map((item) => ({
-    kind: "project",
-    id: item.project.id,
-    item,
-  }));
-  const placeholderOrbitEntries: ProjectOrbitEntry[] = Array.from(
-    { length: placeholderCount },
-    (_, slot) => ({ kind: "placeholder", id: `project-placeholder-${projectKind}-${slot}`, slot }),
-  );
-  const orbitEntries: ProjectOrbitEntry[] = (() => {
-    if (!placeholderCount) return projectOrbitEntries;
-    if (!projectOrbitEntries.length) return placeholderOrbitEntries;
-    if (projectOrbitEntries.length === 1) {
-      return [placeholderOrbitEntries[0], projectOrbitEntries[0], placeholderOrbitEntries[1]];
-    }
-    if (projectOrbitEntries.length === 2) {
-      return [placeholderOrbitEntries[0], ...projectOrbitEntries];
-    }
-    return [...projectOrbitEntries, ...placeholderOrbitEntries];
-  })();
-  const orbitWindowCount = Math.min(projectOrbitWindowSize, orbitEntries.length);
-  const maxOrbitWindowStart = Math.max(0, orbitEntries.length - orbitWindowCount);
-  const orbitWindowStart = Math.min(orbitWindowStartByKind[projectKind], maxOrbitWindowStart);
-  const orbitWindowEnd = orbitWindowStart + orbitWindowCount;
-  const orbitWindowCenter = orbitWindowStart + Math.max(0, orbitWindowCount - 1) / 2;
-  const extractedProjectId = visible.some(({ project }) => project.id === extractedByKind[projectKind])
-    ? extractedByKind[projectKind]
-    : "";
-  const extractedOrbitIndex = extractedProjectId
-    ? orbitEntries.findIndex((entry) => entry.kind === "project" && entry.item.project.id === extractedProjectId)
-    : -1;
-  const extractedGeometry = extractedOrbitIndex >= orbitWindowStart && extractedOrbitIndex < orbitWindowEnd
-    ? projectOrbitGeometry(extractedOrbitIndex - orbitWindowCenter)
-    : null;
-  const selectedFinancial = visible[selectedIndex];
-  const selectedProject = selectedFinancial?.project;
-  const selectedCustomer = selectedProject
-    ? snapshot.customers.find((customer) => customer.id === selectedProject.customerId)
-    : undefined;
-  const selectedTasks = selectedProject
-    ? snapshot.tasks.filter((task) => task.projectId === selectedProject.id)
-    : [];
-  const selectedDoneTasks = selectedTasks.filter((task) => task.status === "done").length;
-  const selectedRemaining = selectedProject ? daysUntil(selectedProject.dueDate) : 0;
-  const selectedRisk = selectedFinancial ? projectRisk(selectedFinancial, selectedRemaining) : null;
-  const selectedTerminalIssue = selectedFinancial
-    ? latestTerminalSettlementIssue(selectedFinancial.settlementIssues)
-    : undefined;
-  const visibleProjectIds = visible.map(({ project }) => project.id).join("|");
-  const orbitEntryIds = orbitEntries.map((entry) => entry.id).join("|");
+  const relationProject = relationDialog ? snapshot.projects.find((item) => item.id === relationDialog.projectId) : undefined;
+  const relationCustomer = relationProject ? snapshot.customers.find((item) => item.id === relationProject.customerId) : undefined;
+  const currentProduct = relationProject?.itemExternalId ? products.find((item) => item.external_id === relationProject.itemExternalId) : undefined;
+  const eligibleProducts = products.filter((product) => product.monitoring_enabled && `${product.title} ${product.external_id}`.toLowerCase().includes(relationSearch.toLowerCase()));
+  const eligibleCustomers = snapshot.customers.filter((customer) => customer.id !== relationProject?.customerId && customer.name.toLowerCase().includes(relationSearch.toLowerCase()));
+  const closeRelation = () => { setRelationDialog(null); setProductPreview(null); setCustomerPreview(null); setRelationSearch(""); setRelationError(""); window.setTimeout(() => relationReturnFocusRef.current?.focus(), 0); };
+  const openRelation = (kind: "customer" | "product", projectId: string) => { relationReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setRelationDialog({ kind, projectId }); setRelationSearch(""); setRelationError(""); setProductPreview(null); setCustomerPreview(null); window.setTimeout(() => relationCloseRef.current?.focus(), 0); };
 
   useEffect(() => {
-    if (!selectedProjectId || selectedByKind[projectKind] === selectedProjectId) return;
-    setSelectedByKind((current) => ({ ...current, [projectKind]: selectedProjectId }));
-  }, [projectKind, selectedByKind, selectedProjectId]);
-
-  useEffect(() => {
-    if (!extractedByKind[projectKind] || extractedProjectId) return;
-    setExtractedByKind((current) => ({ ...current, [projectKind]: "" }));
-  }, [extractedByKind, extractedProjectId, projectKind, visibleProjectIds]);
-
-  useEffect(() => {
-    const selectedOrbitIndex = orbitEntries.findIndex(
-      (entry) => entry.kind === "project" && entry.item.project.id === selectedProjectId,
-    );
-    if (selectedOrbitIndex < 0) return;
-    let nextStart = orbitWindowStart;
-    if (selectedOrbitIndex < orbitWindowStart) nextStart = selectedOrbitIndex;
-    else if (selectedOrbitIndex >= orbitWindowEnd) nextStart = selectedOrbitIndex - orbitWindowCount + 1;
-    nextStart = Math.min(maxOrbitWindowStart, Math.max(0, nextStart));
-    if (nextStart === orbitWindowStartByKind[projectKind]) return;
-    setOrbitWindowStartByKind((current) => ({ ...current, [projectKind]: nextStart }));
-  }, [maxOrbitWindowStart, orbitEntries, orbitEntryIds, orbitWindowCount, orbitWindowEnd, orbitWindowStart, orbitWindowStartByKind, projectKind, selectedProjectId]);
-
-  const selectProject = (projectId: string, mode: "select" | "extract" = "select") => {
-    setSelectedByKind((current) => ({ ...current, [projectKind]: projectId }));
-    setExtractedByKind((current) => ({ ...current, [projectKind]: mode === "extract" ? projectId : "" }));
-  };
-  const selectRelative = (direction: -1 | 1) => {
-    const nextIndex = Math.min(visible.length - 1, Math.max(0, selectedIndex + direction));
-    const nextProject = visible[nextIndex]?.project;
-    if (nextProject) selectProject(nextProject.id);
-  };
-  const openProject = (projectId: string) => onProjectRouteChange({ projectId, tab: "immersive" }, "push");
-  const enterProjectFromCard = (projectId: string) => {
-    if (openingProjectId.current) return;
-    openingProjectId.current = projectId;
-    selectProject(projectId, "extract");
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    projectEntryTimer.current = window.setTimeout(() => {
-      projectEntryTimer.current = null;
-      openingProjectId.current = "";
-      openProject(projectId);
-    }, reducedMotion ? 0 : projectEntryTransitionMs);
-  };
-  const cancelPendingProjectEntry = () => {
-    if (projectEntryTimer.current !== null) window.clearTimeout(projectEntryTimer.current);
-    projectEntryTimer.current = null;
-    openingProjectId.current = "";
-  };
-  const switchKind = (kind: ProjectKind) => {
-    cancelPendingProjectEntry();
-    setExtractedByKind((current) => ({ ...current, [kind]: "" }));
-    setProjectKind(kind);
-    setStatus("current");
-    setSort("due");
-  };
-  const resetScenePosition = () => {
-    const scene = sceneRef.current;
-    if (!scene) return;
-    scene.style.setProperty("--scene-shift-x", "0px");
-    scene.style.setProperty("--scene-shift-y", "0px");
-    scene.style.setProperty("--scene-tilt-x", "0deg");
-    scene.style.setProperty("--scene-tilt-y", "0deg");
-  };
-  const onScenePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType && event.pointerType !== "mouse") return;
-    if (window.matchMedia("(max-width: 820px), (pointer: coarse), (prefers-reduced-motion: reduce)").matches) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = Math.max(-1, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1) * 2 - 1));
-    const y = Math.max(-1, Math.min(1, (event.clientY - rect.top) / Math.max(rect.height, 1) * 2 - 1));
-    if (parallaxFrame.current !== null) window.cancelAnimationFrame(parallaxFrame.current);
-    parallaxFrame.current = window.requestAnimationFrame(() => {
-      const scene = sceneRef.current;
-      if (!scene) return;
-      scene.style.setProperty("--scene-shift-x", `${(x * 5).toFixed(2)}px`);
-      scene.style.setProperty("--scene-shift-y", `${(y * 4).toFixed(2)}px`);
-      scene.style.setProperty("--scene-tilt-x", `${(-y * 1.5).toFixed(2)}deg`);
-      scene.style.setProperty("--scene-tilt-y", `${(x * 1.5).toFixed(2)}deg`);
-    });
-  };
-  const onScenePointerLeave = () => {
-    resetScenePosition();
-  };
-  const onSceneKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!visible.length) return;
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      selectRelative(-1);
-    } else if (event.key === "ArrowRight") {
-      event.preventDefault();
-      selectRelative(1);
-    } else if (event.key === "Home") {
-      event.preventDefault();
-      selectProject(visible[0].project.id);
-    } else if (event.key === "End") {
-      event.preventDefault();
-      selectProject(visible[visible.length - 1].project.id);
-    }
-  };
-  const startOrbitDrag = (event: PointerEvent<HTMLElement>) => {
-    dragStartX.current = event.clientX;
-    dragged.current = false;
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-  const finishOrbitDrag = (clientX: number) => {
-    if (dragStartX.current === null) return;
-    const distance = clientX - dragStartX.current;
-    dragStartX.current = null;
-    if (Math.abs(distance) >= 44) {
-      dragged.current = true;
-      selectRelative(distance < 0 ? 1 : -1);
-      window.setTimeout(() => { dragged.current = false; }, 0);
-    }
-  };
-  const cancelOrbitDrag = () => {
-    dragStartX.current = null;
-    dragged.current = false;
-  };
-  const onScenePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("button, a, input, select, textarea")) return;
-    startOrbitDrag(event);
-  };
-  const onScenePointerUp = (event: PointerEvent<HTMLDivElement>) => finishOrbitDrag(event.clientX);
-  const onProjectCardPointerDown = (event: PointerEvent<HTMLElement>) => {
-    if ((event.target as HTMLElement).closest("[data-project-action]")) return;
-    event.stopPropagation();
-    startOrbitDrag(event);
-  };
-  const onProjectCardPointerUp = (event: PointerEvent<HTMLElement>) => {
-    event.stopPropagation();
-    finishOrbitDrag(event.clientX);
-  };
-
-  useEffect(() => {
-    const scene = sceneRef.current;
-    if (!scene) return;
-    const handleWheel = (event: globalThis.WheelEvent) => {
-      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-      if (!delta || !visible.length) return;
-      const direction: -1 | 1 = delta > 0 ? 1 : -1;
-      const canMove = direction > 0 ? selectedIndex < visible.length - 1 : selectedIndex > 0;
-      if (!canMove) {
-        wheelAmount.current = 0;
-        return;
-      }
-      event.preventDefault();
-      wheelAmount.current += delta;
-      if (Math.abs(wheelAmount.current) >= 36) {
-        selectRelative(direction);
-        wheelAmount.current = 0;
-      }
+    if (!relationDialog) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeRelation();
+      if (event.key !== "Tab") return;
+      const dialog = relationCloseRef.current?.closest<HTMLElement>("[role=dialog]");
+      const focusable = dialog ? Array.from(dialog.querySelectorAll<HTMLElement>("button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])")) : [];
+      if (!focusable.length) return;
+      const first = focusable[0]; const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
-    scene.addEventListener("wheel", handleWheel, { passive: false });
-    return () => scene.removeEventListener("wheel", handleWheel);
-  }, [projectKind, selectedIndex, visibleProjectIds]);
+    window.addEventListener("keydown", handleKey); return () => window.removeEventListener("keydown", handleKey);
+  }, [relationDialog]);
 
-  if (routedProject && projectRoute) {
-    return <ProjectDetail
-      snapshot={snapshot}
-      projectId={routedProject.id}
-      tab={projectRoute.tab}
-      onBack={() => onProjectRouteChange(null, "back")}
-      onTabChange={(tab) => onProjectRouteChange({ projectId: routedProject.id, tab }, "replace")}
-      onCreatePaymentPlan={onCreatePaymentPlan}
-      onCreateChangeOrder={onCreateChangeOrder}
-      onConfirmPayment={onConfirmPayment}
-      onRecordSettlementIssue={onRecordSettlementIssue}
-      onSnapshotChange={onSnapshotChange}
-    />;
+  const previewProduct = async (targetId: string | null) => { if (!relationProject || targetId === (relationProject.itemExternalId || null)) return setProductPreview(null); setRelationBusy(true); setRelationError(""); try { setProductPreview(await mockLedgerService.previewProjectProduct(relationProject.id, targetId)); } catch (error) { setProductPreview(null); setRelationError(error instanceof Error ? error.message : "来源商品影响预览失败"); } finally { setRelationBusy(false); } };
+  const previewCustomer = async (targetId: string) => { if (!relationProject || targetId === relationProject.customerId) return setCustomerPreview(null); setRelationBusy(true); setRelationError(""); try { setCustomerPreview(await mockLedgerService.previewCustomerRelation(relationProject.id, relationProject.customerId, targetId)); } catch (error) { setCustomerPreview(null); setRelationError(error instanceof Error ? error.message : "客户关系影响预览失败"); } finally { setRelationBusy(false); } };
+  const commitRelation = async () => { setRelationBusy(true); setRelationError(""); try { const next = relationDialog?.kind === "product" && productPreview ? await mockLedgerService.commitProjectProduct(productPreview, crypto.randomUUID()) : relationDialog?.kind === "customer" && customerPreview ? await mockLedgerService.rebindCustomerRelation(customerPreview, crypto.randomUUID()) : null; if (!next) return; onPersistedSnapshot(next); closeRelation(); } catch (error) { setRelationError(error instanceof Error ? error.message : "关系变更失败，本次没有写入经营数据"); } finally { setRelationBusy(false); } };
+
+  if (routedProject && projectRoute?.tab === "edit") {
+    const product = products.find((item) => item.external_id === routedProject.itemExternalId);
+    return <><ProjectEditView project={routedProject} snapshot={snapshot} productTitle={product?.title || (routedProject.itemExternalId ? `商品 ${routedProject.itemExternalId}` : "未关联来源商品")} onBack={() => onProjectRouteChange({ projectId: routedProject.id, tab: "overview" }, "back")} onSave={(nextProject) => { onSnapshotChange({ ...snapshot, projects: snapshot.projects.map((item) => item.id === nextProject.id ? nextProject : item) }); onProjectRouteChange({ projectId: routedProject.id, tab: "overview" }, "replace"); }} onChangeRelation={(kind) => openRelation(kind, routedProject.id)} />{renderRelationDialog()}</>;
+  }
+  if (routedProject && projectRoute) return <ProjectDetail snapshot={snapshot} projectId={routedProject.id} tab={projectRoute.tab} onBack={() => onProjectRouteChange(null, "back")} onEdit={() => editProject(routedProject.id)} onTabChange={(tab) => onProjectRouteChange({ projectId: routedProject.id, tab }, "replace")} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} />;
+
+  function renderRelationDialog() {
+    if (!relationDialog || !relationProject) return null;
+    return <div className="project-relation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeRelation(); }}><aside className="project-relation-dialog" role="dialog" aria-modal="true" aria-labelledby="project-relation-title">
+      <header><div><small>RELATION CHANGE</small><h2 id="project-relation-title">确认变更{relationDialog.kind === "product" ? "来源商品" : "客户关系"}</h2><p>先查看影响范围，再确认是否写入。</p></div><button ref={relationCloseRef} type="button" aria-label="关闭关系变更" onClick={closeRelation}><X size={19} /></button></header>
+      <section className="project-relation-current"><small>当前{relationDialog.kind === "product" ? "商品" : "客户"}</small><b>{relationDialog.kind === "product" ? currentProduct?.title || "未关联来源商品" : relationCustomer?.name || "未关联客户"}</b><em>当前归属</em></section>
+      <label className="project-relation-search"><MagnifyingGlass size={17} /><input value={relationSearch} onChange={(event) => setRelationSearch(event.target.value)} placeholder={`搜索${relationDialog.kind === "product" ? "正在上架的本人商品" : "客户"}`} /></label>
+      <section className="project-relation-options" aria-label="可选关系">{relationDialog.kind === "product" ? <>{eligibleProducts.map((product) => <button type="button" className={productPreview?.target_item_external_id === product.external_id ? "selected" : ""} disabled={relationBusy || product.external_id === relationProject.itemExternalId} onClick={() => void previewProduct(product.external_id)} key={product.external_id}><Storefront size={17} weight="duotone" /><span><b>{product.title}</b><small>{product.linked_projects.length} 个关联项目 · 当前上架采集</small></span><em>{product.external_id === relationProject.itemExternalId ? "当前" : productPreview?.target_item_external_id === product.external_id ? "待确认" : "选择"}</em></button>)}{!eligibleProducts.length && <p>没有可选的正在上架本人商品。</p>}{relationProject.itemExternalId && <button type="button" className="is-unbind" disabled={relationBusy} onClick={() => void previewProduct(null)}>解除当前来源商品关联</button>}</> : <>{eligibleCustomers.map((customer) => <button type="button" className={customerPreview?.target_customer_id === customer.id ? "selected" : ""} disabled={relationBusy} onClick={() => void previewCustomer(customer.id)} key={customer.id}><span className="project-relation-avatar">{customer.name.slice(0, 1)}</span><span><b>{customer.name}</b><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : "经营客户"}</small></span><em>{customerPreview?.target_customer_id === customer.id ? "待确认" : "选择"}</em></button>)}{!eligibleCustomers.length && <p>没有匹配的其他客户。</p>}</>}</section>
+      <section className="project-relation-impact" aria-live="polite"><h3>影响预览</h3>{productPreview ? <><div className="project-relation-move"><span><small>当前归属</small><b>{productPreview.current_item_title || "未关联"}</b></span><ArrowRight size={18} /><span><small>目标商品</small><b>{productPreview.target_item_title || "解除关联"}</b></span></div><dl><div><dt>净确认到账</dt><dd>{money.format(productPreview.impact.project_net_confirmed)}</dd></div><div><dt>项目支出</dt><dd>{money.format(productPreview.impact.project_expenses)}</dd></div><div><dt>退款</dt><dd>{money.format(productPreview.impact.project_refunds)}</dd></div><div><dt>归入商品实际利润</dt><dd>{money.format(productPreview.impact.project_profit)}</dd></div></dl>{productPreview.warnings.map((warning) => <p key={warning}><WarningCircle size={14} />{warning}</p>)}</> : customerPreview ? <><div className="project-relation-move"><span><small>当前客户</small><b>{customerPreview.current_customer_name}</b></span><ArrowRight size={18} /><span><small>目标客户</small><b>{customerPreview.target_customer_name}</b></span></div><dl><div><dt>项目</dt><dd>{customerPreview.impact.project_count}</dd></div><div><dt>付款记录</dt><dd>{customerPreview.impact.payment_count}</dd></div><div><dt>追加订单</dt><dd>{customerPreview.impact.change_order_count}</dd></div><div><dt>异常记录</dt><dd>{customerPreview.impact.settlement_issue_count}</dd></div></dl>{customerPreview.warnings.map((warning) => <p key={warning}><WarningCircle size={14} />{warning}</p>)}</> : <p className="is-empty">选择新的关系后，这里会先展示影响；选择本身不会写入。</p>}</section>
+      {relationError && <p className="project-relation-error" role="alert">{relationError}</p>}<footer><small>revision + request-id 将用于事务保护</small><div><button type="button" onClick={closeRelation}>取消</button><button type="button" className="business-primary" disabled={relationBusy || (!productPreview && !customerPreview)} onClick={() => void commitRelation()}>{relationBusy ? "处理中…" : "确认变更关系"}</button></div></footer>
+    </aside></div>;
   }
 
-  return <div className="business-page enhanced-project-page">
-    <section className="project-workspace-shell portfolio-workspace project-cockpit-workspace">
-      <header className="project-workspace-header">
-        <div className="project-workspace-heading"><span>PROJECT COCKPIT</span><h2>项目驾驶舱</h2><p>聚焦当前项目，在同一个空间里掌握任务、交付与回款。</p></div>
-        <div className="project-kind-switch" role="group" aria-label="项目分类">
-          <button type="button" className={projectKind === "personal" ? "active" : ""} aria-pressed={projectKind === "personal"} onClick={() => switchKind("personal")}><Code size={19} weight="duotone" /><span><b>个人项目</b><small>{counts.personal} 个当前{terminatedCounts.personal ? ` · ${terminatedCounts.personal} 已终止` : ""}</small></span></button>
-          <button type="button" className={projectKind === "client" ? "active" : ""} aria-pressed={projectKind === "client"} onClick={() => switchKind("client")}><Briefcase size={19} weight="duotone" /><span><b>接单项目</b><small>{counts.client} 个当前{terminatedCounts.client ? ` · ${terminatedCounts.client} 已终止` : ""}</small></span></button>
-        </div>
-        <button className="business-primary project-create-button" onClick={() => onCreateProject(projectKind)}><Plus size={16} />新建{projectKind === "personal" ? "个人" : "接单"}项目</button>
-      </header>
-
-      <section className="project-workspace-metrics project-cockpit-metrics" aria-label={`${projectKind === "personal" ? "个人" : "接单"}项目指标`}>
-        <article className="project-workspace-metric workspace-purple"><i>{projectKind === "personal" ? <Code size={20} weight="duotone" /> : <Briefcase size={20} weight="duotone" />}</i><span><small>当前{projectKind === "personal" ? "项目" : "合作"}</small><strong>{categoryProjects.length} 个</strong><em>{terminatedCategoryFinancials.length ? `${terminatedCategoryFinancials.length} 个已终止单独归档` : `平均进度 ${averageProgress}%`}</em></span></article>
-        <article className="project-workspace-metric workspace-blue"><i><ListChecks size={20} weight="duotone" /></i><span><small>进行中</small><strong>{activeProjects.length} 个</strong><em>{categoryTasks.length} 项任务在计划内</em></span></article>
-        {projectKind === "personal" ? <>
-          <article className="project-workspace-metric workspace-green"><i><Target size={20} weight="duotone" /></i><span><small>任务完成</small><strong>{taskCompletion}%</strong><em>{completedTasks}/{categoryTasks.length} 项已完成</em></span></article>
-          <article className="project-workspace-metric workspace-orange"><i><Timer size={20} weight="duotone" /></i><span><small>累计投入</small><strong>{actualHours}h</strong><em>平均工期 {averageDuration.toFixed(1)} 天</em></span></article>
-        </> : <>
-          <article className="project-workspace-metric workspace-green"><i><Coins size={20} weight="duotone" /></i><span><small>合同总额</small><strong>{money.format(totalContract)}</strong><em>任务完成 {taskCompletion}%</em></span></article>
-          <article className="project-workspace-metric workspace-orange"><i><BellRinging size={20} weight="duotone" /></i><span><small>待回款</small><strong>{money.format(outstanding)}</strong><em>平均工期 {averageDuration.toFixed(1)} 天</em></span></article>
-        </>}
-      </section>
-
-      <section className="project-cockpit-layout">
-        <aside className="portfolio-stages project-cockpit-stages" aria-label="项目状态筛选">
-          <header><span>项目阶段</span><small>{categoryProjects.length} 个当前</small></header>
-          <div>{statusOptions.map(({ key, label, icon: Icon, count }) => <button type="button" key={key} className={status === key ? "active" : ""} aria-pressed={status === key} onClick={() => setStatus(key)}><i><Icon size={17} weight="duotone" /></i><span><b>{label}</b><small>{key === "current" ? "不含异常终止项目" : key === "terminated" ? "查看终止合作历史" : `筛选${label}项目`}</small></span><em>{count}</em></button>)}</div>
-          <section className="portfolio-progress-summary"><span><Gauge size={18} weight="duotone" />组合完成度</span><strong>{averageProgress}%</strong><div><i style={{ width: `${averageProgress}%` }} /></div><small>根据当前分类全部项目计算</small></section>
-        </aside>
-
-        <section className="project-cockpit-stage">
-          <header className="project-cockpit-tools">
-            <label><MagnifyingGlass size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={globalSearch ? `顶部搜索：${globalSearch}` : "搜索项目、客户或备注"} disabled={Boolean(globalSearch)} /></label>
-            <select aria-label="项目排序" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="due">按时间排序</option><option value="progress">按进度排序</option>{projectKind === "client" && <option value="amount">按合同金额排序</option>}</select>
-          </header>
-
-          {orbitEntries.length ? <div
-            className="project-orbit-scene"
-            ref={sceneRef}
-            style={{ "--scene-active-x": `${extractedGeometry?.x || 0}px` } as CSSProperties}
-            tabIndex={0}
-            aria-label="项目空间卡组，点击真实项目从原卡位抽出并自动进入沉浸任务流，空卡位可新建项目"
-            onKeyDown={onSceneKeyDown}
-            onPointerMove={onScenePointerMove}
-            onPointerLeave={onScenePointerLeave}
-            onPointerDown={onScenePointerDown}
-            onPointerUp={onScenePointerUp}
-            onPointerCancel={() => { cancelOrbitDrag(); resetScenePosition(); }}
-            data-extracted={extractedProjectId ? "true" : undefined}
-          >
-            <div className="project-scene-light" aria-hidden="true" />
-            <header className="project-orbit-label"><span><Sparkle size={14} weight="fill" />PROJECT ORBIT</span><small>{placeholderCount ? `${visible.length} 个真实项目 · ${placeholderCount} 个待启用卡位 · 点击抽出并进入` : "点击抽出并进入 · 拖动、滚轮或键盘选择"}</small></header>
-            <div className="project-orbit-deck" key={projectKind} data-project-kind={projectKind} aria-live="polite">
-              {extractedGeometry && <>
-                <span
-                  className="project-extraction-slot"
-                  style={{
-                    "--project-slot-x": `${extractedGeometry.x}px`,
-                    "--project-slot-y": `${extractedGeometry.y}px`,
-                    "--project-slot-z": `${extractedGeometry.z}px`,
-                    "--project-slot-rotate-y": `${extractedGeometry.rotateY}deg`,
-                    "--project-slot-scale": extractedGeometry.scale,
-                    "--project-slot-order": extractedGeometry.order - 1,
-                  } as CSSProperties}
-                  aria-hidden="true"
-                />
-                <span
-                  className="project-extraction-shadow"
-                  style={{ "--project-shadow-x": `${extractedGeometry.x}px` } as CSSProperties}
-                  aria-hidden="true"
-                />
-              </>}
-              {orbitEntries.map((entry, index) => {
-                const slotOffset = index - orbitWindowCenter;
-                const geometry = projectOrbitGeometry(slotOffset);
-                const hidden = index < orbitWindowStart || index >= orbitWindowEnd;
-                const extracted = entry.kind === "project" && entry.item.project.id === extractedProjectId;
-                const dimmedByExtraction = Boolean(extractedProjectId) && !extracted;
-                const style = {
-                  "--project-x": `${geometry.x}px`,
-                  "--project-y": `${extracted ? geometry.y - 40 : geometry.y}px`,
-                  "--project-z": `${extracted ? geometry.z + 92 : geometry.z}px`,
-                  "--project-rotate-y": `${extracted ? geometry.rotateY * .15 : geometry.rotateY}deg`,
-                  "--project-scale": extracted ? 1 : geometry.scale,
-                  "--project-opacity": hidden ? 0 : extracted ? 1 : dimmedByExtraction ? Math.max(.38, geometry.opacity * .7) : geometry.opacity,
-                  "--project-order": extracted ? 108 : geometry.order,
-                } as CSSProperties;
-                if (entry.kind === "placeholder") {
-                  return <button
-                    type="button"
-                    className="project-glass-card project-placeholder-card"
-                    style={style}
-                    key={entry.id}
-                    data-orbit-id={entry.id}
-                    data-project-action
-                    data-slot-offset={slotOffset.toFixed(2)}
-                    data-hidden={hidden ? "true" : undefined}
-                    tabIndex={hidden ? -1 : 0}
-                    aria-label={`新建${projectKind === "personal" ? "个人" : "接单"}项目，空项目卡位 ${entry.slot + 1}`}
-                    onClick={() => {
-                      if (dragged.current) return;
-                      setExtractedByKind((current) => ({ ...current, [projectKind]: "" }));
-                      onCreateProject(projectKind);
-                    }}
-                  >
-                    <span className="project-placeholder-icon"><Plus size={24} weight="light" /></span>
-                    <span className="project-placeholder-copy">
-                      <small>{projectKind === "personal" ? "PERSONAL PROJECT" : "CLIENT PROJECT"} · EMPTY SLOT</small>
-                      <strong>等待新项目</strong>
-                      <span>创建后自动占用这个卡位，不计入当前经营数据。</span>
-                    </span>
-                    <span className="project-placeholder-action">点击新建 <ArrowRight size={14} /></span>
-                  </button>;
-                }
-                const { item } = entry;
-                const { project, income, outstanding: due, profit, paymentProgress } = item;
-                const locked = project.id === selectedProjectId;
-                const projectTasks = snapshot.tasks.filter((task) => task.projectId === project.id);
-                const doneTasks = projectTasks.filter((task) => task.status === "done").length;
-                const customer = snapshot.customers.find((item) => item.id === project.customerId);
-                const isPersonal = projectKindOf(project) === "personal";
-                const terminalIssue = latestTerminalSettlementIssue(item.settlementIssues);
-                const statusLabel = terminalIssue ? "已终止" : statusLabels[project.status];
-                const remaining = daysUntil(project.dueDate);
-                return <article
-                  className={`project-glass-card project-card-${project.accent} ${locked ? "locked" : ""} ${extracted ? "extracted" : ""}`}
-                  style={style}
-                  key={project.id}
-                  data-orbit-id={entry.id}
-                  data-project-id={project.id}
-                  data-slot-offset={slotOffset.toFixed(2)}
-                  data-extracted={extracted ? "true" : undefined}
-                  data-hidden={hidden ? "true" : undefined}
-                  aria-busy={extracted || undefined}
-                  onPointerDown={onProjectCardPointerDown}
-                  onPointerUp={onProjectCardPointerUp}
-                  onPointerCancel={cancelOrbitDrag}
-                  onClick={(event) => {
-                    if (!dragged.current && !(event.target as HTMLElement).closest("[data-project-action]")) enterProjectFromCard(project.id);
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="project-glass-select"
-                    aria-current={locked ? "true" : undefined}
-                    aria-label={`打开${project.name}，卡片抽出后进入沉浸任务流，${statusLabel}，进度 ${project.progress}%`}
-                    tabIndex={hidden ? -1 : 0}
-                  >
-                    <span className="project-glass-head"><i>{isPersonal ? <Code size={20} weight="duotone" /> : <Briefcase size={20} weight="duotone" />}</i><span><small>{project.type || (isPersonal ? "个人开发" : "定制开发")}{!isPersonal && customer ? ` · ${customer.name}` : ""}</small><b>{project.name}</b></span><em className={`portfolio-status ${terminalIssue ? "status-terminated" : `status-${project.status}`}`}>{statusLabel}</em></span>
-                    <p>{project.notes || (isPersonal ? "聚焦一个可持续推进的个人里程碑。" : "围绕客户目标推进需求、交付与回款。")}</p>
-                    <span className="project-glass-progress"><span><small>项目进度</small><b>{project.progress}%</b></span><i><em style={{ width: `${project.progress}%` }} /></i></span>
-                    <span className="project-glass-stats">
-                      <span><small>任务</small><b>{doneTasks}/{projectTasks.length}</b></span>
-                      <span><small>{isPersonal ? "里程碑" : "交付日"}</small><b>{shortDate(project.dueDate)}</b></span>
-                      <span><small>{isPersonal ? "投入工时" : "已收 / 未收"}</small><b>{isPersonal ? `${projectTasks.reduce((sum, task) => sum + task.actualHours, 0)}h` : `${money.format(income)} / ${money.format(due)}`}</b></span>
-                    </span>
-                    <span className="project-glass-foot"><small>{terminalIssue ? `${settlementIssueLabels[terminalIssue.type]} · 已移出当前合作` : item.issueCount ? `异常 ${item.issueCount} 条 · ${settlementIssueLabels[latestSettlementIssue(item.settlementIssues)!.type]}` : remaining < 0 ? `已超期 ${Math.abs(remaining)} 天` : project.status === "delivered" && due > 0 ? `已交付 · 待回款 ${money.format(due)}` : `剩余 ${remaining} 天`}</small>{!isPersonal && <b>利润 {money.format(profit)} · 净回款 {paymentProgress.toFixed(0)}%</b>}</span>
-                  </button>
-                </article>;
-              })}
-            </div>
-            <nav className="project-orbit-controls" aria-label="项目轨道控制">
-              <button type="button" onClick={() => selectRelative(-1)} disabled={!visible.length || selectedIndex === 0} aria-label="上一个项目"><ArrowLeft size={16} /></button>
-              <span>{visible.length ? `${selectedIndex + 1} / ${visible.length} 个项目` : "0 个项目"}{placeholderCount ? ` · ${placeholderCount} 个空位` : ""}</span>
-              <button type="button" onClick={() => selectRelative(1)} disabled={!visible.length || selectedIndex === visible.length - 1} aria-label="下一个项目"><ArrowRight size={16} /></button>
-            </nav>
-          </div> : <div className="portfolio-empty project-cockpit-empty"><i>{projectKind === "personal" ? <Code size={35} weight="duotone" /> : <Briefcase size={35} weight="duotone" />}</i><h3>{query || status !== "current" ? "没有匹配的项目" : `还没有${projectKind === "personal" ? "当前个人" : "当前合作"}项目`}</h3><p>{query || status !== "current" ? "重置搜索或阶段筛选后再试。" : projectKind === "personal" ? "创建个人项目，用任务与里程碑管理自己的产品和成长计划。" : "异常终止项目已移入“已终止”，新的合作会显示在这里。"}</p>{query || status !== "current" ? <button className="business-primary" onClick={() => { setSearch(""); setStatus("current"); }}>重置筛选</button> : <button className="business-primary" onClick={() => onCreateProject(projectKind)}><Plus size={16} />新建项目</button>}</div>}
-        </section>
-
-        {selectedProject && selectedFinancial && selectedRisk && <aside className="project-cockpit-inspector" key={selectedProject.id} aria-label={selectedTerminalIssue ? "已终止项目详情" : "当前项目详情"}>
-          <header><span><Sparkle size={16} weight="fill" />{selectedTerminalIssue ? "已终止合作" : "当前项目"}</span><small>{selectedTerminalIssue ? "历史可追溯" : "本地数据"}</small></header>
-          <div className="project-inspector-heading"><i className={`project-${selectedProject.accent}`}>{projectKind === "personal" ? <Code size={24} weight="duotone" /> : <Briefcase size={24} weight="duotone" />}</i><span><small>{selectedProject.type || (projectKind === "personal" ? "个人开发" : selectedCustomer?.name || "接单项目")}</small><h3>{selectedProject.name}</h3><em className={`portfolio-status ${selectedTerminalIssue ? "status-terminated" : `status-${selectedProject.status}`}`}>{selectedTerminalIssue ? "已终止" : statusLabels[selectedProject.status]}</em></span></div>
-          <dl className="project-inspector-facts">
-            <div><dt>项目进度</dt><dd>{selectedProject.progress}%</dd></div>
-            <div><dt>任务完成</dt><dd>{selectedDoneTasks}/{selectedTasks.length}</dd></div>
-            <div><dt>{projectKind === "personal" ? "里程碑" : "交付日期"}</dt><dd>{shortDate(selectedProject.dueDate)}</dd></div>
-            {projectKind === "client" && <><div><dt>合同金额</dt><dd>{money.format(selectedProject.totalAmount)}</dd></div><div><dt>净到账</dt><dd>{money.format(selectedFinancial.income)}</dd></div><div className={selectedFinancial.outstanding > 0 ? "is-outstanding" : ""}><dt>可收余额</dt><dd>{money.format(selectedFinancial.outstanding)}</dd></div>{selectedFinancial.issueCount > 0 && <div className="is-exception"><dt>异常影响</dt><dd>退款 {money.format(selectedFinancial.refundedAmount)} · 核销 {money.format(selectedFinancial.uncollectible)}</dd></div>}</>}
-          </dl>
-          <section className={`project-inspector-risk risk-${selectedRisk.tone}`}><span>{selectedRisk.tone === "stable" ? <CheckCircle size={18} weight="duotone" /> : <WarningCircle size={18} weight="duotone" />}<b>{selectedRisk.title}</b></span><p>{selectedRisk.detail}</p></section>
-          <div className="project-inspector-actions">
-            <button className="business-primary" type="button" onClick={() => openProject(selectedProject.id)}>进入项目 <ArrowRight size={15} /></button>
-            {projectKind === "client" && !selectedTerminalIssue && selectedFinancial.outstanding > 0 && <button type="button" className={selectedProject.status === "delivered" ? "is-urgent" : ""} onClick={() => onConfirmPayment(selectedProject.id)}><Coins size={15} weight="duotone" />确认到账</button>}
-            {projectKind === "client" && <button type="button" className="is-exception" onClick={() => onRecordSettlementIssue(selectedProject.id)}><WarningCircle size={15} weight="duotone" />记录客户或回款异常</button>}
-          </div>
-        </aside>}
-
-        <section className="project-cockpit-timeline" aria-label="项目时间线">
-          <header><span><CalendarBlank size={17} />交付与回款时间线</span><small>点击节点同步聚焦项目</small></header>
-          <div>{visible.length ? visible.map((item) => {
-            const { project, outstanding: due } = item;
-            const terminalIssue = latestTerminalSettlementIssue(item.settlementIssues);
-            return <button type="button" className={project.id === selectedProjectId ? "active" : ""} aria-current={project.id === selectedProjectId ? "true" : undefined} key={project.id} onClick={() => selectProject(project.id)}><span><time>{shortDate(project.dueDate)}</time><b>{project.name}</b><small>{terminalIssue ? "已终止合作" : statusLabels[project.status]}{!terminalIssue && due > 0 && projectKind === "client" ? ` · 待回款 ${money.format(due)}` : ""}</small></span><i><em style={{ width: `${project.progress}%` }} /></i><strong>{project.progress}%</strong></button>;
-          }) : <p>当前筛选下没有可显示的项目节点。</p>}</div>
-        </section>
-      </section>
-    </section>
-  </div>;
+  return <div className="business-page project-hub-page"><section className="project-hub-shell">
+    <header className="project-hub-head"><div><small>PROJECTS</small><h2>所有项目，一眼掌握</h2><p>直接浏览项目全貌，需要时再进入详情或编辑。</p></div><div className="project-hub-kind" role="group" aria-label="项目分类"><button type="button" className={projectKind === "personal" ? "active" : ""} onClick={() => { setProjectKind("personal"); setStatus("all"); }}><Code size={17} />个人项目</button><button type="button" className={projectKind === "client" ? "active" : ""} onClick={() => { setProjectKind("client"); setStatus("all"); }}><Briefcase size={17} />接单项目</button></div><button type="button" className="business-primary project-hub-create" onClick={() => onCreateProject(projectKind)}><Plus size={16} />新建项目</button></header>
+    <section className="project-hub-metrics" aria-label="项目概览"><ProjectMetric icon={<Briefcase size={20} weight="duotone" />} label="当前项目" value={`${active.length} 个`} detail={`${category.length - active.length} 个已终止单独归档`} tone="purple" /><ProjectMetric icon={<CheckCircle size={20} weight="duotone" />} label="进行中" value={`${activeProjects.length} 个`} detail={`${projectTasks.length} 项任务持续推进`} tone="green" />{projectKind === "client" ? <><ProjectMetric icon={<Coins size={20} weight="duotone" />} label="合同总额" value={money.format(totalContract)} detail="只统计当前合作项目" tone="blue" /><ProjectMetric icon={<WarningCircle size={20} weight="duotone" />} label="待回款" value={money.format(outstanding)} detail={`${active.filter((item) => item.outstanding > 0).length} 个项目尚未收齐`} tone="orange" /></> : <><ProjectMetric icon={<ListChecks size={20} weight="duotone" />} label="任务总数" value={`${projectTasks.length} 项`} detail={`${projectTasks.filter((task) => task.status === "done").length} 项已完成`} tone="blue" /><ProjectMetric icon={<Timer size={20} weight="duotone" />} label="累计投入" value={`${actualHours}h`} detail="来自真实任务工时" tone="orange" /></>}</section>
+    <section className="project-hub-toolbar"><label><MagnifyingGlass size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={globalSearch ? `顶部搜索：${globalSearch}` : "搜索项目、客户或商品"} disabled={Boolean(globalSearch)} /></label><div className="project-hub-status" role="group" aria-label="项目状态筛选">{([['all', '全部'], ['in_progress', '进行中'], ['attention', '需关注'], ['finished', '已完成'], ['terminated', '已终止']] as Array<[ListStatus, string]>).map(([value, label]) => <button type="button" className={status === value ? "active" : ""} onClick={() => setStatus(value)} key={value}>{label}</button>)}</div><select aria-label="项目排序" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="due">按交付日期</option><option value="updated">最近更新优先</option>{projectKind === "client" && <option value="amount">按合同金额</option>}</select></section>
+    <section className="project-hub-list" aria-label="项目列表"><header><span>项目 / 类型</span><span>客户</span><span>来源商品</span><span>状态</span><span>VERIFIED</span><span>交付 / 风险</span><span>{projectKind === "client" ? "合同 / 待收" : "任务 / 工时"}</span><span>操作</span></header>{visible.length ? visible.map((item) => {
+      const { project } = item; const customer = snapshot.customers.find((candidate) => candidate.id === project.customerId); const product = products.find((candidate) => candidate.external_id === project.itemExternalId); const terminal = latestTerminalSettlementIssue(item.settlementIssues); const tasks = snapshot.tasks.filter((task) => task.projectId === project.id); const remaining = daysUntil(project.dueDate); const statusLabel = terminal ? "已终止" : statusLabels[project.status];
+      return <article key={project.id}><button type="button" className="project-hub-main" onClick={() => openProject(project.id)}><i className={`project-${project.accent}`}>{projectKind === "personal" ? <Code size={18} weight="duotone" /> : <Briefcase size={18} weight="duotone" />}</i><span><b>{project.name}</b><small>{project.type || (projectKind === "personal" ? "个人开发" : "定制开发")} · {project.id}</small></span></button><span className="project-hub-customer"><b>{projectKind === "personal" ? "—" : customer?.name || "未关联"}</b><small>{projectKind === "personal" ? "个人项目" : customer?.source === "xianyu" ? "闲鱼客户" : customer?.source === "wechat" ? "微信客户" : "经营客户"}</small></span><span className="project-hub-product"><b>{projectKind === "personal" ? "—" : product?.title || (project.itemExternalId ? `商品 ${project.itemExternalId}` : "未关联")}</b><small>{project.itemExternalId ? "已绑定" : "未关联"}</small></span><span><em className={`project-hub-badge status-${terminal ? "terminated" : project.status}`}>{statusLabel}</em></span><VerifiedMeter view={verification[project.id]} /><span className="project-hub-date"><b>{shortDate(project.dueDate)}</b><small className={remaining < 0 ? "is-danger" : remaining <= 3 ? "is-warning" : ""}>{terminal ? "历史项目" : remaining < 0 ? `已超期 ${Math.abs(remaining)} 天` : `剩余 ${remaining} 天`}</small></span><span className="project-hub-finance"><b>{projectKind === "client" ? money.format(project.totalAmount) : `${tasks.filter((task) => task.status === "done").length}/${tasks.length} 项`}</b><small className={item.outstanding > 0 ? "is-warning" : ""}>{projectKind === "client" ? `待收 ${money.format(item.outstanding)}` : `${tasks.reduce((sum, task) => sum + task.actualHours, 0)}h 已投入`}</small></span><span className="project-hub-actions"><button type="button" onClick={() => openProject(project.id)}>详情</button><button type="button" onClick={() => editProject(project.id)}><PencilSimple size={13} />编辑</button></span></article>;
+    }) : <div className="project-hub-empty"><Briefcase size={32} weight="duotone" /><h3>没有匹配的项目</h3><p>调整搜索或筛选条件，或创建新的{projectKind === "personal" ? "个人" : "接单"}项目。</p><button type="button" className="business-primary" onClick={() => onCreateProject(projectKind)}><Plus size={16} />新建项目</button></div>}</section>
+  </section>{renderRelationDialog()}</div>;
 }

@@ -71,6 +71,11 @@ async def update_customer(
             last_contact_at=payload.last_contact_at,
             level=payload.level,
             tags=payload.tags,
+            current_need=payload.current_need,
+            price_type=payload.price_type,
+            price_amount=payload.price_amount,
+            next_action=payload.next_action,
+            notes=payload.notes,
         )
     except RevisionConflict as exc:
         raise _revision_http_error(

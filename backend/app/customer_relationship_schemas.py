@@ -26,6 +26,17 @@ class CustomerUpdateRequest(BaseModel):
     last_contact_at: str = Field(default="", max_length=64)
     level: CustomerLevel
     tags: list[str] = Field(default_factory=list, max_length=20)
+    current_need: str = Field(default="", max_length=4_000)
+    price_type: Literal["", "customer_budget", "operator_quote", "agreed_price"] = ""
+    price_amount: float | None = Field(default=None, gt=0, le=100_000_000)
+    next_action: str = Field(default="", max_length=2_000)
+    notes: str = Field(default="", max_length=4_000)
+
+    @model_validator(mode="after")
+    def price_type_required_for_amount(self):
+        if self.price_amount is not None and not self.price_type:
+            raise ValueError("填写金额时必须选择价格类型")
+        return self
 
     @field_validator("last_contact_at")
     @classmethod

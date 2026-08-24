@@ -48,9 +48,38 @@ export interface Project {
   accent: "blue" | "green" | "purple" | "orange";
   leadId?: string;
   conversationId?: number;
+  itemExternalId?: string | null;
   requirementVersionId?: number;
   quoteId?: string;
   projectKind?: ProjectKind;
+}
+
+export interface ProjectProductImpact {
+  project_net_confirmed: number;
+  project_expenses: number;
+  project_refunds: number;
+  project_profit: number;
+  current_product_project_count: number;
+  current_product_profit_before: number;
+  current_product_profit_after: number;
+  target_product_project_count: number;
+  target_product_profit_before: number;
+  target_product_profit_after: number;
+}
+
+export interface ProjectProductPreview {
+  preview_token: string;
+  revision: number;
+  project_id: string;
+  project_name: string;
+  current_item_external_id: string | null;
+  current_item_title: string | null;
+  target_item_external_id: string | null;
+  target_item_title: string | null;
+  action: "bind" | "rebind" | "unbind";
+  impact: ProjectProductImpact;
+  preserves: string[];
+  warnings: string[];
 }
 
 export interface Payment {
@@ -144,6 +173,11 @@ export interface Customer {
   lastContactAt: string;
   level: CustomerLevel;
   tags?: string[];
+  currentNeed?: string;
+  priceType?: "" | "customer_budget" | "operator_quote" | "agreed_price";
+  priceAmount?: number | null;
+  nextAction?: string;
+  notes?: string;
   channelIdentities?: Array<{ channel: "xianyu" | "wechat"; externalCustomerId: string; conversationId?: number }>;
 }
 
@@ -156,6 +190,11 @@ export interface CustomerUpdateValue {
   lastContactAt: string;
   level: CustomerLevel;
   tags: string[];
+  currentNeed: string;
+  priceType: "" | "customer_budget" | "operator_quote" | "agreed_price";
+  priceAmount: number | null;
+  nextAction: string;
+  notes: string;
 }
 
 export interface CustomerRelationImpact {
@@ -192,6 +231,10 @@ export interface ProjectTask {
   dueDate: string;
   estimatedHours: number;
   actualHours: number;
+  taskKey?: string;
+  stageKey?: string;
+  codexExecutionStatus?: "todo" | "in_progress" | "blocked" | "implemented";
+  codexImplementedAt?: string | null;
   stage?: {
     objective?: string;
     work_items?: string[];
@@ -253,6 +296,7 @@ export interface OperationSettings {
   colorMode?: "light" | "dark";
   targetHourlyRate?: number | null;
   quoteRiskBuffer?: number;
+  defaultDailyAvailableHours?: number;
   replySpeedMode?: "fast" | "balanced" | "quality" | "custom";
 }
 

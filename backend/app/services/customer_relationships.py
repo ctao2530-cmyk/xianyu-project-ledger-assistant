@@ -106,6 +106,11 @@ class CustomerRelationshipService:
         last_contact_at: str,
         level: str,
         tags: list[str],
+        current_need: str | None = None,
+        price_type: str | None = None,
+        price_amount: float | None = None,
+        next_action: str | None = None,
+        notes: str | None = None,
     ) -> dict[str, Any]:
         values = {
             "customer_id": customer_id,
@@ -116,6 +121,11 @@ class CustomerRelationshipService:
             "last_contact_at": last_contact_at.strip(),
             "level": level,
             "tags": tags,
+            "current_need": current_need.strip() if current_need is not None else None,
+            "price_type": price_type,
+            "price_amount": price_amount,
+            "next_action": next_action.strip() if next_action is not None else None,
+            "notes": notes.strip() if notes is not None else None,
         }
         payload_hash = self._payload_hash(self.CUSTOMER_UPDATE, values)
         with self.database.session() as session:
@@ -153,6 +163,11 @@ class CustomerRelationshipService:
                     "lastContactAt": values["last_contact_at"],
                     "level": values["level"],
                     "tags": list(values["tags"]),
+                    "currentNeed": customer.get("currentNeed", "") if values["current_need"] is None else values["current_need"],
+                    "priceType": customer.get("priceType", "") if values["price_type"] is None else values["price_type"],
+                    "priceAmount": customer.get("priceAmount") if price_type is None and price_amount is None else values["price_amount"],
+                    "nextAction": customer.get("nextAction", "") if values["next_action"] is None else values["next_action"],
+                    "notes": customer.get("notes", "") if values["notes"] is None else values["notes"],
                 }
             )
             new_revision, normalized = self.ledger.save_in_session(

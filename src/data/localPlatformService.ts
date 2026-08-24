@@ -10,6 +10,343 @@ export interface PlatformStatus {
   wechat_provider?: string;
   wechat_status?: string;
   automatic_sending?: boolean;
+  customer_reply_drafts_enabled?: boolean;
+  customer_quote_conversion_enabled?: boolean;
+}
+
+export type CodexConnectionStatus = "not_connected" | "idle" | "running" | "blocked" | "failed" | "completed" | "disconnected";
+
+export interface CodexTaskContext {
+  task_key: string;
+  title: string;
+  stage_key: string | null;
+  human_status: string;
+  codex_execution_status: "todo" | "in_progress" | "blocked" | "implemented";
+  estimated_hours: number;
+  actual_hours: number;
+  acceptance_points: unknown[];
+  test_commands: string[];
+}
+
+export interface CodexRunView {
+  id: string;
+  source: "mcp" | "hook" | "script" | "cli" | "ide" | string;
+  external_session_id: string;
+  external_turn_id: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  last_event_at: string;
+}
+
+export interface CodexSyncEventView {
+  event_id: string;
+  run_id: string;
+  event_type: string;
+  source: string;
+  tool_name: string;
+  task_key: string | null;
+  task_mapped: boolean;
+  summary: string;
+  files: string[];
+  remaining_work: string;
+  blocker: string;
+  command: string;
+  exit_code: number | null;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+  received_at: string;
+}
+
+export interface CodexProjectSyncView {
+  project_id: string;
+  connection_status: CodexConnectionStatus;
+  current_run: CodexRunView | null;
+  current_task: CodexTaskContext | null;
+  last_sync_at: string | null;
+  runs: CodexRunView[];
+  events: CodexSyncEventView[];
+  counts: { files: number; commands: number; tests: number; blockers: number };
+}
+
+export interface CodexRuntimeCapabilities {
+  runtime_type: string;
+  available: boolean;
+  version: string;
+  supports_resume: boolean;
+  supports_cancel: boolean;
+  supports_approvals: boolean;
+  supports_event_stream: boolean;
+  detail: string;
+}
+
+export interface CodexManagedApproval {
+  id: string;
+  run_id: string;
+  server_request_id: string;
+  thread_id: string;
+  turn_id: string;
+  item_id: string;
+  approval_kind: string;
+  risk_level: "high" | "critical" | string;
+  reason: string;
+  command: string;
+  cwd: string;
+  status: string;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface CodexManagedRun {
+  id: string;
+  project_id: string;
+  binding_id: string | null;
+  task_key: string | null;
+  runtime_type: string;
+  thread_id: string;
+  turn_id: string;
+  status: string;
+  base_commit_sha: string;
+  branch: string;
+  worktree_path: string;
+  model: string;
+  reasoning_effort: string;
+  sandbox_mode: string;
+  approval_mode: string;
+  started_at: string;
+  paused_at: string | null;
+  finished_at: string | null;
+  last_event_at: string;
+  approvals: CodexManagedApproval[];
+}
+
+export interface CodexManagedProjectView {
+  project_id: string;
+  runtime: CodexRuntimeCapabilities;
+  tasks: CodexTaskContext[];
+  binding: { id: string; repository_name: string; default_branch: string; current_head_sha: string; actual_head_sha?: string; repository_dirty?: boolean; head_matches?: boolean } | null;
+  confirmed_plan_id: string | null;
+  ready: boolean;
+  readiness_reasons: string[];
+  current_run: CodexManagedRun | null;
+  runs: CodexManagedRun[];
+  events: CodexSyncEventView[];
+}
+
+export interface CodexManagedDiff {
+  run_id: string;
+  base_commit_sha: string;
+  branch: string;
+  diff: string;
+  truncated: boolean;
+}
+
+export type CodexAcceptanceStatus =
+  | "pending"
+  | "implemented"
+  | "test_passed"
+  | "verified"
+  | "failed"
+  | "waived";
+
+export interface CodexProgressMetric {
+  percent: number;
+  completed_weight: number;
+  total_weight: number;
+}
+
+export interface CodexProjectProgress {
+  project_id: string;
+  codex_execution: CodexProgressMetric;
+  implemented: CodexProgressMetric;
+  verified_delivery: CodexProgressMetric;
+  weight_basis: string;
+  warnings: string[];
+  waived_count: number;
+  waived_counted: number;
+}
+
+export interface CodexAcceptanceEvidence {
+  id: string;
+  point_id: string | null;
+  point_key: string;
+  run_id: string | null;
+  evidence_type: string;
+  file_paths: string[];
+  test_command: string;
+  exit_code: number | null;
+  test_summary: string;
+  commit_sha: string;
+  manual_note: string;
+  status: string;
+  created_at: string;
+  verified_at: string | null;
+}
+
+export interface CodexAcceptancePoint {
+  id: string;
+  task_id: string;
+  task_key: string | null;
+  task_title: string;
+  point_key: string;
+  title: string;
+  verification_type: string;
+  source: "codex_plan" | "manual_historical" | string;
+  status: CodexAcceptanceStatus;
+  point_weight: number | null;
+  waived_counts: boolean;
+  waiver_reason: string;
+  active: boolean;
+  verified_at: string | null;
+  updated_at: string;
+  evidence: CodexAcceptanceEvidence[];
+}
+
+export interface CodexTimeEntry {
+  id: string;
+  task_id: string | null;
+  run_id: string | null;
+  category: string;
+  source: string;
+  hours: number;
+  note: string;
+  adjustment_of_id: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  occurred_at: string;
+}
+
+export interface CodexTimeSummary {
+  total_hours: number;
+  codex_hours: number;
+  manual_hours: number;
+  by_category: Record<string, number>;
+  estimated_hours: number;
+  variance_hours: number;
+  variance_percent: number | null;
+  entries: CodexTimeEntry[];
+}
+
+export interface CodexGitState {
+  available: boolean;
+  repository_name: string;
+  branch: string;
+  base_commit: string;
+  current_commit: string;
+  dirty: boolean;
+  changed_files: string[];
+  commits: Array<{ sha?: string; subject?: string; authored_at?: string; [key: string]: string | undefined }>;
+  error: string;
+}
+
+export interface CodexGitLink {
+  id: string;
+  task_id: string;
+  point_id: string | null;
+  commit_sha: string;
+  branch: string;
+  status: string;
+  note: string;
+  created_at: string;
+}
+
+export interface CodexDeliveryTask {
+  task_id: string;
+  task_key: string | null;
+  title: string;
+  estimated_hours: number;
+  actual_hours: number;
+  acceptance_total: number;
+  acceptance_verified: number;
+  acceptance_waived: number;
+  tests_passed: number;
+  commits: string[];
+  open_issues: string[];
+}
+
+export interface CodexDeliveryChecklist {
+  project_id: string;
+  plan_id: string | null;
+  deliverables: Array<{
+    deliverable_key: string;
+    title: string;
+    description: string;
+    task_ids: string[];
+    acceptance_total: number;
+    acceptance_verified: number;
+  }>;
+  tasks: CodexDeliveryTask[];
+  delivery_files: string[];
+  unresolved_issues: string[];
+  generated_at: string;
+}
+
+export interface CodexProjectOutcome {
+  project_id: string;
+  requirement_complexity: number | null;
+  estimated_hours: number;
+  actual_hours: number;
+  estimated_delivery_at: string;
+  actual_completed_at: string | null;
+  blocker_count: number;
+  change_order_count: number;
+  test_failure_count: number;
+  rework_hours: number;
+  verified_progress: number;
+  revenue: number;
+  profit: number;
+  realized_hourly_rate: number;
+  available_at: string;
+  finalized_at: string | null;
+}
+
+export interface ProjectOutcomeFreezeView {
+  id: string;
+  project_id: string;
+  version: number;
+  supersedes_freeze_id: string | null;
+  source_ledger_revision: number;
+  input_hash: string;
+  outcome: CodexProjectOutcome;
+  evidence_summary: Record<string, number | string | boolean>;
+  confirmed_scope_complete: boolean;
+  confirmed_time_complete: boolean;
+  confirmation_note: string;
+  frozen_at: string;
+  created_at: string;
+  is_stale: boolean;
+}
+
+export interface ProjectSampleReadiness {
+  project_id: string;
+  status: "missing_scope" | "needs_verification" | "needs_time" | "terminal" | "ready_to_freeze" | "frozen" | "stale";
+  can_freeze: boolean;
+  calibration_eligible: boolean;
+  active_task_count: number;
+  active_point_count: number;
+  verified_point_count: number;
+  waived_point_count: number;
+  estimated_hours: number;
+  actual_hours: number;
+  verified_progress: number;
+  blockers: Array<{ code: string; message: string; action: string }>;
+  latest_freeze: ProjectOutcomeFreezeView | null;
+  freeze_history: ProjectOutcomeFreezeView[];
+}
+
+export interface CodexProjectVerificationView {
+  revision: number;
+  project_id: string;
+  legacy_progress: number | null;
+  progress_source: string;
+  progress: CodexProjectProgress;
+  points: CodexAcceptancePoint[];
+  time: CodexTimeSummary;
+  git: CodexGitState;
+  git_links: CodexGitLink[];
+  delivery: CodexDeliveryChecklist;
+  outcome: CodexProjectOutcome;
+  sample_readiness: ProjectSampleReadiness;
 }
 
 export interface ConversationSummary {
@@ -53,6 +390,159 @@ export interface ConversationDetail {
   ai_task: { id: number; provider: string; model?: string | null; status: string; risk_level?: string | null; risk_reasons?: string[]; error_code?: string | null; error_message?: string | null; started_at?: string | null; finished_at?: string | null; duration_seconds?: number | null } | null;
 }
 
+export interface PhraseSnippetView {
+  id: string;
+  category_id: string;
+  content: string;
+  position: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PhraseCategoryView {
+  id: string;
+  category_key: string;
+  name: string;
+  source: "default" | "custom" | string;
+  position: number;
+  active: boolean;
+  phrases: PhraseSnippetView[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PhraseLibraryView {
+  revision: number;
+  categories: PhraseCategoryView[];
+  idempotent: boolean;
+}
+
+export interface CustomerImageArchiveView {
+  id: string;
+  conversation_id: number;
+  message_id: number;
+  channel: "xianyu" | "wechat" | string;
+  customer_name: string;
+  received_at: string;
+  captured_at: string | null;
+  mime_type: string;
+  original_name: string;
+  file_size: number;
+  width: number;
+  height: number;
+  integrity_verified: boolean;
+  content_url: string;
+  download_url: string;
+}
+
+export interface CustomerImageListView {
+  items: CustomerImageArchiveView[];
+  total: number;
+  has_more: boolean;
+}
+
+export interface CustomerImageArchiveStatus {
+  state: "healthy" | "needs_attention";
+  stored_count: number;
+  attention_count: number;
+  failed_count: number;
+  pending_count: number;
+  missing_count: number;
+  candidate_count: number;
+  channel_counts: Record<string, number>;
+  last_captured_at: string | null;
+  message: string;
+}
+
+export interface CustomerImageFilters {
+  channels: string[];
+  conversations: Array<{ id: number; customer_name: string; channel: string; image_count: number }>;
+}
+
+export interface CustomerImageHistoryPreview {
+  candidate_count: number;
+  channel_counts: Record<string, number>;
+  related_conversation_count: number;
+  automatic: true;
+  connection_status: string;
+  can_recover: boolean;
+  notice: string;
+}
+
+export interface CustomerImageHistoryResult {
+  conversation_count: number;
+  checked_conversation_count: number;
+  stored_count: number;
+  unmatched_count: number;
+  failed_count: number;
+  failed_conversations: Array<{ conversation_id: number; customer_name: string; error_code: string }>;
+  stopped_early: boolean;
+  action_hint: string;
+  idempotent: boolean;
+  status: CustomerImageArchiveStatus;
+}
+
+export interface CustomerImageAttentionItem {
+  message_id: number;
+  conversation_id: number;
+  channel: "xianyu" | "wechat" | string;
+  customer_name: string;
+  received_at: string;
+  status: "failed" | "pending" | "missing";
+  error_code: string;
+}
+
+export interface ConversationHistorySearchItem {
+  external_conversation_id: string;
+  customer_name: string;
+  item_title: string | null;
+  last_message: string;
+  last_message_at: string;
+  direction: "inbound" | "outbound";
+  existing_conversation_id: number | null;
+  known_message_count: number;
+}
+
+export interface ConversationHistoryPreviewMessage {
+  platform_message_id: string;
+  sender_name: string;
+  direction: "inbound" | "outbound";
+  message_type: string;
+  content: string;
+  received_at: string;
+  import_status: "new" | "existing" | "unsupported";
+}
+
+export interface ConversationHistoryPreview {
+  token: string;
+  expires_at: string;
+  external_conversation_id: string;
+  customer_name: string;
+  item: { external_id: string; title: string; price?: string | null } | null;
+  item_warning: string | null;
+  messages: ConversationHistoryPreviewMessage[];
+  platform_message_count: number;
+  existing_count: number;
+  new_count: number;
+  unsupported_count: number;
+}
+
+export interface ConversationHistoryCommitResult {
+  conversation_id: number;
+  created_conversation: boolean;
+  platform_message_count: number;
+  imported_count: number;
+  existing_count: number;
+  pending_message_id: number | null;
+  draft_task_queued: boolean;
+  draft_task_id: number | null;
+  image_candidate_count: number;
+  image_stored_count: number;
+  image_failed_count: number;
+  idempotent: boolean;
+}
+
 export type DraftProvider = "deepseek" | "codex_cli";
 
 export interface AIProviderStatus {
@@ -73,120 +563,15 @@ export interface AIProviderStatus {
   lead_model: string | null;
 }
 
-export interface RequirementWorkspace {
-  latest: null | {
-    id: number;
-    version: number;
-    title: string;
-    readiness: string;
-    content_markdown: string;
-    document: Record<string, unknown>;
-  };
-  versions: Array<{ id: number; version: number; title: string; readiness: string }>;
-  task: null | { id: number; status: string; error_message?: string | null };
-  model_label: string;
-}
+export type ConnectionRecoveryTarget = "xianyu" | "deepseek" | "codex_cli";
 
-export interface LeadView {
-  id: string;
-  conversation_id: number;
-  customer_id: string | null;
+export interface ConnectionRecoveryResult {
+  provider: ConnectionRecoveryTarget;
   status: string;
-  requirement_version_id: number | null;
-  latest_quote_id: string | null;
-  converted_project_id: string | null;
-}
-
-export interface LeadAnalysis {
-  id: string;
-  conversation_id: number;
-  provider: string;
-  model: string;
-  confirmed_at: string | null;
-  created_at: string;
-  result: {
-    has_project_need: boolean;
-    confidence: number;
-    project_type: string;
-    suggested_title: string;
-    confirmed_signals: string[];
-    open_questions: string[];
-    budget_signals: string[];
-    timeline_signals: string[];
-    intent_signals: string[];
-    risks: string[];
-    message_refs: number[];
-    conversion_advice: string;
-  };
-}
-
-export interface SalesAnalysisResult {
-  customer_type: "新访客" | "潜在客户" | "意向客户" | "已有客户" | "低匹配客户";
-  need_type: string;
-  purchase_probability: number;
-  stage: "初次咨询" | "需求沟通" | "方案评估" | "报价决策" | "待跟进" | "已成交" | "暂不匹配";
-  customer_profile: string;
-  need_signals: string[];
-  sales_strategy: string;
-  next_action: string;
-  recommended_reply: string;
-  evidence_refs: number[];
-  risk_flags: string[];
-  tools_used: Array<"customer_history" | "similar_projects" | "pricing_history">;
-  needs_human_confirmation: true;
-}
-
-export interface SalesAnalysis {
-  id: string;
-  conversation_id: number;
-  message_id: number;
-  provider: string;
-  model: string;
-  status: "running" | "completed" | "failed" | string;
-  result: SalesAnalysisResult | null;
-  tools_used: string[];
-  context_summary: {
-    message_count: number;
-    project_count: number;
-    quote_count: number;
-    confirmed_revenue: number;
-    memory_version: number;
-  };
-  error_code: string | null;
-  error_message: string | null;
-  confirmed_at: string | null;
-  created_at: string;
-  finished_at: string | null;
-}
-
-export interface SalesMemoryItem {
-  id: string;
-  customer_id: string | null;
-  conversation_id: number;
-  source_analysis_id: string | null;
-  customer_background: string;
-  requirements: string[];
-  communication_summary: string;
-  latest_analysis: Record<string, unknown>;
-  follow_up_status: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface SalesMemory {
-  customer_id: string | null;
-  memories: SalesMemoryItem[];
-  memory_count: number;
-  latest_version: number;
-}
-
-export interface SalesConfirmation {
-  analysis: SalesAnalysis;
-  lead: LeadView;
-  memory: SalesMemoryItem;
-  revision: number;
-  idempotent: boolean;
+  detail: string;
+  configured: boolean;
+  persisted: boolean;
+  repair_command: string | null;
 }
 
 export interface RequirementBlueprint {
@@ -206,90 +591,36 @@ export interface RequirementBlueprint {
   evidence_refs: Array<{ id: string; message_number: number; quote: string }>;
 }
 
-export interface RequirementExport {
-  conversation_id: number;
-  filename: string;
-  prompt: string;
-  analysis_document: string;
-  schema: Record<string, unknown>;
-  conversation_package: Record<string, unknown>;
-  redaction_count: number;
-  private_content_included: boolean;
+export interface ProductRegistrationCandidate {
+  external_id: string;
+  title: string;
+  price: number | null;
+  status: string;
+  ownership_status: "owned" | "pending" | "excluded" | string;
+  already_registered: boolean;
+  monitoring_enabled: boolean;
+  can_register: boolean;
+  blocked_reason: string | null;
 }
 
-export interface RequirementAttachment {
-  id: string;
-  conversation_id: number;
-  message_id: number | null;
-  message_number: number | null;
-  source: "manual" | "edge";
-  attachment_type: "image";
-  mime_type: string;
-  original_name: string;
-  sha256: string;
-  file_size: number;
-  width: number;
-  height: number;
-  sort_order: number;
-  privacy_status: "pending" | "reviewed" | "excluded";
-  reviewed_at: string | null;
-  created_at: string;
-  content_url: string;
-  duplicate: boolean;
-}
-
-export interface RequirementImageCandidate {
-  message_id: number;
-  message_number: number;
-  direction: string;
-  time: string;
-  label: string;
-  captured: boolean;
-  attachment_ids: string[];
-}
-
-export interface RequirementExportPreview {
-  conversation_id: number;
-  text_message_count: number;
-  image_candidate_count: number;
-  captured_image_count: number;
-  missing_image_count: number;
-  total_bytes: number;
-  redaction_count: number;
-  package_complete: boolean;
-  attachments: RequirementAttachment[];
-  image_candidates: RequirementImageCandidate[];
-}
-
-export interface RequirementExportPackage {
-  export_id: string;
-  conversation_id: number;
-  package_root: string;
-  readme_path: string;
-  manifest_path: string;
-  image_paths: string[];
-  codex_prompt: string;
-  selected_image_count: number;
-  missing_image_count: number;
-  package_complete: boolean;
-  redaction_count: number;
-}
-
-export interface RequirementImportPreview {
+export interface ProductRegistrationPreview {
   token: string;
   expires_at: string;
-  customer_id: string;
-  item_id: number | null;
-  item_external_id: string | null;
-  item_title: string | null;
-  case_id: string | null;
-  case_title: string;
-  target_version: number;
-  expected_version: number;
-  document: RequirementBlueprint;
-  estimated_hours: number;
+  source: "account_listing" | "shared_reference" | string;
+  items: ProductRegistrationCandidate[];
   warnings: string[];
-  changes: string[];
+}
+
+export interface ProductRegistrationCommitResult {
+  products: ProductView[];
+  registered_count: number;
+  already_registered_count: number;
+  idempotent: boolean;
+}
+
+export interface ProductMonitorBatchDisableResult {
+  disabled_external_ids: string[];
+  disabled_count: number;
 }
 
 export interface RequirementVersionCaseSummary {
@@ -382,20 +713,6 @@ export interface CodexDevelopmentPlan {
   updated_at: string;
   confirmed_at: string | null;
   idempotent: boolean;
-}
-
-export interface QuoteView {
-  id: string;
-  lead_id: string;
-  version: number;
-  status: string;
-  hourly_rate: number;
-  risk_buffer: number;
-  estimated_hours: number;
-  total_amount: number;
-  stages: Array<Record<string, unknown>>;
-  payment_plan: Array<Record<string, unknown>>;
-  risks: string[];
 }
 
 export interface MigrationConflict {
@@ -528,6 +845,20 @@ export interface ProductView {
   converted_project_count: number;
   revenue_total: number;
   profit_total: number;
+  project_expense_total: number;
+  project_refund_total: number;
+  profit_is_realtime: boolean;
+  linked_projects: Array<{
+    project_id: string;
+    project_name: string;
+    relation_source: "project_binding" | "conversation_compatibility" | string;
+    latest_confirmed_at: string | null;
+    confirmed_total: number;
+    net_confirmed_total: number;
+    expense_total: number;
+    refund_total: number;
+    profit_total: number;
+  }>;
   inquiry_rate: number | null;
   deal_rate: number | null;
   snapshot_count: number;
@@ -561,12 +892,21 @@ export interface ProductOperatingPlanSlotView {
   planned_cost: number;
   reason: string;
   change_reason: string;
+  change_factors: string[];
   evidence: string[];
   warnings: string[];
   confidence: string;
   locked: boolean;
+  lock_mode: "none" | "stability" | "manual" | string;
+  lock_label: string | null;
+  cooldown_conflict_count: number;
+  cooldown_until: string | null;
   status: string;
   batch_id: string | null;
+  source_batch_id: string | null;
+  availability_at: string | null;
+  is_new_spend: boolean;
+  rotation_summary: Record<string, unknown>;
 }
 
 export interface ProductOperatingPlanView {
@@ -581,11 +921,41 @@ export interface ProductOperatingPlanView {
   remaining_this_week: number;
   cadence: string;
   change_summary: string;
+  change_factors: string[];
   data_quality: string;
   rules_version: string;
   analysis_stage: string;
   effective_batch_count: number;
   slots: ProductOperatingPlanSlotView[];
+}
+
+export interface ProductTrafficItemCheckpointView {
+  checkpoint: "h1" | "h6" | "h24" | "h48" | "h72" | string;
+  hours: number;
+  recorded_at: string;
+  browse_count: number;
+  collect_count: number;
+  want_count: number;
+  inquiry_count: number;
+  browse_delta: number;
+  collect_delta: number;
+  want_delta: number;
+  inquiry_delta: number;
+}
+
+export interface ProductTrafficExploratoryPointView {
+  key: string;
+  label: string;
+  source: "checkpoint" | "daily_snapshot" | string;
+  recorded_at: string;
+  browse_count: number;
+  collect_count: number;
+  want_count: number;
+  inquiry_count: number;
+  browse_change: number;
+  collect_change: number;
+  want_change: number;
+  inquiry_change: number;
 }
 
 export interface ProductTrafficBatchItemView {
@@ -596,6 +966,7 @@ export interface ProductTrafficBatchItemView {
   baseline_want_count: number;
   baseline_inquiry_count: number;
   baseline_captured_at: string | null;
+  baseline_source: "pending" | "remote_refresh" | "manual" | "legacy_snapshot" | "missing" | string;
   latest_checkpoint: string | null;
   latest_browse_count: number;
   latest_collect_count: number;
@@ -605,10 +976,12 @@ export interface ProductTrafficBatchItemView {
   collect_delta: number;
   want_delta: number;
   inquiry_delta: number;
+  checkpoints: ProductTrafficItemCheckpointView[];
+  exploratory_points: ProductTrafficExploratoryPointView[];
 }
 
 export interface ProductTrafficCheckpointMetricsView {
-  checkpoint: "h1" | "h6" | "h24" | "h72" | string;
+  checkpoint: "h1" | "h6" | "h24" | "h48" | "h72" | string;
   hours: number;
   batch_count: number;
   browse_delta: number;
@@ -620,21 +993,82 @@ export interface ProductTrafficCheckpointMetricsView {
   average_inquiry_delta: number;
 }
 
+export interface ProductTrafficCheckpointJobItemView {
+  external_id: string;
+  title: string;
+  status: "pending" | "completed" | "failed" | "protection_skipped" | string;
+  captured_at: string | null;
+  error_code: string | null;
+  error_detail: string;
+}
+
+export interface ProductTrafficCheckpointJobView {
+  checkpoint: "h1" | "h6" | "h24" | "h48" | "h72" | string;
+  hours: number;
+  scheduled_for: string;
+  status: "scheduled" | "waiting_connection" | "collecting" | "partial" | "waiting_manual" | "completed" | "missed" | "circuit_open" | string;
+  mode: "auto" | "manual" | string;
+  attempt_count: number;
+  collected_count: number;
+  total_count: number;
+  captured_at: string | null;
+  completed_at: string | null;
+  capture_delay_minutes: number | null;
+  last_error_code: string | null;
+  last_error_detail: string;
+  can_retry_auto: boolean;
+  can_complete_manually: boolean;
+  items: ProductTrafficCheckpointJobItemView[];
+}
+
 export interface ProductTrafficBatchView {
   id: string;
   plan_slot_id: string | null;
-  status: "planned" | "running" | "observing" | "closed" | "cancelled" | string;
+  status: "planned" | "running" | "observing" | "closed" | "invalidated" | "cancelled" | string;
   planned_at: string;
   started_at: string | null;
   completed_at: string | null;
+  updated_at: string;
+  baseline_prepared_at: string | null;
+  recording_mode: "standard" | "actual_overlap" | "scale_cohort" | string;
+  attribution_status: "clean" | "overlap" | "cohort_overlap" | string;
+  invalidated_at: string | null;
+  invalidation_reason: "missing_baseline" | "legacy_baseline" | "stale_baseline" | "invalid_baseline_time" | string | null;
+  invalidation_label: string | null;
+  checkpoint_collection_mode: "auto" | "manual" | string;
+  observation_window_hours: 48 | 72 | number;
+  terminal_checkpoint: "h48" | "h72" | string;
+  checkpoint_sequence: Array<"h1" | "h6" | "h24" | "h48" | "h72" | string>;
+  is_legacy_protocol: boolean;
+  observation_title: string;
+  checkpoint_jobs: ProductTrafficCheckpointJobView[];
+  has_reliable_baseline: boolean;
+  baseline_expires_at: string | null;
+  baseline_status: "pending" | "ready" | "expired" | "used" | "legacy" | string;
+  baseline_status_label: string;
+  can_prepare_baseline: boolean;
+  can_start: boolean;
+  planned_actual_delta_minutes: number | null;
+  planned_actual_delta_label: string | null;
+  needs_replan: boolean;
+  replan_reason: string | null;
   actual_cost: number;
   total_exposure: number | null;
   note: string;
   products: ProductTrafficBatchItemView[];
   completed_checkpoints: string[];
-  due_checkpoint: "h1" | "h6" | "h24" | "h72" | null;
+  due_checkpoint: "h1" | "h6" | "h24" | "h48" | "h72" | null;
   due_at: string | null;
+  due_ready: boolean;
+  checkpoint_progress: number;
+  baseline_age_minutes: number | null;
+  baseline_quality: "fresh" | "weak" | "missing" | "planned" | string;
+  baseline_quality_label: string;
+  baseline_quality_detail: string;
   overlap_warning: string | null;
+  start_blocked: boolean;
+  start_blocked_reason: string | null;
+  start_blocked_until: string | null;
   browse_delta: number;
   collect_delta: number;
   want_delta: number;
@@ -642,13 +1076,102 @@ export interface ProductTrafficBatchView {
   inquiry_conversion_rate: number | null;
   cost_per_browse: number | null;
   cost_per_inquiry: number | null;
-  observation_checkpoint: "h1" | "h6" | "h24" | "h72" | null;
+  observation_checkpoint: "h1" | "h6" | "h24" | "h48" | "h72" | null;
   observation_hours: number;
   time_bucket: string;
   data_quality: string;
   analysis_eligible: boolean;
+  analysis_tier: "fact_only" | "exploratory" | "decision_grade" | string;
+  analysis_tier_label: string;
+  analysis_confidence: "low" | "medium" | "high" | string;
+  exploratory_available: boolean;
+  exploratory_reference_source: "checkpoint" | "daily_snapshot" | string | null;
+  exploratory_reference_label: string | null;
+  exploratory_reference_at: string | null;
+  exploratory_through_label: string | null;
+  exploratory_through_at: string | null;
+  observed_browse_change: number;
+  observed_collect_change: number;
+  observed_want_change: number;
+  observed_inquiry_change: number;
+  natural_browse_low: number | null;
+  natural_browse_high: number | null;
+  natural_sample_size: number;
+  natural_item_count: number;
+  control_browse_expected: number | null;
+  control_item_count: number;
+  control_adjusted_browse_change: number | null;
+  directional_browse_low: number | null;
+  directional_browse_high: number | null;
+  exploratory_summary: string | null;
+  analysis_limitations: string[];
+  exploratory_points: ProductTrafficExploratoryPointView[];
   checkpoint_metrics: ProductTrafficCheckpointMetricsView[];
   created_at: string;
+}
+
+export interface ProductTrafficStartPreviewView {
+  batch: ProductTrafficBatchView;
+  can_start: boolean;
+  can_start_clean: boolean;
+  can_start_cohort: boolean;
+  can_record_actual: boolean;
+  blocked_reasons: string[];
+  ownership_ready: boolean;
+  baseline_status: string;
+  baseline_expires_at: string | null;
+  earliest_start_at: string | null;
+  cooldown_until: string | null;
+  overlap_items: Array<{
+    external_id: string;
+    title: string;
+    source_batch_id: string;
+    source_started_at: string;
+    cooldown_until: string;
+  }>;
+  conflicting_batches: Array<{
+    batch_id: string;
+    started_at: string;
+    cooldown_until: string;
+    item_count: number;
+    item_external_ids: string[];
+  }>;
+  analysis_impact: string;
+  safety_notice: string;
+  actions: Array<"start" | "remote_refresh" | "manual" | "remove_overlap" | "replan" | "wait" | "actual_start" | string>;
+}
+
+export interface ProductTrafficReplanPreviewView {
+  batch_id: string;
+  updated_at: string;
+  preview_hash: string;
+  can_replan: boolean;
+  proposed_planned_at: string;
+  current_products: ProductPlanProductView[];
+  proposed_products: ProductPlanProductView[];
+  retained_products: ProductPlanProductView[];
+  removed_products: ProductPlanProductView[];
+  added_products: ProductPlanProductView[];
+  source_batch_id: string | null;
+  availability_at: string | null;
+  is_new_spend: boolean;
+  fee_impact: number;
+  reasons: string[];
+  warnings: string[];
+}
+
+export interface ProductTrafficBatchPageView {
+  items: ProductTrafficBatchView[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+export interface ProductTrafficMetricsInput {
+  external_id: string;
+  browse_count: number;
+  collect_count: number;
+  want_count: number;
+  inquiry_count: number;
 }
 
 export interface ProductTrafficTimeBucketView {
@@ -687,6 +1210,144 @@ export interface ProductExposureAnalyticsView {
   summary: string;
   checkpoints: ProductTrafficCheckpointMetricsView[];
   time_buckets: ProductTrafficTimeBucketView[];
+}
+
+export interface TrafficGrowthProductView {
+  external_id: string;
+  title: string;
+  historical_project_count: number;
+  historical_realized_profit: number;
+  historical_profit_is_attributed: boolean;
+}
+
+export interface TrafficExperimentCellView {
+  id: string;
+  phase: "exploration" | "confirmation" | "off_matrix" | string;
+  window_bucket: string;
+  time_range: string;
+  repeat_index: number;
+  status: string;
+  scheduled_for: string | null;
+  batch_id: string | null;
+  actual_bucket: string | null;
+  exclusion_reason: string | null;
+  browse_delta: number | null;
+  inquiry_delta: number | null;
+  analysis_eligible: boolean;
+}
+
+export interface TrafficTimeWindowResultView {
+  window_bucket: string;
+  time_range: string;
+  valid_batch_count: number;
+  browse_delta: number;
+  inquiry_delta: number;
+  average_browse_delta: number;
+  average_inquiry_delta: number;
+  rank: number | null;
+  provisional_winner: boolean;
+  confirmed_winner: boolean;
+}
+
+export interface TrafficScaleCohortView {
+  id: string;
+  stage: "S1" | "S2" | "S3" | string;
+  status: string;
+  target_batches_per_week: number;
+  weekly_budget: number;
+  no_other_promotion_confirmed: boolean;
+  listing_unchanged_confirmed: boolean;
+  started_at: string | null;
+  ended_at: string | null;
+  tail_ends_at: string | null;
+  commercial_followup_ends_at: string | null;
+  batch_ids: string[];
+  batch_count: number;
+  actual_cost: number;
+}
+
+export interface TrafficCommercialAttributionView {
+  id: string;
+  scope: "batch" | "cohort" | string;
+  cohort_id: string | null;
+  batch_id: string | null;
+  conversation_id: number;
+  project_id: string | null;
+  project_name: string | null;
+  status: "candidate" | "confirmed" | "rejected" | string;
+  source: string;
+  first_inbound_at: string;
+  window_start: string;
+  window_end: string;
+  confirmed_by_user_at: string | null;
+  realized_profit: number;
+  updated_at: string;
+}
+
+export interface TrafficGrowthMetricsView {
+  actual_cost: number;
+  attributed_inquiry_count: number;
+  paid_project_count: number;
+  realized_contribution_profit: number;
+  profit_to_cost_ratio: number | null;
+  net_after_traffic: number;
+  active_projects: number;
+  delivery_capacity: number;
+  observation_complete: boolean;
+  limitations: string[];
+}
+
+export interface TrafficBudgetDecisionView {
+  id: string | null;
+  recommendation: "scale" | "hold" | "reduce" | "pause";
+  status: string;
+  from_stage: "T0" | "S1" | "S2" | "S3" | string;
+  to_stage: "T0" | "S1" | "S2" | "S3" | string;
+  current_weekly_budget: number;
+  recommended_weekly_budget: number;
+  metrics: TrafficGrowthMetricsView;
+  evidence: string[];
+  rules_version: string;
+  decided_at: string;
+  applied_at: string | null;
+  can_apply: boolean;
+}
+
+export interface TrafficExperimentView {
+  id: string;
+  mode: "time_test" | "scale_cohort" | string;
+  status: "active" | "paused" | "completed" | string;
+  phase: string;
+  product: TrafficGrowthProductView;
+  target_windows: string[];
+  baseline_weekly_budget: number;
+  current_weekly_budget: number;
+  hard_weekly_cap: number;
+  base_batch_cost: number;
+  started_at: string;
+  completed_at: string | null;
+  valid_exploration_batches: number;
+  required_exploration_batches: number;
+  valid_confirmation_batches: number;
+  required_confirmation_batches: number;
+  provisional_winner: string | null;
+  confirmed_winner: string | null;
+  cells: TrafficExperimentCellView[];
+  time_windows: TrafficTimeWindowResultView[];
+  cohorts: TrafficScaleCohortView[];
+  attributions: TrafficCommercialAttributionView[];
+  metrics: TrafficGrowthMetricsView;
+  budget_decision: TrafficBudgetDecisionView;
+  next_cell: TrafficExperimentCellView | null;
+  warnings: string[];
+  updated_at: string;
+}
+
+export interface TrafficGrowthOverviewView {
+  active_experiment: TrafficExperimentView | null;
+  historical_experiments: TrafficExperimentView[];
+  recommended_candidate: TrafficGrowthProductView | null;
+  safety_notice: string;
 }
 
 export interface ProductCollectionRunView {
@@ -918,6 +1579,8 @@ export interface ProductIntelligenceView {
     batch_count: number;
     effective_batch_count: number;
     active_batch_count: number;
+    planned_batch_count: number;
+    observation_batch_count: number;
     due_checkpoint_count: number;
     spent_this_week: number;
     analysis_stage: string;
@@ -940,6 +1603,273 @@ export interface OperationsSummary {
   converted_leads: number;
 }
 
+export interface CustomerIntakeCandidate {
+  conversation_id: number;
+  channel: string;
+  customer_name: string;
+  customer_source: "xianyu" | "wechat" | "referral" | "other";
+  last_message_at: string | null;
+  last_text_preview: string;
+  same_name_exists: boolean;
+}
+
+export interface CustomerIntakeCandidatesView {
+  revision: number;
+  candidates: CustomerIntakeCandidate[];
+}
+
+export interface CustomerCreatePayload {
+  request_id: string;
+  expected_revision: number;
+  confirmed: true;
+  conversation_id: number | null;
+  name: string;
+  source: "xianyu" | "wechat" | "referral" | "other";
+  phone: string;
+  level: "A" | "B" | "C";
+  current_need: string;
+  price_type: "" | "customer_budget" | "operator_quote" | "agreed_price";
+  price_amount: number | null;
+  next_action: string;
+  notes: string;
+}
+
+export interface CustomerCreateResult {
+  revision: number;
+  snapshot: LedgerSnapshot;
+  customer_id: string;
+  conversation_id: number | null;
+  created: boolean;
+  idempotent: boolean;
+}
+
+export type GlobalAgentProvider = "codex_cli" | "deepseek" | "openai_compatible";
+export type GlobalAgentTargetPage = "" | "home" | "products" | "customers" | "projects" | "finance" | "business-analysis" | "settings";
+
+export interface GlobalAgentProfile {
+  id: string;
+  provider: GlobalAgentProvider;
+  model: string;
+  reasoning_effort: string;
+  label: string;
+  enabled: boolean;
+  is_default: boolean;
+  configured: boolean;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GlobalAgentModelOption {
+  model: string;
+  display_name: string;
+  default_reasoning_effort: string | null;
+  supported_reasoning_efforts: string[];
+}
+
+export interface GlobalAgentKnowledgeCitation {
+  id: string;
+  relative_path: string;
+  absolute_path: string;
+  title: string;
+  heading: string;
+  snippet: string;
+  maturity: string;
+  content_hash: string;
+}
+
+export interface GlobalAgentToolReference {
+  id: string;
+  name: string;
+  label: string;
+  status: string;
+  duration_ms: number;
+}
+
+export interface GlobalAgentFact {
+  text: string;
+  evidence_refs: string[];
+}
+
+export interface GlobalAgentRequirementAnalysisItem {
+  text: string;
+  evidence_refs: string[];
+}
+
+export interface GlobalAgentRequirementRisk {
+  id: string;
+  title: string;
+  description: string;
+  severity: "low" | "medium" | "high";
+  mitigation: string;
+  evidence_refs: string[];
+}
+
+export interface GlobalAgentRequirementAnalysis {
+  maturity: "discovery" | "clarifying" | "ready";
+  summary: string;
+  customer_confirmed: GlobalAgentRequirementAnalysisItem[];
+  operator_decisions: GlobalAgentRequirementAnalysisItem[];
+  unconfirmed: GlobalAgentRequirementAnalysisItem[];
+  constraints: GlobalAgentRequirementAnalysisItem[];
+  open_questions: string[];
+  assumptions: string[];
+  risks: GlobalAgentRequirementRisk[];
+}
+
+export interface GlobalAgentRequirementBlueprint {
+  title: string;
+  maturity: "discovery" | "clarifying" | "ready";
+  objectives: Array<{ id: string; title: string; description: string; evidence_refs: string[] }>;
+  capabilities: Array<{ id: string; title: string; description: string; objective_ids: string[]; priority: "must" | "should" | "could"; evidence_refs: string[] }>;
+  stages: Array<{ id: string; title: string; objective: string; capability_ids: string[]; dependency_ids: string[]; work_items: string[]; deliverables: string[]; estimated_hours: number | null; evidence_refs: string[] }>;
+  acceptance_gates: Array<{ id: string; title: string; description: string; stage_ids: string[]; criteria: string[]; evidence_refs: string[] }>;
+  out_of_scope: string[];
+  assumptions: string[];
+  open_questions: string[];
+  risks: GlobalAgentRequirementRisk[];
+}
+
+export interface GlobalAgentCustomerProposalText {
+  value: string;
+  evidence_refs: string[];
+}
+
+export interface GlobalAgentCustomerCreateProposal {
+  conversation_id: number;
+  customer_name: GlobalAgentCustomerProposalText;
+  phone: GlobalAgentCustomerProposalText;
+  source: "xianyu" | "wechat" | "other";
+  level: "A" | "B" | "C";
+  current_need: GlobalAgentCustomerProposalText;
+  price: {
+    price_type: "" | "customer_budget" | "operator_quote" | "agreed_price";
+    amount: number | null;
+    evidence_refs: string[];
+  };
+  next_action: GlobalAgentCustomerProposalText;
+  notes: GlobalAgentCustomerProposalText;
+}
+
+export interface GlobalAgentAnswer {
+  conclusion: string;
+  facts: GlobalAgentFact[];
+  causes: string[];
+  knowledge_citation_ids: string[];
+  limitations: string[];
+  confidence: "low" | "medium" | "high";
+  observation_period: string;
+  next_step: string;
+  target_page: GlobalAgentTargetPage;
+  updated_customer_context?: GlobalAgentCustomerSummary | null;
+  requirement_analysis?: GlobalAgentRequirementAnalysis | null;
+  requirement_blueprint?: GlobalAgentRequirementBlueprint | null;
+  customer_create_proposal?: GlobalAgentCustomerCreateProposal | null;
+}
+
+export interface GlobalAgentCustomerSummaryItem {
+  text: string;
+  evidence_message_ids: number[];
+}
+
+export interface GlobalAgentCustomerSummary {
+  goals: GlobalAgentCustomerSummaryItem[];
+  confirmed_requirements: GlobalAgentCustomerSummaryItem[];
+  unconfirmed_requirements: GlobalAgentCustomerSummaryItem[];
+  constraints: GlobalAgentCustomerSummaryItem[];
+  decisions: GlobalAgentCustomerSummaryItem[];
+  recent_changes: GlobalAgentCustomerSummaryItem[];
+  pending_questions: GlobalAgentCustomerSummaryItem[];
+  risks: GlobalAgentCustomerSummaryItem[];
+}
+
+export interface GlobalAgentCustomerContextOption {
+  conversation_id: number;
+  customer_id: string | null;
+  channel: string;
+  customer_name: string;
+  item_title: string | null;
+  text_message_count: number;
+  latest_text_message_id: number | null;
+  latest_message_at: string | null;
+  summary_version: number | null;
+  summarized_through_message_id: number | null;
+  new_message_count: number;
+  context_updated: boolean;
+}
+
+export type GlobalAgentCustomerContextState = GlobalAgentCustomerContextOption;
+
+export interface GlobalAgentMessage {
+  id: string;
+  thread_id: string;
+  role: "user" | "assistant";
+  content: string;
+  status: string;
+  run_id: string | null;
+  answer: GlobalAgentAnswer | null;
+  citations: GlobalAgentKnowledgeCitation[];
+  tool_references: GlobalAgentToolReference[];
+  created_at: string;
+}
+
+export interface GlobalAgentRun {
+  id: string;
+  request_id: string;
+  thread_id: string;
+  user_message_id: string;
+  assistant_message_id: string | null;
+  provider: GlobalAgentProvider;
+  model: string;
+  reasoning_effort: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface GlobalAgentThread {
+  id: string;
+  title: string;
+  profile_id: string | null;
+  provider: GlobalAgentProvider;
+  model: string;
+  reasoning_effort: string;
+  context_scope: "general_business" | "customer_conversation";
+  customer_context: GlobalAgentCustomerContextState | null;
+  status: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  messages: GlobalAgentMessage[];
+  active_run: GlobalAgentRun | null;
+  latest_run: GlobalAgentRun | null;
+}
+
+export interface GlobalAgentKnowledgeStatus {
+  root: string;
+  approved_directories: string[];
+  active_documents: number;
+  inactive_documents: number;
+  chunks: number;
+  last_indexed_at: string | null;
+}
+
+export interface GlobalAgentKnowledgeReindexResult extends GlobalAgentKnowledgeStatus {
+  indexed_documents: number;
+  excluded_documents: number;
+  deactivated_documents: number;
+  idempotent: boolean;
+}
+
+export interface GlobalAgentBootstrap {
+  profiles: GlobalAgentProfile[];
+  threads: GlobalAgentThread[];
+  knowledge: GlobalAgentKnowledgeStatus;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
@@ -960,36 +1890,73 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const localPlatformService = {
   status: () => api<PlatformStatus>("/api/status"),
+  customerIntakeCandidates: () => api<CustomerIntakeCandidatesView>("/api/customers/intake-candidates", { headers: { "X-Yuda-Desktop": "1" } }),
+  createCustomer: (payload: CustomerCreatePayload) => api<CustomerCreateResult>("/api/customers", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  globalAgentBootstrap: () => api<GlobalAgentBootstrap>("/api/global-agent/bootstrap", { headers: { "X-Yuda-Desktop": "1" } }),
+  globalAgentCustomerContextOptions: () => api<GlobalAgentCustomerContextOption[]>("/api/global-agent/customer-context-options", { headers: { "X-Yuda-Desktop": "1" } }),
+  globalAgentThread: (threadId: string) => api<GlobalAgentThread>(`/api/global-agent/threads/${encodeURIComponent(threadId)}`, { headers: { "X-Yuda-Desktop": "1" } }),
+  createGlobalAgentThread: (payload: { request_id: string; profile_id: string; title: string }) => api<GlobalAgentThread>("/api/global-agent/threads", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  updateGlobalAgentThreadProfile: (threadId: string, payload: { request_id: string; expected_revision: number; profile_id: string }) => api<GlobalAgentThread>(`/api/global-agent/threads/${encodeURIComponent(threadId)}/profile`, { method: "PATCH", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  updateGlobalAgentThreadContext: (threadId: string, payload: { request_id: string; expected_revision: number; context_scope: "general_business" | "customer_conversation"; conversation_id: number | null }) => api<GlobalAgentThread>(`/api/global-agent/threads/${encodeURIComponent(threadId)}/context`, { method: "PATCH", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  deleteGlobalAgentThread: (threadId: string, payload: { request_id: string; expected_revision: number }) => api<void>(`/api/global-agent/threads/${encodeURIComponent(threadId)}`, { method: "DELETE", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  sendGlobalAgentMessage: (threadId: string, payload: { request_id: string; expected_revision: number; content: string; recheck_full_context?: boolean }) => api<GlobalAgentRun>(`/api/global-agent/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  confirmGlobalAgentCustomerCreate: (threadId: string, payload: { assistant_message_id: string; request_id: string; expected_revision: number; confirmed: true }) => api<CustomerCreateResult>(`/api/global-agent/threads/${encodeURIComponent(threadId)}/customer-create/confirm`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  globalAgentRun: (runId: string) => api<GlobalAgentRun>(`/api/global-agent/runs/${encodeURIComponent(runId)}`, { headers: { "X-Yuda-Desktop": "1" } }),
+  cancelGlobalAgentRun: (runId: string, requestId: string) => api<GlobalAgentRun>(`/api/global-agent/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId }) }),
+  createGlobalAgentProfile: (payload: { request_id: string; expected_revision: 0; provider: GlobalAgentProvider; model: string; reasoning_effort: string; label: string; enabled: boolean; is_default: boolean }) => api<GlobalAgentProfile>("/api/global-agent/profiles", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  updateGlobalAgentProfile: (profileId: string, payload: { request_id: string; expected_revision: number; model: string; reasoning_effort: string; label: string; enabled: boolean; is_default: boolean }) => api<GlobalAgentProfile>(`/api/global-agent/profiles/${encodeURIComponent(profileId)}`, { method: "PATCH", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  globalAgentProviderModels: (provider: GlobalAgentProvider) => api<GlobalAgentModelOption[]>(`/api/global-agent/providers/${encodeURIComponent(provider)}/models`, { headers: { "X-Yuda-Desktop": "1" } }),
+  reindexGlobalAgentKnowledge: (requestId: string) => api<GlobalAgentKnowledgeReindexResult>("/api/global-agent/knowledge/reindex", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId, confirmed: true }) }),
+  codexProjectSync: (projectId: string) => api<CodexProjectSyncView>(`/api/projects/${encodeURIComponent(projectId)}/codex-sync`),
+  codexManagedProject: (projectId: string) => api<CodexManagedProjectView>(`/api/projects/${encodeURIComponent(projectId)}/codex-runtime`, { headers: { "X-Yuda-Desktop": "1" } }),
+  startCodexManagedRun: (payload: { request_id: string; project_id: string; task_key: string; binding_id: string; model: string; reasoning_effort: string; sandbox_mode: "workspace-write"; approval_mode: "untrusted"; acknowledge_dirty_repository: boolean }) => api<CodexManagedRun>("/api/codex/runs", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  pauseCodexManagedRun: (runId: string, requestId: string) => api<CodexManagedRun>(`/api/codex/runs/${encodeURIComponent(runId)}/pause`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId }) }),
+  resumeCodexManagedRun: (runId: string, requestId: string) => api<CodexManagedRun>(`/api/codex/runs/${encodeURIComponent(runId)}/resume`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId }) }),
+  cancelCodexManagedRun: (runId: string, requestId: string) => api<CodexManagedRun>(`/api/codex/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId }) }),
+  codexManagedDiff: (runId: string) => api<CodexManagedDiff>(`/api/codex/runs/${encodeURIComponent(runId)}/diff`, { headers: { "X-Yuda-Desktop": "1" } }),
+  openCodexWorktree: (runId: string) => api<void>(`/api/codex/runs/${encodeURIComponent(runId)}/open`, { method: "POST", headers: { "X-Yuda-Desktop": "1" } }),
+  decideCodexApproval: (approvalId: string, requestId: string, decision: "approve_once" | "reject" | "cancel") => api<CodexManagedApproval>(`/api/codex/approvals/${encodeURIComponent(approvalId)}/decision`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId, decision }) }),
+  projectVerification: (projectId: string) => api<CodexProjectVerificationView>(`/api/projects/${encodeURIComponent(projectId)}/verification`, { headers: { "X-Yuda-Desktop": "1" } }),
+  createManualAcceptancePoints: (projectId: string, payload: { request_id: string; expected_revision: number; reason: string; points: Array<{ task_id: string; point_key: string; title: string; verification_type: "automated_test" | "manual_test" | "visual_review" | "document_review"; point_weight?: number | null }> }) => api<CodexProjectVerificationView>(`/api/projects/${encodeURIComponent(projectId)}/manual-acceptance-points`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  retireManualAcceptancePoint: (pointId: string, payload: { request_id: string; expected_revision: number; reason: string }) => api<CodexProjectVerificationView>(`/api/acceptance-points/${encodeURIComponent(pointId)}/retire`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  freezeProjectOutcome: (projectId: string, payload: { request_id: string; expected_revision: number; confirmed_scope_complete: true; confirmed_time_complete: true; confirmation_note: string }) => api<ProjectOutcomeFreezeView>(`/api/projects/${encodeURIComponent(projectId)}/outcome-freezes`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  projectOutcomeFreezes: (projectId: string) => api<ProjectOutcomeFreezeView[]>(`/api/projects/${encodeURIComponent(projectId)}/outcome-freezes`, { headers: { "X-Yuda-Desktop": "1" } }),
+  decideAcceptancePoint: (pointId: string, payload: { request_id: string; expected_revision: number; status: "pending" | "verified" | "failed" | "waived"; reason: string; waived_counts: boolean }) => api<CodexProjectVerificationView>(`/api/acceptance-points/${encodeURIComponent(pointId)}/decision`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  runProjectVerificationTest: (projectId: string, payload: { request_id: string; expected_revision: number; point_id: string; command: string; timeout_seconds: number; confirmed: true }) => api<CodexProjectVerificationView>(`/api/projects/${encodeURIComponent(projectId)}/tests/run`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  addProjectTimeEntry: (projectId: string, payload: { request_id: string; expected_revision: number; task_id: string; category: "development" | "testing" | "fixing" | "communication"; hours: number; note: string }) => api<CodexProjectVerificationView>(`/api/projects/${encodeURIComponent(projectId)}/time-entries`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  linkProjectGitCommit: (projectId: string, payload: { request_id: string; expected_revision: number; task_id: string; point_id?: string | null; commit_sha: string; note: string }) => api<CodexProjectVerificationView>(`/api/projects/${encodeURIComponent(projectId)}/git-links`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  recoverXianyu: (cookie: string) => api<ConnectionRecoveryResult>("/api/connections/xianyu/recover", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ cookie }) }),
+  recoverDeepSeek: (apiKey: string) => api<ConnectionRecoveryResult>("/api/connections/deepseek/recover", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ api_key: apiKey }) }),
+  reloadConnection: (provider: "xianyu" | "deepseek") => api<ConnectionRecoveryResult>("/api/connections/reload", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ provider }) }),
+  checkCodexConnection: () => api<ConnectionRecoveryResult>("/api/connections/codex/check", { method: "POST", headers: { "X-Yuda-Desktop": "1" } }),
   conversations: (channel = "all") => api<ConversationSummary[]>(`/api/conversations?channel=${encodeURIComponent(channel)}`),
-  conversation: (id: number) => api<ConversationDetail>(`/api/conversations/${id}`),
-  requirements: (id: number) => api<RequirementWorkspace>(`/api/conversations/${id}/requirements`),
-  generateRequirements: (id: number) => api(`/api/conversations/${id}/requirements/generate`, { method: "POST" }),
-  providers: (refresh = false) => api<AIProviderStatus[]>(`/api/ai/providers${refresh ? "?refresh=true" : ""}`),
-  regenerateDrafts: (messageId: number, provider: DraftProvider = "codex_cli") => api(`/api/messages/${messageId}/drafts/generate`, { method: "POST", body: JSON.stringify({ provider }) }),
-  send: (messageId: number, content: string) => api(`/api/messages/${messageId}/send`, { method: "POST", body: JSON.stringify({ content }) }),
-  ignore: (messageId: number) => api(`/api/messages/${messageId}/ignore`, { method: "POST" }),
-  getLead: (conversationId: number) => api<LeadView | null>(`/api/conversations/${conversationId}/lead`),
-  analyzeLead: (conversationId: number, refresh = false) => api<LeadAnalysis>(`/api/conversations/${conversationId}/lead/analyze?refresh=${refresh ? "true" : "false"}`, { method: "POST" }),
-  confirmLead: (conversationId: number, analysisRunId?: string) => api<LeadView>(`/api/conversations/${conversationId}/lead`, { method: "POST", body: JSON.stringify({ confirmed: true, analysis_run_id: analysisRunId || null }) }),
-  salesAnalysis: (conversationId: number) => api<SalesAnalysis | null>(`/api/conversations/${conversationId}/sales/analysis`),
-  salesHistory: (conversationId: number, limit = 10) => api<SalesAnalysis[]>(`/api/conversations/${conversationId}/sales/history?limit=${limit}`),
-  salesMemory: (conversationId: number) => api<SalesMemory>(`/api/conversations/${conversationId}/sales/memory`),
-  analyzeSales: (conversationId: number, refresh = false, provider?: DraftProvider) => api<SalesAnalysis>(`/api/conversations/${conversationId}/sales/analyze?refresh=${refresh ? "true" : "false"}${provider ? `&provider=${encodeURIComponent(provider)}` : ""}`, { method: "POST" }),
-  confirmSales: (conversationId: number, analysisRunId: string) => api<SalesConfirmation>(`/api/conversations/${conversationId}/sales/confirm`, { method: "POST", body: JSON.stringify({ confirmed: true, analysis_run_id: analysisRunId }) }),
-  requirementExport: (conversationId: number) => api<RequirementExport>(`/api/conversations/${conversationId}/requirement-export`),
-  requirementExportPreview: (conversationId: number) => api<RequirementExportPreview>(`/api/conversations/${conversationId}/requirement-export-preview`),
-  uploadRequirementAttachment: (conversationId: number, file: File, messageId?: number | null) => {
-    const body = new FormData();
-    body.append("file", file);
-    body.append("source", "manual");
-    if (messageId) body.append("message_id", String(messageId));
-    return api<RequirementAttachment>(`/api/conversations/${conversationId}/requirement-attachments`, { method: "POST", body });
+  phraseLibrary: () => api<PhraseLibraryView>("/api/phrase-library", { headers: { "X-Yuda-Desktop": "1" } }),
+  createPhraseCategory: (payload: { request_id: string; expected_revision: number; name: string }) => api<PhraseLibraryView>("/api/phrase-library/categories", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  createPhrase: (payload: { request_id: string; expected_revision: number; category_id: string; content: string }) => api<PhraseLibraryView>("/api/phrase-library/phrases", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  updatePhrase: (phraseId: string, payload: { request_id: string; expected_revision: number; category_id: string; content: string }) => api<PhraseLibraryView>(`/api/phrase-library/phrases/${encodeURIComponent(phraseId)}`, { method: "PATCH", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  reorderPhrases: (payload: { request_id: string; expected_revision: number; category_id: string; phrase_ids: string[] }) => api<PhraseLibraryView>("/api/phrase-library/phrases/reorder", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  setPhraseActivation: (phraseId: string, payload: { request_id: string; expected_revision: number; active: boolean }) => api<PhraseLibraryView>(`/api/phrase-library/phrases/${encodeURIComponent(phraseId)}/activation`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  customerImages: (filters: { channel?: string; conversationId?: number | null; dateFrom?: string; dateTo?: string; limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.channel && filters.channel !== "all") params.set("channel", filters.channel);
+    if (filters.conversationId) params.set("conversation_id", String(filters.conversationId));
+    if (filters.dateFrom) params.set("date_from", filters.dateFrom);
+    if (filters.dateTo) params.set("date_to", filters.dateTo);
+    params.set("limit", String(filters.limit || 100));
+    params.set("offset", String(filters.offset || 0));
+    return api<CustomerImageListView>(`/api/customer-images?${params.toString()}`);
   },
-  updateRequirementAttachmentPrivacy: (conversationId: number, attachmentId: string, privacyStatus: "pending" | "reviewed" | "excluded") => api<RequirementAttachment>(`/api/conversations/${conversationId}/requirement-attachments/${encodeURIComponent(attachmentId)}`, { method: "PATCH", body: JSON.stringify({ privacy_status: privacyStatus }) }),
-  deleteRequirementAttachment: (conversationId: number, attachmentId: string) => api<void>(`/api/conversations/${conversationId}/requirement-attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" }),
-  createRequirementExportPackage: (conversationId: number, attachmentIds: string[], allowIncomplete: boolean) => api<RequirementExportPackage>(`/api/conversations/${conversationId}/requirement-export-package`, { method: "POST", body: JSON.stringify({ confirmed: true, attachment_ids: attachmentIds, allow_incomplete: allowIncomplete }) }),
-  previewRequirementImport: (payload: { conversation_id: number; customer_id: string; case_id?: string | null; case_title?: string | null; source_label?: string; document: string | Record<string, unknown> }) => api<RequirementImportPreview>("/api/requirements/import/preview", { method: "POST", body: JSON.stringify(payload) }),
-  commitRequirementImport: (token: string, expectedVersion: number) => api<{ case: RequirementCaseDetail; version_id: number; version: number; idempotent: boolean }>("/api/requirements/import/commit", { method: "POST", body: JSON.stringify({ token, expected_version: expectedVersion }) }),
+  customerImageStatus: () => api<CustomerImageArchiveStatus>("/api/customer-images/status"),
+  customerImageFilters: () => api<CustomerImageFilters>("/api/customer-images/filters"),
+  previewCustomerImageHistory: () => api<CustomerImageHistoryPreview>("/api/customer-images/history-preview"),
+  customerImageAttention: () => api<CustomerImageAttentionItem[]>("/api/customer-images/attention"),
+  recoverCustomerImageHistory: (requestId: string) => api<CustomerImageHistoryResult>("/api/customer-images/history-recover", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId, confirmed: true }) }),
+  deleteCustomerImage: (archiveId: string) => api<void>(`/api/customer-images/${encodeURIComponent(archiveId)}/delete`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ confirmed: true }) }),
+  searchConversationHistory: (payload: { query: string; days: 7 | 30 | 90 | 365; limit?: number }) => api<ConversationHistorySearchItem[]>("/api/conversations/history-import/search", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ ...payload, limit: payload.limit || 100 }) }),
+  previewConversationHistory: (externalConversationId: string, messageLimit = 100) => api<ConversationHistoryPreview>("/api/conversations/history-import/preview", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ external_conversation_id: externalConversationId, message_limit: messageLimit }) }),
+  commitConversationHistory: (payload: { request_id: string; preview_token: string; mark_latest_pending: boolean }) => api<ConversationHistoryCommitResult>("/api/conversations/history-import/commit", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  conversation: (id: number) => api<ConversationDetail>(`/api/conversations/${id}`),
+  providers: (refresh = false) => api<AIProviderStatus[]>(`/api/ai/providers${refresh ? "?refresh=true" : ""}`),
   customerRequirements: (customerId: string) => api<RequirementCaseSummary[]>(`/api/customers/${encodeURIComponent(customerId)}/requirements`),
   requirementCase: (caseId: string, version?: number) => api<RequirementCaseDetail>(`/api/requirement-cases/${encodeURIComponent(caseId)}${version ? `?version=${version}` : ""}`),
   editRequirementCase: (caseId: string, payload: { expected_version: number; change_summary: string; document: RequirementBlueprint }) => api<{ case: RequirementCaseDetail; version_id: number; version: number; idempotent: boolean }>(`/api/requirement-cases/${encodeURIComponent(caseId)}/edit`, { method: "POST", body: JSON.stringify(payload) }),
@@ -1000,9 +1967,6 @@ export const localPlatformService = {
   generateCodexPlan: (payload: { request_id: string; requirement_case_id: string; expected_requirement_version: number; binding_id?: string | null }) => api<CodexDevelopmentPlan>("/api/codex/plans/generate", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   updateCodexPlan: (planId: string, payload: { request_id: string; expected_updated_at: string; document: CodexPlanDocument }) => api<CodexDevelopmentPlan>(`/api/codex/plans/${encodeURIComponent(planId)}/draft`, { method: "PUT", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   confirmCodexPlan: (planId: string, payload: { request_id: string; expected_updated_at: string; expected_requirement_version: number; expected_revision: number; confirmed: true }) => api<{ plan: CodexDevelopmentPlan; project_id: string; task_ids: string[]; revision: number; idempotent: boolean }>(`/api/codex/plans/${encodeURIComponent(planId)}/confirm`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
-  quotes: (leadId: string) => api<QuoteView[]>(`/api/leads/${leadId}/quotes`),
-  generateQuote: (leadId: string, hourlyRate?: number) => api<QuoteView>(`/api/leads/${leadId}/quote/generate`, { method: "POST", body: JSON.stringify({ hourly_rate: hourlyRate || null, risk_buffer: 0.15 }) }),
-  convertLead: (leadId: string, quoteId: string, projectName?: string) => api<{ project_id: string; revision: number }>(`/api/leads/${leadId}/convert`, { method: "POST", body: JSON.stringify({ quote_id: quoteId, confirmed: true, project_name: projectName || null }) }),
   migrationPreview: (snapshot: LedgerSnapshot) => api<MigrationPreview>("/api/ledger/migrations/preview", { method: "POST", body: JSON.stringify({ snapshot }) }),
   migrationCommit: (snapshot: LedgerSnapshot, token: string, resolutions: Record<string, "sqlite" | "browser">) => api<{ revision: number; snapshot: LedgerSnapshot; backup_name: string; attachments_written: number }>("/api/ledger/migrations/commit", { method: "POST", body: JSON.stringify({ snapshot, token, resolutions }) }),
   operationsSummary: () => api<OperationsSummary>("/api/operations/summary"),
@@ -1010,16 +1974,45 @@ export const localPlatformService = {
   createBusinessQuote: (analysis: BusinessRequirementAnalysis, complexity: "standard" | "advanced" | "complex", riskBuffer = 0.15) => api<BusinessQuote>("/api/ai/business/quote", { method: "POST", body: JSON.stringify({ analysis, complexity, risk_buffer: riskBuffer }) }),
   reviewBusinessProject: (payload: Record<string, unknown>) => api<BusinessReview>("/api/ai/business/review", { method: "POST", body: JSON.stringify(payload) }),
   productIntelligence: () => api<ProductIntelligenceView>("/api/products/intelligence"),
+  trafficGrowth: () => api<TrafficGrowthOverviewView>("/api/products/traffic-growth"),
+  previewTrafficExperiment: (payload: { item_external_id: string; target_windows: string[]; baseline_weekly_budget: number; hard_weekly_cap: number }) => api("/api/products/traffic-experiments/preview", { method: "POST", body: JSON.stringify(payload) }),
+  createTrafficExperiment: (payload: { request_id: string; item_external_id: string; target_windows: string[]; baseline_weekly_budget: number; hard_weekly_cap: number }) => api<TrafficExperimentView>("/api/products/traffic-experiments", { method: "POST", body: JSON.stringify(payload) }),
+  advanceTrafficExperiment: (experimentId: string, payload: { request_id: string; expected_updated_at: string }) => api<TrafficExperimentView>(`/api/products/traffic-experiments/${encodeURIComponent(experimentId)}/advance`, { method: "POST", body: JSON.stringify(payload) }),
+  createTrafficScaleCohort: (experimentId: string, payload: { request_id: string; stage: "S1" | "S2" | "S3"; no_other_promotion_confirmed: true; listing_unchanged_confirmed: true }) => api<TrafficExperimentView>(`/api/products/traffic-experiments/${encodeURIComponent(experimentId)}/cohorts`, { method: "POST", body: JSON.stringify(payload) }),
+  refreshTrafficAttributions: (experimentId: string, requestId: string) => api<TrafficExperimentView>(`/api/products/traffic-experiments/${encodeURIComponent(experimentId)}/attributions/refresh`, { method: "POST", body: JSON.stringify({ request_id: requestId }) }),
+  confirmTrafficAttribution: (attributionId: string, payload: { request_id: string; expected_updated_at: string; project_id: string; reason?: string }) => api<TrafficExperimentView>(`/api/products/traffic-attributions/${encodeURIComponent(attributionId)}/confirm`, { method: "POST", body: JSON.stringify(payload) }),
+  rejectTrafficAttribution: (attributionId: string, payload: { request_id: string; expected_updated_at: string; project_id?: string | null; reason?: string }) => api<TrafficExperimentView>(`/api/products/traffic-attributions/${encodeURIComponent(attributionId)}/reject`, { method: "POST", body: JSON.stringify(payload) }),
+  refreshTrafficBudgetDecision: (experimentId: string, requestId: string) => api<TrafficExperimentView>(`/api/products/traffic-experiments/${encodeURIComponent(experimentId)}/budget-decisions/refresh`, { method: "POST", body: JSON.stringify({ request_id: requestId }) }),
+  applyTrafficBudgetDecision: (decisionId: string, payload: { request_id: string; expected_experiment_updated_at: string }) => api<TrafficExperimentView>(`/api/products/traffic-budget-decisions/${encodeURIComponent(decisionId)}/apply`, { method: "POST", body: JSON.stringify(payload) }),
   collectProducts: () => api<ProductCollectionRunView>("/api/products/collect", { method: "POST" }),
   collectProductsManual: (externalId?: string) => api<ProductCollectionRunView>("/api/products/collect/manual", { method: "POST", body: JSON.stringify({ external_id: externalId || null }) }),
-  registerProduct: (itemReference: string) => api<ProductView>("/api/products/register", { method: "POST", body: JSON.stringify({ item_reference: itemReference }) }),
+  discoverOwnedListings: () => api<ProductRegistrationPreview>("/api/products/owned-listings/discover", { headers: { "X-Yuda-Desktop": "1" } }),
+  resolveProductReference: (reference: string) => api<ProductRegistrationPreview>("/api/products/references/resolve", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ reference }) }),
+  commitProductRegistration: (payload: { request_id: string; preview_token: string; external_ids: string[] }) => api<ProductRegistrationCommitResult>("/api/products/register/batch", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   updateProductMonitor: (externalId: string, enabled: boolean) => api<ProductView>(`/api/products/${encodeURIComponent(externalId)}/monitor`, { method: "PUT", body: JSON.stringify({ enabled }) }),
+  disableProductMonitors: (externalIds: string[]) => api<ProductMonitorBatchDisableResult>("/api/products/monitors/disable-batch", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ external_ids: externalIds, confirmed: true }) }),
   recordProductAction: (externalId: string, payload: { action_type: string; status: "planned" | "completed" | "cancelled"; note: string; cost: number; recommendation_id?: string | null; observation_days: number }) => api<ProductActionView>(`/api/products/${encodeURIComponent(externalId)}/actions`, { method: "POST", body: JSON.stringify(payload) }),
   updateProductRecommendation: (recommendationId: string, status: "active" | "in_progress" | "completed" | "dismissed") => api<void>(`/api/products/recommendations/${encodeURIComponent(recommendationId)}`, { method: "PUT", body: JSON.stringify({ status }) }),
-  createTrafficBatch: (payload: { request_id: string; item_external_ids: string[]; planned_at: string; actual_cost: number; plan_slot_id?: string | null; note?: string }) => api<ProductTrafficBatchView>("/api/products/traffic-batches", { method: "POST", body: JSON.stringify(payload) }),
-  startTrafficBatch: (batchId: string) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/start`, { method: "POST" }),
-  completeTrafficBatch: (batchId: string, payload: { completed_at: string; actual_cost: number; total_exposure?: number | null; note?: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/complete`, { method: "POST", body: JSON.stringify(payload) }),
-  recordTrafficCheckpoint: (batchId: string, payload: { checkpoint: "h1" | "h6" | "h24" | "h72"; recorded_at: string; items: Array<{ external_id: string; browse_count: number; collect_count: number; want_count: number; inquiry_count: number }>; note?: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/checkpoints`, { method: "POST", body: JSON.stringify(payload) }),
+  createTrafficBatch: (payload: { request_id: string; item_external_ids: string[]; planned_at: string; actual_cost: number; plan_slot_id?: string | null; note?: string; checkpoint_collection_mode?: "auto" | "manual" }) => api<ProductTrafficBatchView>("/api/products/traffic-batches", { method: "POST", body: JSON.stringify(payload) }),
+  recordTrafficBatch: (payload: { request_id: string; item_external_ids: string[]; actual_cost: number; plan_slot_id?: string | null; note?: string; checkpoint_collection_mode?: "auto" | "manual"; confirmed_already_purchased: true }) => api<ProductTrafficBatchView>("/api/products/traffic-batches/recorded", { method: "POST", body: JSON.stringify(payload) }),
+  trafficBatches: (options: { cursor?: string | null; limit?: number; status?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.status) params.set("status", options.status);
+    const suffix = params.size ? `?${params.toString()}` : "";
+    return api<ProductTrafficBatchPageView>(`/api/products/traffic-batches${suffix}`);
+  },
+  trafficStartPreview: (batchId: string) => api<ProductTrafficStartPreviewView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/start-preview`),
+  prepareTrafficBaseline: (batchId: string, payload: { request_id: string; expected_updated_at: string; mode: "remote_refresh" | "manual"; items: ProductTrafficMetricsInput[] }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/baseline`, { method: "POST", body: JSON.stringify(payload) }),
+  startTrafficBatch: (batchId: string, payload: { request_id: string; expected_updated_at: string; expected_baseline_captured_at: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/start`, { method: "POST", body: JSON.stringify(payload) }),
+  recordActualTrafficStart: (batchId: string, payload: { request_id: string; expected_updated_at: string; confirmed_already_purchased: boolean; items: ProductTrafficMetricsInput[] }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/actual-start`, { method: "POST", body: JSON.stringify(payload) }),
+  trafficReplanPreview: (batchId: string) => api<ProductTrafficReplanPreviewView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/replan-preview`),
+  replanTrafficBatch: (batchId: string, payload: { request_id: string; expected_updated_at: string; preview_hash: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/replan`, { method: "POST", body: JSON.stringify(payload) }),
+  completeTrafficBatch: (batchId: string, payload: { completed_at?: string | null; actual_cost: number; total_exposure?: number | null; note?: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/complete`, { method: "POST", body: JSON.stringify(payload) }),
+  recordTrafficCheckpoint: (batchId: string, payload: { checkpoint: "h1" | "h6" | "h24" | "h48" | "h72"; recorded_at?: string | null; items: ProductTrafficMetricsInput[]; note?: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/checkpoints`, { method: "POST", body: JSON.stringify(payload) }),
+  updateTrafficCheckpointCollectionMode: (batchId: string, payload: { request_id: string; expected_updated_at: string; mode: "auto" | "manual" }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/checkpoint-collection-mode`, { method: "PUT", body: JSON.stringify(payload) }),
+  retryTrafficCheckpointCollection: (batchId: string, checkpoint: "h1" | "h6" | "h24" | "h48" | "h72", payload: { request_id: string; expected_updated_at: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/checkpoints/${encodeURIComponent(checkpoint)}/retry`, { method: "POST", body: JSON.stringify(payload) }),
   cancelTrafficBatch: (batchId: string) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/cancel`, { method: "POST" }),
   refreshOperatingPlan: () => api<ProductOperatingPlanView>("/api/products/operating-plan/refresh", { method: "POST" }),
   updateOperatingPlanSlot: (slotId: string, locked: boolean) => api<ProductOperatingPlanView>(`/api/products/operating-plan/slots/${encodeURIComponent(slotId)}`, { method: "PUT", body: JSON.stringify({ locked }) }),
@@ -1034,15 +2027,49 @@ export const localPlatformService = {
   updateModificationExperiment: (experimentId: string, payload: { decision: "keep" | "rollback" | "continue"; note?: string }) => api<ProductModificationExperimentView>(`/api/products/modification-experiments/${encodeURIComponent(experimentId)}`, { method: "PUT", body: JSON.stringify(payload) }),
 };
 
-export function connectPlatformEvents(onEvent: (event: Record<string, unknown>) => void) {
+export function connectPlatformEvents(
+  onEvent: (event: Record<string, unknown>) => void,
+  onState?: (state: "connecting" | "connected" | "disconnected") => void,
+) {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${scheme}://${window.location.host}/events`);
-  socket.addEventListener("message", (event) => {
-    try {
-      onEvent(JSON.parse(event.data) as Record<string, unknown>);
-    } catch {
-      // Ignore malformed local events; normal API refresh remains available.
+  let socket: WebSocket | null = null;
+  let stopped = false;
+  let retryTimer: number | null = null;
+  let attempt = 0;
+  const connect = () => {
+    if (stopped) return;
+    onState?.("connecting");
+    socket = new WebSocket(`${scheme}://${window.location.host}/events`);
+    socket.addEventListener("open", () => {
+      attempt = 0;
+      onState?.("connected");
+    });
+    socket.addEventListener("message", (event) => {
+      try {
+        onEvent(JSON.parse(event.data) as Record<string, unknown>);
+      } catch {
+        // Ignore malformed local events; normal API refresh remains available.
+      }
+    });
+    socket.addEventListener("close", () => {
+      if (stopped) return;
+      onState?.("disconnected");
+      const delay = Math.min(15_000, 1_000 * 2 ** Math.min(attempt++, 4));
+      retryTimer = window.setTimeout(connect, delay);
+    });
+  };
+  const reconnectOnline = () => {
+    if (!stopped && socket?.readyState !== WebSocket.OPEN) {
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      connect();
     }
-  });
-  return () => socket.close();
+  };
+  window.addEventListener("online", reconnectOnline);
+  connect();
+  return () => {
+    stopped = true;
+    if (retryTimer !== null) window.clearTimeout(retryTimer);
+    window.removeEventListener("online", reconnectOnline);
+    socket?.close();
+  };
 }

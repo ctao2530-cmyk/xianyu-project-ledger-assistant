@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import SecretStr
 
-from backend.app.adapters import AdapterDisconnectedError, IncomingMessage, LoginExpiredError
+from backend.app.adapters import (
+    AdapterAccessVerificationError,
+    AdapterDisconnectedError,
+    IncomingMessage,
+    LoginExpiredError,
+)
 from backend.app.config import Settings
 from backend.app.services.listener import ListenerService
 from backend.app.services.status import RuntimeStatus
@@ -74,6 +79,22 @@ class ExpiredAdapter:
         pass
 
 
+class VerificationRequiredAdapter:
+    connected = False
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def listen(self, on_ready=None):
+        self.calls += 1
+        if False:
+            yield None
+        raise AdapterAccessVerificationError("verification required")
+
+    async def close(self) -> None:
+        pass
+
+
 def listener_settings() -> Settings:
     return Settings(
         _env_file=None,
@@ -120,3 +141,23 @@ async def test_login_expiry_notifies_once_while_retrying() -> None:
 
     assert status.listener == "login_required"
     assert len(notifier.notifications) == 1
+
+
+@pytest.mark.asyncio
+async def test_access_verification_stops_automatic_retries() -> None:
+    adapter = VerificationRequiredAdapter()
+    processor = FakeProcessor()
+    notifier = FakeNotifier()
+    status = RuntimeStatus()
+    service = ListenerService(
+        listener_settings(), adapter, processor, notifier, status  # type: ignore[arg-type]
+    )
+
+    await asyncio.wait_for(service.run_forever(), timeout=1)
+    await asyncio.sleep(0.03)
+
+    assert adapter.calls == 1
+    assert status.listener == "verification_required"
+    assert status.listener_detail == "闲鱼要求完成人工访问验证，自动重连已暂停"
+    assert status.realtime_delivery == "paused"
+    assert "Ego Lite" in (status.realtime_detail or "")

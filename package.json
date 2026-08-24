@@ -14,7 +14,7 @@
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "test:interactions": "node --test tests/project-cockpit-interactions.test.mjs tests/xunying-decision-workbench.test.mjs tests/business-analysis-center.test.mjs tests/requirement-export-workbench.test.mjs",
+    "test:interactions": "node --test tests/project-cockpit-interactions.test.mjs tests/connection-alerts.test.mjs tests/xunying-decision-workbench.test.mjs tests/business-analysis-center.test.mjs tests/prediction-ui.test.mjs tests/conversation-history-import.test.mjs tests/requirement-product-intake.test.mjs tests/product-exposure-v24.test.mjs tests/traffic-date-time.test.mjs tests/customer-workbench-simplification.test.mjs tests/customer-image-library.test.mjs tests/codex-sync-workbench.test.mjs tests/codex-verification-workbench.test.mjs tests/global-agent.test.mjs tests/customer-intake.test.mjs tests/phrase-library.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {

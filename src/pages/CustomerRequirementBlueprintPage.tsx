@@ -180,7 +180,7 @@ export function CustomerRequirementBlueprintPage({
           <p><FileText size={15} />V{item.current_version} · {item.source_count} 个来源会话</p>
           <footer><span><Clock size={15} />{item.estimated_hours || "待补"} 小时</span><span className={item.open_question_count ? "warn" : "ok"}><Question size={15} />{item.open_question_count} 个待确认</span><ArrowRight size={18} /></footer>
         </button>)}
-      </section> : <div className="blueprint-empty"><FileText size={34} /><h3>还没有需求案例</h3><p>请从“客户消息 → 需求分析”手动导出分析文档，上传给 GPT 后，再把 GPT 返回的结构化 JSON 导入系统。</p></div>}
+      </section> : <div className="blueprint-empty"><FileText size={34} /><h3>还没有正式需求案例</h3><p>可在全局“小策”对话框中选择客户会话，补充你的判断后要求生成需求分析或四层蓝图；聊天结果不会自动保存为正式需求案例。</p></div>}
     </div>;
   }
 
@@ -300,7 +300,7 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
       <p>{detail.selected_version?.change_summary || "需求蓝图已保存"}</p>
     </section>
 
-    {visual.isLegacy && <div className="legacy-blueprint-notice"><WarningCircle size={17} /><span><b>旧版需求只读适配</b>该版本缺少稳定节点引用与阶段工时；从客户消息导入 GPT 蓝图 V2 后即可使用完整报价与关系追踪。</span></div>}
+    {visual.isLegacy && <div className="legacy-blueprint-notice"><WarningCircle size={17} /><span><b>旧版需求只读适配</b>该版本缺少稳定节点引用与阶段工时；现有历史继续保留，小策中的新蓝图不会自动覆盖正式需求案例。</span></div>}
 
     <section className="blueprint-workspace">
       <div className="blueprint-scroll-shell">

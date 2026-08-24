@@ -20,6 +20,12 @@ def test_automatic_send_is_always_disabled() -> None:
     assert settings.automatic_sending_enabled is False
 
 
+def test_customer_message_ai_workbenches_are_paused_by_default() -> None:
+    settings = Settings(_env_file=None)
+    assert settings.customer_reply_drafts_enabled is False
+    assert settings.customer_quote_conversion_enabled is False
+
+
 def test_codex_json_extraction_and_fixed_result() -> None:
     parsed = CodexCliProvider._extract_json(
         """结果如下：```json

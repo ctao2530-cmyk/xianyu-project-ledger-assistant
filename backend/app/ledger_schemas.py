@@ -237,6 +237,32 @@ class RequirementExportPackageView(BaseModel):
     redaction_count: int
 
 
+class RequirementCustomerStatusView(BaseModel):
+    conversation_id: int
+    binding_status: Literal["linked", "needs_confirmation", "conflict"]
+    customer_id: str | None
+    customer_name: str
+    channel: str
+    customer_source: str
+    current_revision: int
+    will_create_customer: bool
+    preserves: list[str]
+    warnings: list[str]
+
+
+class RequirementCustomerConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    request_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{8,128}$")
+    expected_revision: int = Field(ge=0)
+    confirmed: Literal[True]
+
+
+class RequirementCustomerConfirmResult(RequirementCustomerStatusView):
+    revision: int
+    idempotent: bool = False
+
+
 class RequirementImportPreviewRequest(BaseModel):
     conversation_id: int
     customer_id: str

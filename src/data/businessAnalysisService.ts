@@ -1,3 +1,5 @@
+import type { PredictionResult } from "./predictionService";
+
 export type BusinessAnalysisDomain =
   | "portfolio"
   | "products"
@@ -211,6 +213,9 @@ export interface BusinessAnalysisOverview {
   data_sources: BusinessAnalysisDataSource[];
   future_fields: BusinessAnalysisFutureField[];
   data_gaps: string[];
+  predictions: PredictionResult[];
+  prediction_run_id: string | null;
+  prediction_snapshot_hash: string | null;
   analysis_method: "evidence_rules_v1" | "rules_plus_deepseek_v1" | "rules_plus_codex_v1";
   ledger_revision: number;
   period: {

@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ..config import Settings
+from .base import ChannelMedia, ChannelMediaContent
 
 
 logger = logging.getLogger(__name__)
@@ -287,6 +288,40 @@ class WeComAPIClient:
                 }
             )
         return result
+
+    async def fetch_media(
+        self,
+        media: ChannelMedia,
+        *,
+        retry_token: bool = True,
+    ) -> ChannelMediaContent:
+        """Download one WeCom image by its ephemeral media id."""
+        if media.locator_type != "wecom_media_id" or not media.locator:
+            raise WeComAPIError(-1, "图片媒体引用无效")
+        token = await self.get_access_token()
+        response = await self._client.get(
+            f"{self.base_url}/cgi-bin/media/get",
+            params={"access_token": token, "media_id": media.locator},
+        )
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "json" in content_type:
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise WeComAPIError(-1, "图片接口返回内容无效") from exc
+            code = int(data.get("errcode") or 0) if isinstance(data, dict) else -1
+            if retry_token and code in self.TOKEN_ERRORS:
+                await self.get_access_token(force_refresh=True)
+                return await self.fetch_media(media, retry_token=False)
+            raise WeComAPIError(code, str(data.get("errmsg") or "图片读取失败"))
+        response.raise_for_status()
+        if len(response.content) > 25 * 1024 * 1024:
+            raise WeComAPIError(-1, "企业微信原图超过本地保存上限")
+        return ChannelMediaContent(
+            data=response.content,
+            mime_type=response.headers.get("content-type"),
+            original_name=media.original_name,
+        )
 
     async def send_text(
         self,

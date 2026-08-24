@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from ..database import Database
 from ..ledger import LedgerService
+from ..ledger import RevisionConflict, canonical_json
 from ..models import (
     BusinessCustomer,
     Conversation,
@@ -25,10 +26,12 @@ from ..models import (
     RequirementCase,
     RequirementCaseSource,
     RequirementDocumentVersion,
+    LedgerMutationRequest,
     SalesLead,
     utcnow,
 )
 from ..requirement_blueprints import RequirementBlueprintV2
+from .customer_identity import linked_customer_ids
 
 
 PHONE_PATTERN = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
@@ -83,38 +86,244 @@ class RequirementExchangeService:
 
     @staticmethod
     def _linked_customer_ids(session, conversation: Conversation) -> set[str]:
-        identity = session.scalar(
-            select(CustomerChannelIdentity).where(
-                CustomerChannelIdentity.channel == conversation.channel,
-                CustomerChannelIdentity.external_customer_id == conversation.customer_id,
-            )
-        )
-        lead = session.scalar(
-            select(SalesLead).where(SalesLead.conversation_id == conversation.id)
-        )
-        case_customer_ids = session.scalars(
-            select(RequirementCase.customer_id)
-            .join(
-                RequirementCaseSource,
-                RequirementCaseSource.case_id == RequirementCase.id,
-            )
-            .where(RequirementCaseSource.conversation_id == conversation.id)
-            .distinct()
-        ).all()
-        return {
-            str(customer_id)
-            for customer_id in (
-                identity.customer_id if identity else None,
-                lead.customer_id if lead else None,
-                *case_customer_ids,
-            )
-            if customer_id
-        }
+        return linked_customer_ids(session, conversation)
 
     @classmethod
     def _linked_customer_id(cls, session, conversation: Conversation) -> str | None:
         customer_ids = cls._linked_customer_ids(session, conversation)
         return next(iter(customer_ids)) if len(customer_ids) == 1 else None
+
+    @staticmethod
+    def _customer_source(channel: str) -> str:
+        return channel if channel in {"xianyu", "wechat"} else "other"
+
+    @staticmethod
+    def _safe_customer_name(conversation: Conversation) -> str:
+        value = str(conversation.customer_name or "").strip()
+        return value[:255] or "新客户"
+
+    def _requirement_customer_status_in_session(
+        self,
+        session,
+        conversation: Conversation,
+        *,
+        revision: int,
+    ) -> dict[str, Any]:
+        customer_ids = self._linked_customer_ids(session, conversation)
+        if len(customer_ids) > 1:
+            return {
+                "conversation_id": conversation.id,
+                "binding_status": "conflict",
+                "customer_id": None,
+                "customer_name": self._safe_customer_name(conversation),
+                "channel": conversation.channel,
+                "customer_source": self._customer_source(conversation.channel),
+                "current_revision": revision,
+                "will_create_customer": False,
+                "preserves": ["现有客户", "历史会话", "需求版本", "项目与报价"],
+                "warnings": ["当前会话存在相互冲突的客户关系，请先在客户资料中核对"],
+            }
+        customer_id = next(iter(customer_ids), None)
+        customer = session.get(BusinessCustomer, customer_id) if customer_id else None
+        if customer_id and customer is None:
+            raise RequirementExchangeError(
+                "customer_relationship_conflict",
+                "当前会话绑定的客户记录已经不存在，请先核对客户关系",
+            )
+        if customer:
+            return {
+                "conversation_id": conversation.id,
+                "binding_status": "linked",
+                "customer_id": customer.id,
+                "customer_name": customer.name,
+                "channel": conversation.channel,
+                "customer_source": customer.source,
+                "current_revision": revision,
+                "will_create_customer": False,
+                "preserves": ["现有客户资料", "历史会话", "需求版本", "项目与报价"],
+                "warnings": [],
+            }
+        return {
+            "conversation_id": conversation.id,
+            "binding_status": "needs_confirmation",
+            "customer_id": None,
+            "customer_name": self._safe_customer_name(conversation),
+            "channel": conversation.channel,
+            "customer_source": self._customer_source(conversation.channel),
+            "current_revision": revision,
+            "will_create_customer": True,
+            "preserves": ["完整对话记录", "关联商品", "后续需求版本"],
+            "warnings": ["不会按昵称与现有客户静默合并；确认后会新建独立客户"],
+        }
+
+    def requirement_customer_status(self, conversation_id: int) -> dict[str, Any]:
+        if self.ledger is None:
+            raise RequirementExchangeError("ledger_unavailable", "经营数据服务不可用")
+        with self.database.session() as session:
+            conversation = session.get(Conversation, conversation_id)
+            if not conversation:
+                raise RequirementExchangeError("conversation_not_found", "会话不存在")
+            revision, _snapshot = self.ledger.get_in_session(session)
+            return self._requirement_customer_status_in_session(
+                session,
+                conversation,
+                revision=revision,
+            )
+
+    def confirm_requirement_customer(
+        self,
+        conversation_id: int,
+        *,
+        request_id: str,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        if self.ledger is None:
+            raise RequirementExchangeError("ledger_unavailable", "经营数据服务不可用")
+        payload_hash = hashlib.sha256(
+            canonical_json(
+                {
+                    "operation": "requirement_customer_confirm",
+                    "conversation_id": conversation_id,
+                }
+            ).encode("utf-8")
+        ).hexdigest()
+        with self.database.session() as session:
+            prior = session.get(LedgerMutationRequest, request_id)
+            if prior is not None:
+                if (
+                    prior.operation != "requirement_customer_confirm"
+                    or prior.payload_hash != payload_hash
+                ):
+                    raise RequirementExchangeError(
+                        "request_id_reused",
+                        "该请求编号已用于其他操作，请刷新后重新确认",
+                    )
+                try:
+                    recorded = json.loads(prior.result_json)
+                except json.JSONDecodeError:
+                    raise RequirementExchangeError(
+                        "request_record_invalid",
+                        "历史确认记录无法校验，请刷新后重试",
+                    ) from None
+                conversation = session.get(Conversation, conversation_id)
+                if not conversation:
+                    raise RequirementExchangeError("conversation_not_found", "会话不存在")
+                revision, _snapshot = self.ledger.get_in_session(session)
+                status = self._requirement_customer_status_in_session(
+                    session,
+                    conversation,
+                    revision=revision,
+                )
+                if (
+                    status["binding_status"] != "linked"
+                    or status["customer_id"] != recorded.get("customer_id")
+                ):
+                    raise RequirementExchangeError(
+                        "customer_relationship_conflict",
+                        "客户关系在确认后发生变化，请先核对客户资料",
+                    )
+                return {
+                    **status,
+                    "revision": revision,
+                    "idempotent": True,
+                }
+
+            conversation = session.get(Conversation, conversation_id)
+            if not conversation:
+                raise RequirementExchangeError("conversation_not_found", "会话不存在")
+            revision, snapshot = self.ledger.get_in_session(session)
+            if revision != expected_revision:
+                raise RevisionConflict(revision)
+            status = self._requirement_customer_status_in_session(
+                session,
+                conversation,
+                revision=revision,
+            )
+            if status["binding_status"] == "conflict":
+                raise RequirementExchangeError(
+                    "customer_relationship_conflict",
+                    status["warnings"][0],
+                )
+
+            customer_id = status["customer_id"]
+            created = False
+            if customer_id is None:
+                customer_id = f"customer-{uuid4()}"
+                snapshot["customers"].insert(
+                    0,
+                    {
+                        "id": customer_id,
+                        "name": self._safe_customer_name(conversation),
+                        "source": self._customer_source(conversation.channel),
+                        "phone": "",
+                        "followUpStatus": "new",
+                        "lastContactAt": conversation.last_message_at.isoformat(),
+                        "level": "C",
+                        "tags": ["需求分析"],
+                    },
+                )
+                new_revision, _normalized = self.ledger.save_in_session(
+                    session,
+                    snapshot,
+                    expected_revision,
+                )
+                created = True
+            else:
+                new_revision = revision
+
+            identity = session.scalar(
+                select(CustomerChannelIdentity).where(
+                    CustomerChannelIdentity.channel == conversation.channel,
+                    CustomerChannelIdentity.external_customer_id
+                    == conversation.customer_id,
+                )
+            )
+            if identity is None:
+                identity = CustomerChannelIdentity(
+                    id=f"identity-{uuid4()}",
+                    customer_id=customer_id,
+                    channel=conversation.channel,
+                    external_customer_id=conversation.customer_id,
+                    conversation_id=conversation.id,
+                    display_name=conversation.customer_name,
+                )
+                session.add(identity)
+            elif identity.customer_id not in {None, customer_id}:
+                raise RequirementExchangeError(
+                    "customer_relationship_conflict",
+                    "当前渠道身份已经绑定其他客户，请先核对客户资料",
+                )
+            else:
+                identity.customer_id = customer_id
+                identity.conversation_id = conversation.id
+                identity.display_name = conversation.customer_name
+                identity.updated_at = utcnow()
+
+            result = {
+                "customer_id": customer_id,
+                "created": created,
+                "revision": new_revision,
+            }
+            session.add(
+                LedgerMutationRequest(
+                    request_id=request_id,
+                    operation="requirement_customer_confirm",
+                    payload_hash=payload_hash,
+                    result_json=canonical_json(result),
+                )
+            )
+            session.flush()
+            final_status = self._requirement_customer_status_in_session(
+                session,
+                conversation,
+                revision=new_revision,
+            )
+            session.commit()
+            return {
+                **final_status,
+                "revision": new_revision,
+                "idempotent": False,
+            }
 
     @staticmethod
     def _redact(value: str) -> tuple[str, int]:

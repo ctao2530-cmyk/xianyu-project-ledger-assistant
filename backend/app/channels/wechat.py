@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
-from .base import ChannelConversationInfo, ChannelMessage
+from .base import ChannelConversationInfo, ChannelMedia, ChannelMessage
 
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,20 @@ class WeChatAdapter:
         )
         direction = "inbound" if int(raw.get("origin") or 0) == 3 else "outbound"
         content, message_type = _wecom_content(raw, inbound=direction == "inbound")
+        media: tuple[ChannelMedia, ...] = ()
+        if direction == "inbound" and message_type == "image":
+            image = raw.get("image")
+            image_data = image if isinstance(image, dict) else {}
+            media_id = str(image_data.get("media_id") or "").strip()
+            if media_id:
+                media = (
+                    ChannelMedia(
+                        locator_type="wecom_media_id",
+                        locator=media_id,
+                        media_index=0,
+                        original_name=f"wechat-{platform_message_id}.jpg",
+                    ),
+                )
         return ChannelMessage(
             channel=self.channel,
             platform_message_id=platform_message_id,
@@ -111,6 +125,7 @@ class WeChatAdapter:
             message_type=message_type,
             received_at=received_at,
             direction=direction,
+            media=media,
         )
 
     async def get_conversation_info(

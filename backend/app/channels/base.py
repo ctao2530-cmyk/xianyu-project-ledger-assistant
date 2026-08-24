@@ -12,6 +12,28 @@ class UnsupportedChannelError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class ChannelMedia:
+    """Ephemeral provider media reference.
+
+    ``locator`` may be a signed URL or provider media id, so it must stay in
+    memory only.  The archive service persists only the downloaded image facts.
+    """
+
+    locator_type: str
+    locator: str
+    media_index: int = 0
+    mime_type: str | None = None
+    original_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelMediaContent:
+    data: bytes
+    mime_type: str | None = None
+    original_name: str | None = None
+
+
 @dataclass(slots=True)
 class ChannelMessage:
     """Provider-neutral inbound/outbound message consumed by the existing pipeline."""
@@ -27,6 +49,7 @@ class ChannelMessage:
     direction: str = "inbound"
     channel: str = "xianyu"
     platform_message_id: str | None = None
+    media: tuple[ChannelMedia, ...] = ()
 
     def __post_init__(self) -> None:
         if self.channel not in SUPPORTED_CHANNELS:

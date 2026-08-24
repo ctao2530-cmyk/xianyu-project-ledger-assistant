@@ -89,6 +89,9 @@ class DeepSeekProvider(AIProvider):
             )
         return self.health
 
+    async def close(self) -> None:
+        await self.client.aclose()
+
     def _ensure_configured(self) -> None:
         if not self.settings.deepseek_configured:
             raise AIProviderError(

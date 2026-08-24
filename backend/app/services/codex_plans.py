@@ -22,6 +22,7 @@ from ..ledger import LedgerService, RevisionConflict
 from ..models import (
     BusinessProject,
     BusinessTask,
+    CodexAcceptancePoint,
     CodexDevelopmentPlan,
     CodexPlanMutationRequest,
     CodexProjectBinding,
@@ -29,6 +30,7 @@ from ..models import (
     RequirementDocumentVersion,
     utcnow,
 )
+from .project_progress import ProjectProgressService
 
 
 PLAN_SYSTEM_PROMPT = """你是循营的只读开发计划分析器。你只能分析用户已确认的需求和当前绑定仓库，不能修改文件、运行会写入状态的命令、提交 Git、创建项目或创建任务。
@@ -64,11 +66,20 @@ def _same_time(left: datetime, right: datetime) -> bool:
 
 
 class CodexPlanService:
-    def __init__(self, database: Database, ledger: LedgerService, provider: Any, settings: Any) -> None:
+    def __init__(
+        self,
+        database: Database,
+        ledger: LedgerService,
+        provider: Any,
+        settings: Any,
+        *,
+        progress: ProjectProgressService | None = None,
+    ) -> None:
         self.database = database
         self.ledger = ledger
         self.provider = provider
         self.settings = settings
+        self.progress = progress or ProjectProgressService()
 
     @staticmethod
     def _git(repository_path: str) -> tuple[Path, str, str, bool]:
@@ -523,6 +534,37 @@ class CodexPlanService:
                     "note": task.note,
                 }
                 task_ids.append(str(item["id"]))
+            selected_task_keys = {task.task_key for task in selected_tasks}
+            for stored in session.scalars(
+                select(BusinessTask).where(
+                    BusinessTask.project_id == project_id,
+                    BusinessTask.task_key.is_not(None),
+                )
+            ):
+                if stored.task_key in selected_task_keys:
+                    continue
+                stored.delivery_scope_active = False
+                stored.retired_at = stored.retired_at or utcnow()
+                for point in session.scalars(
+                    select(CodexAcceptancePoint).where(
+                        CodexAcceptancePoint.task_id == stored.id,
+                        CodexAcceptancePoint.active.is_(True),
+                    )
+                ):
+                    point.active = False
+                    point.retired_at = point.retired_at or utcnow()
+            snapshot["tasks"] = [
+                item
+                for item in snapshot["tasks"]
+                if item.get("projectId") != project_id
+                or not str((item.get("stage") or {}).get("codexTaskKey") or "")
+                or str((item.get("stage") or {}).get("codexTaskKey") or "")
+                in selected_task_keys
+            ]
+            # The ledger's legacy-delete guard reads active scope from the
+            # relational rows, so retire removed plan tasks before saving the
+            # filtered canonical snapshot.
+            session.flush()
             new_revision, _saved = self.ledger.save_in_session(session, snapshot, revision)
             for task_id, task in zip(task_ids, selected_tasks, strict=True):
                 stored = session.get(BusinessTask, task_id)
@@ -534,6 +576,57 @@ class CodexPlanService:
                     [point.model_dump(mode="json") for point in task.acceptance_points]
                 )
                 stored.test_commands_json = _canonical(task.test_commands)
+                stored.delivery_scope_active = True
+                stored.retired_at = None
+                existing_points = {
+                    point.point_key: point
+                    for point in session.scalars(
+                        select(CodexAcceptancePoint).where(
+                            CodexAcceptancePoint.task_id == task_id
+                        )
+                    )
+                }
+                selected_point_keys = {point.point_key for point in task.acceptance_points}
+                for point in task.acceptance_points:
+                    current = existing_points.get(point.point_key)
+                    if current is None:
+                        digest = hashlib.sha256(
+                            f"{task_id}\n{point.point_key}".encode()
+                        ).hexdigest()[:32]
+                        current = CodexAcceptancePoint(
+                            id=f"acceptance-{digest}",
+                            project_id=project_id,
+                            task_id=task_id,
+                            plan_id=row.id,
+                            point_key=point.point_key,
+                            title=point.title,
+                            verification_type=point.verification_type,
+                            source="codex_plan",
+                            status="pending",
+                        )
+                        session.add(current)
+                    else:
+                        current.plan_id = row.id
+                        current.title = point.title
+                        current.verification_type = point.verification_type
+                        current.source = "codex_plan"
+                        current.active = True
+                        current.retired_at = None
+                for point_key, current in existing_points.items():
+                    if point_key not in selected_point_keys:
+                        current.active = False
+                        current.retired_at = utcnow()
+            # A confirmed plan can add, retire, or reweight delivery scope.
+            # Recompute from the relational tasks and acceptance points in this
+            # same transaction so BusinessProject.progress never carries a
+            # stale verified-delivery value from the previous plan version.
+            session.flush()
+            new_revision, _progress = self.progress.sync_verified_progress(
+                session,
+                self.ledger,
+                project_id,
+                expected_revision=new_revision,
+            )
             row.status = "confirmed"
             row.project_id = project_id
             row.confirmed_at = utcnow()

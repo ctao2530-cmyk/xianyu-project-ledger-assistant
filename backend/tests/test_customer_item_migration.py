@@ -136,4 +136,4 @@ def test_customer_item_alembic_migration_backfills_clear_listing(tmp_path) -> No
     assert case_item_id and case_item_id[0] is not None
     assert links == [("customer-probe", case_item_id[0], "requirement_backfill")]
     assert violations == []
-    assert version == ("20260811_0016",)
+    assert version == ("20260820_0036",)
