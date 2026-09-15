@@ -266,6 +266,7 @@ def test_conversation_detail_resolves_customer_from_requirement_case_source(tmp_
             customer_id="external-case",
             customer_name="案例客户",
             item_id=item.id,
+            unread_count=3,
         )
         session.add(conversation)
         session.flush()
@@ -300,6 +301,9 @@ def test_conversation_detail_resolves_customer_from_requirement_case_source(tmp_
     assert response.status_code == 200
     assert response.json()["linked_customer_id"] == "customer-case"
     assert response.json()["item"]["external_id"] == "item-case"
+    assert response.json()["unread_count"] == 3
+    with database.session() as session:
+        assert session.get(Conversation, conversation_id).unread_count == 3
 
 
 def test_requirement_import_rejects_conflicting_existing_customer_sources(tmp_path) -> None:

@@ -11,6 +11,12 @@ AgentContextScope = Literal["general_business", "customer_conversation"]
 AgentRunStatus = Literal[
     "pending", "running", "completed", "failed", "cancelled", "interrupted"
 ]
+AgentRunStepStatus = Literal[
+    "pending", "running", "completed", "failed", "cancelled", "interrupted", "skipped"
+]
+AgentRunTracePhase = Literal[
+    "context", "evidence", "tools", "generate", "validate", "persist"
+]
 AgentTargetPage = Literal[
     "", "home", "products", "customers", "projects", "finance",
     "business-analysis", "settings",
@@ -100,6 +106,11 @@ class AgentToolReference(BaseModel):
     label: str
     status: str
     duration_ms: int
+    source: str = "local_business_data"
+    observed_at: datetime | None = None
+    revision: int | None = None
+    read_only: bool = True
+    sensitivity: str = "business_summary"
 
 
 class AgentFact(BaseModel):
@@ -289,6 +300,84 @@ class AgentRequirementBlueprint(BaseModel):
         return list(dict.fromkeys(refs))
 
 
+class AgentExecutionPlanStage(BaseModel):
+    """One independently verifiable implementation stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
+    task_key: str = Field(pattern=r"^[A-Z][A-Z0-9_]*-[0-9]{3,4}$")
+    workspace_key: str = Field(pattern=r"^[a-z0-9][a-z0-9._/-]{1,127}$")
+    title: str = Field(min_length=1, max_length=240)
+    objective: str = Field(min_length=1, max_length=1_200)
+    dependency_task_keys: list[str] = Field(default_factory=list, max_length=20)
+    allowed_changes: list[str] = Field(min_length=1, max_length=40)
+    deliverables: list[str] = Field(default_factory=list, max_length=40)
+    process_tests: list[str] = Field(min_length=1, max_length=40)
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=40)
+    stop_conditions: list[str] = Field(default_factory=list, max_length=20)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=30)
+
+
+class AgentExecutionPlan(BaseModel):
+    """Append-only chat artifact for phased, bounded implementation work."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=240)
+    objective: str = Field(min_length=1, max_length=2_000)
+    readiness: Literal["discovery", "clarifying", "ready"]
+    change_summary: str = Field(min_length=1, max_length=2_000)
+    allowed_changes: list[str] = Field(min_length=1, max_length=60)
+    must_not_change: list[str] = Field(min_length=1, max_length=60)
+    out_of_scope: list[str] = Field(default_factory=list, max_length=60)
+    stages: list[AgentExecutionPlanStage] = Field(min_length=1, max_length=40)
+    assumptions: list[str] = Field(default_factory=list, max_length=40)
+    open_questions: list[str] = Field(default_factory=list, max_length=40)
+    risks: list[AgentRequirementRisk] = Field(default_factory=list, max_length=30)
+
+    @model_validator(mode="after")
+    def validate_stage_graph(self) -> "AgentExecutionPlan":
+        stage_ids = [stage.id for stage in self.stages]
+        task_keys = [stage.task_key for stage in self.stages]
+        if len(stage_ids) != len(set(stage_ids)):
+            raise ValueError("执行计划阶段 ID 必须唯一")
+        if len(task_keys) != len(set(task_keys)):
+            raise ValueError("执行计划 task_key 必须唯一")
+        known = set(task_keys)
+        dependencies = {
+            stage.task_key: set(stage.dependency_task_keys) for stage in self.stages
+        }
+        for task_key, values in dependencies.items():
+            if task_key in values or not values.issubset(known):
+                raise ValueError("执行计划引用了无效 task_key 依赖")
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(task_key: str) -> None:
+            if task_key in visiting:
+                raise ValueError("执行计划阶段存在循环依赖")
+            if task_key in visited:
+                return
+            visiting.add(task_key)
+            for dependency in dependencies[task_key]:
+                visit(dependency)
+            visiting.remove(task_key)
+            visited.add(task_key)
+
+        for task_key in task_keys:
+            visit(task_key)
+        return self
+
+    def evidence_refs(self) -> list[str]:
+        refs: list[str] = []
+        for stage in self.stages:
+            refs.extend(stage.evidence_refs)
+        for risk in self.risks:
+            refs.extend(risk.evidence_refs)
+        return list(dict.fromkeys(refs))
+
+
 class AgentCustomerSummaryItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -345,6 +434,7 @@ class AgentModelAnswer(BaseModel):
     updated_customer_context: AgentCustomerConversationSummary | None = None
     requirement_analysis: AgentRequirementAnalysis | None = None
     requirement_blueprint: AgentRequirementBlueprint | None = None
+    execution_plan: AgentExecutionPlan | None = None
     customer_create_proposal: "AgentCustomerCreateProposal | None" = None
 
     @field_validator(
@@ -433,6 +523,7 @@ class AgentMessageView(BaseModel):
     content: str
     status: str
     run_id: str | None = None
+    run_elapsed_ms: int | None = None
     answer: AgentModelAnswer | None = None
     citations: list[AgentKnowledgeCitation] = Field(default_factory=list)
     tool_references: list[AgentToolReference] = Field(default_factory=list)
@@ -456,6 +547,57 @@ class AgentRunView(BaseModel):
     created_at: datetime
 
 
+class AgentRunStepView(BaseModel):
+    id: str
+    position: int
+    node_name: str
+    label: str
+    phase: AgentRunTracePhase
+    status: AgentRunStepStatus
+    summary: str
+    duration_ms: int
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class AgentRunToolView(BaseModel):
+    id: str
+    position: int
+    name: str
+    label: str
+    status: Literal[
+        "pending", "running", "completed", "failed", "cancelled", "interrupted"
+    ]
+    summary: str
+    duration_ms: int
+    source: str = "local_business_data"
+    observed_at: datetime | None = None
+    revision: int | None = None
+    read_only: bool = True
+    sensitivity: str = "business_summary"
+    created_at: datetime
+
+
+class AgentRunTraceView(BaseModel):
+    run_id: str
+    thread_id: str
+    provider: ProviderName
+    model: str
+    status: AgentRunStatus
+    completed_steps: int
+    total_steps: int
+    tool_count: int
+    elapsed_ms: int
+    decision_summary: str
+    legacy: bool = False
+    error_code: str | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    steps: list[AgentRunStepView] = Field(default_factory=list)
+    tools: list[AgentRunToolView] = Field(default_factory=list)
+
+
 class AgentCustomerContextOption(BaseModel):
     conversation_id: int
     customer_id: str | None = None
@@ -463,6 +605,7 @@ class AgentCustomerContextOption(BaseModel):
     customer_name: str
     item_title: str | None = None
     text_message_count: int
+    image_message_count: int = 0
     latest_text_message_id: int | None = None
     latest_message_at: datetime | None = None
     summary_version: int | None = None

@@ -1,0 +1,53 @@
+/* Approved first visual option: light navigation and an open reading surface. */
+.desktop-workspace-shell {background:#fff;--canvas:#fff;--blue:#5269ce;}
+.desktop-workspace-shell .workspace-sidebar {width:180px;padding:28px 12px;background:#f7f9fc;color:#657187;border-right:1px solid #e9edf4;}
+.desktop-workspace-shell .workspace-sidebar .brand {flex-direction:row;justify-content:flex-start;padding:0 12px;margin-bottom:36px;gap:10px;}
+.desktop-workspace-shell .workspace-sidebar .brand strong {font-size:22px;color:#243044;}
+.desktop-workspace-shell .workspace-sidebar .sidebar-nav-parent {flex-direction:row;justify-content:flex-start;gap:14px;min-height:50px;padding:12px 16px;color:#647084;}
+.desktop-workspace-shell .workspace-sidebar .sidebar-nav-parent span {font-size:14px;font-weight:500;}
+.desktop-workspace-shell .workspace-sidebar .sidebar-nav-parent.active {background:#eaf0fd;color:#4d64ce;box-shadow:none;}
+.desktop-workspace-shell .workspace-sidebar .sidebar-nav-parent:hover {background:#eef2f9;color:#344570;}
+.desktop-workspace-shell .workspace-settings-nav {border:0;}
+.desktop-workspace-shell .sidebar-subnav {left:176px;background:white;border:1px solid #e8ecf4;}
+.desktop-workspace-shell .sidebar-subnav button {color:#59657c;}
+.desktop-workspace-shell .sidebar-subnav button:hover,.desktop-workspace-shell .sidebar-subnav button[aria-current] {background:#eef2fd;color:#4d64ce;}
+.desktop-workspace-shell .dashboard-main {margin-left:180px;width:calc(100% - 180px);}
+.desktop-workspace-shell .airy-customer {position:relative;--customer-blue:#5269ce;}
+.desktop-workspace-shell .airy-customer .messages-workbench {grid-template-columns:300px minmax(0,1fr);border:0;border-radius:0;}
+.desktop-workspace-shell .airy-customer .workspace-master {background:#fff;border-radius:0;height:calc(100dvh - 120px);}
+.desktop-workspace-shell .airy-customer .customer-list-title {font-size:20px;line-height:28px;font-weight:600;margin:0;padding:16px 24px;color:#243044;}
+.desktop-workspace-shell .airy-customer .workspace-master-rows>button {min-height:90px;padding:20px 24px;border-bottom:1px solid #f0f3f8;}
+.desktop-workspace-shell .airy-customer .workspace-master-rows strong {font-size:15px;line-height:24px;}
+.desktop-workspace-shell .airy-customer .workspace-master-rows small {font-size:13px;line-height:22px;}
+.desktop-workspace-shell .airy-customer .workspace-master-rows>button.active {background:#f0f3fd;box-shadow:none;}
+.desktop-workspace-shell .airy-customer .workspace-master>header {padding:8px 24px 16px;}
+.desktop-workspace-shell .airy-customer .messages-toolbar {padding:0 24px;}
+.desktop-workspace-shell .airy-customer .workspace-master>nav {padding:0 20px;}
+.desktop-workspace-shell .airy-customer .thread-header {padding:20px 28px;padding-right:136px;min-height:104px;}
+.desktop-workspace-shell .airy-customer .thread-header h2 {font-size:20px;line-height:28px;}
+.desktop-workspace-shell .airy-customer .message-thread {position:relative;padding-bottom:60px;}
+.desktop-workspace-shell .airy-customer .thread-header .phrase-library-trigger {position:absolute;right:112px;bottom:8px;z-index:4;background:white;border:0;color:#718097;}
+.desktop-workspace-shell .airy-customer .thread-header .message-readonly {position:absolute;left:28px;bottom:8px;height:44px;z-index:4;background:white;color:#718097;}
+.desktop-workspace-shell .airy-customer .customer-hub-more {position:relative;}
+.desktop-workspace-shell .airy-customer .messages-toolbar {padding-bottom:0;}
+.desktop-workspace-shell .airy-customer .thread-messages {border-bottom:1px solid #e9edf4;}
+.desktop-workspace-shell .airy-customer .customer-hub-tabs {padding:0 28px;gap:28px;}
+.desktop-workspace-shell .airy-customer .thread-messages {background:#fff;padding:28px 36px;height:calc(100dvh - 280px);}
+.desktop-workspace-shell .airy-customer .thread-messages article {margin-bottom:24px;}
+.desktop-workspace-shell .airy-customer .thread-messages p {font-size:15px;line-height:25px;}
+.desktop-workspace-shell .airy-customer .thread-messages article>div {border-color:#e9edf4;padding:14px 18px;border-radius:10px;}
+.desktop-workspace-shell .airy-customer .thread-messages .outbound>div {background:#eef1fe;border-color:#eef1fe;}
+.desktop-workspace-shell .airy-customer:not(.context-visible) .messages-workbench>.workspace-context {display:none;}
+.desktop-workspace-shell .airy-customer.context-visible .messages-workbench {grid-template-columns:260px minmax(0,1fr) 240px;}
+.desktop-workspace-shell .customer-context-toggle {position:absolute;right:12px;top:22px;z-index:5;display:flex;align-items:center;gap:6px;min-height:44px;padding:10px 12px;border:1px solid #e5eaf3;border-radius:7px;background:#f9faff;color:#526078;font-size:13px;}
+@media(max-width:1100px) {
+  .desktop-workspace-shell .dashboard-main {margin-left:0;width:100%;}
+  .desktop-workspace-shell .airy-customer.context-visible .messages-workbench {grid-template-columns:260px minmax(0,1fr);}
+}
+@media(max-width:700px) {
+  .desktop-workspace-shell .airy-customer .messages-workbench {display:flex;}
+  .desktop-workspace-shell .airy-customer .thread-header {padding:16px;padding-top:64px;}
+  .desktop-workspace-shell .customer-context-toggle {top:54px;right:12px;}
+  .desktop-workspace-shell .airy-customer.show-customer-list .customer-context-toggle {display:none;}
+  .desktop-workspace-shell .airy-customer .thread-messages {padding:20px 16px;height:calc(100dvh - 390px);}
+}

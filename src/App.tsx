@@ -1,3 +1,6 @@
+import { Sidebar } from './components/workspace/Sidebar';
+import { AppShell } from './components/workspace/AppShell';
+import { TopBar, type HeaderReminder } from './components/workspace/TopBar';
 import {
   ArrowRight,
   Bell,
@@ -13,10 +16,8 @@ import {
   CheckSquare,
   ClipboardText,
   Coins,
-  CurrencyCircleDollar,
   ForkKnife,
   GearSix,
-  HandWaving,
   HandCoins,
   House,
   HourglassMedium,
@@ -25,7 +26,6 @@ import {
   MagnifyingGlass,
   Money,
   Plus,
-  Receipt,
   RocketLaunch,
   ShoppingBag,
   Sparkle,
@@ -96,8 +96,8 @@ import {
 } from "./pages/SettlementIssueModal";
 import { runPageTransition } from "./utils/pageTransition";
 import { formatTrafficDateTime } from "./utils/trafficDateTime";
-import { PredictionSummaryStrip } from "./components/PredictionSummaryStrip";
 import { GlobalAgentLauncher } from "./components/GlobalAgentLauncher";
+import { ActionWorkbench } from "./components/ActionWorkbench";
 import type {
   Customer,
   LedgerSnapshot,
@@ -148,55 +148,26 @@ const paymentLabels: Record<PaymentType, string> = {
   full: "全款",
 };
 
-type HeaderReminderKind = "customer" | "collection" | "market" | "launch" | "traffic" | "experiment" | "strategy" | "connection";
-
-interface HeaderReminder {
-  id: string;
-  kind: HeaderReminderKind;
-  label: string;
-  title: string;
-  description: string;
-  meta: string;
-  actionLabel: string;
-  targetPage: "客户消息" | "商品经营" | "设置中心";
-  targetHash: string;
-  settingsSection?: SettingsSectionName;
-}
 
 function reminderRouteHash(...segments: Array<string | number>) {
   return `#${encodeURIComponent(segments.map(String).join("/"))}`;
 }
 
-const headerReminderIcons: Record<HeaderReminderKind, PhosphorIcon> = {
-  customer: ChatCircleDots,
-  collection: ShoppingBag,
-  market: MagnifyingGlass,
-  launch: RocketLaunch,
-  traffic: TrendUp,
-  experiment: ClipboardText,
-  strategy: Lightbulb,
-  connection: WifiSlash,
-};
 
-const navItems: Array<{ label: string; icon: PhosphorIcon; displayLabel?: string }> = [
-  { label: "首页概览", icon: House },
-  { label: "客户消息", icon: ChatCircleDots },
-  { label: "商品经营", icon: ShoppingBag },
-  { label: "项目管理", icon: Briefcase },
-  { label: "收入记录", icon: CurrencyCircleDollar },
-  { label: "支出记录", icon: Receipt },
-  { label: "客户管理", icon: UsersThree },
-  { label: "数据统计", icon: ChartBar },
-  { label: "经营分析中心", icon: ChartLineUp },
-  { label: "AI经营助手", displayLabel: "小策 · 今日判断", icon: Brain },
+const navItems: Array<{ label: string; icon: PhosphorIcon; displayLabel?: string; hidden?: boolean }> = [
+  { label: "首页概览", displayLabel: "工作台", icon: House },
+  { label: "客户消息", displayLabel: "客户", icon: ChatCircleDots },
+  { label: "项目管理", displayLabel: "项目", icon: Briefcase },
+  { label: "商品经营", displayLabel: "商品", icon: ShoppingBag },
+  { label: "经营记录", displayLabel: "收支", icon: Wallet },
+  { label: "客户管理", icon: UsersThree, hidden: true },
+  { label: "数据统计", icon: ChartBar, hidden: true },
+  { label: "经营分析中心", displayLabel: "经营分析", icon: ChartLineUp },
+  { label: "AI经营助手", displayLabel: "小策 · 今日判断", icon: Brain, hidden: true },
   { label: "设置中心", icon: GearSix },
 ];
 
 const secondaryNavItems: Record<string, Array<{ key: string; label: string; route: string }>> = {
-  客户消息: [
-    { key: "conversations", label: "会话", route: "客户消息" },
-    { key: "images", label: "图片库", route: "客户消息/images" },
-  ],
   商品经营: [
     { key: "overview", label: "经营总览", route: "商品经营/overview" },
     { key: "exposure", label: "曝光分析", route: "商品经营/exposure" },
@@ -225,21 +196,20 @@ function activeSecondaryKey(parent: string) {
 }
 
 const pageMeta: Record<string, { title: string; subtitle: string; placeholder: string }> = {
-  首页概览: { title: "早安，开发者！", subtitle: "今天又是认真接单的一天，加油！", placeholder: "搜索项目、客户或订单..." },
-  客户消息: { title: "客户消息", subtitle: "集中查看客户咨询与历史记录，分析与判断统一由小策按需完成", placeholder: "在会话中查找客户与消息..." },
+  首页概览: { title: "工作台", subtitle: "聚焦当前待处理事项", placeholder: "搜索项目、客户或订单..." },
+  客户消息: { title: "客户", subtitle: "会话、资料、需求与项目，共用当前客户", placeholder: "在会话中查找客户与消息..." },
   商品经营: { title: "商品经营", subtitle: "每天一次读取商品信号，判断该观察、优化还是进行人工流量测试", placeholder: "搜索商品名称或商品 ID..." },
   项目管理: { title: "项目管理", subtitle: "统一管理个人与接单项目、任务节奏和交付进度", placeholder: "搜索项目名称、客户、编号..." },
-  收入记录: { title: "收入记录", subtitle: "管理到账记录、定金、尾款与项目收款，清晰每一笔进账", placeholder: "搜索项目、客户或订单..." },
-  支出记录: { title: "支出记录", subtitle: "全面追踪工具成本、外包成本、退款与日常支出", placeholder: "搜索项目、客户或订单..." },
+  经营记录: { title: "收支", subtitle: "收入、支出、退款与待回款，以明细为准", placeholder: "搜索项目、客户或经营记录..." },
   客户管理: { title: "客户管理", subtitle: "管理客户资料、来源、成交记录与跟进状态", placeholder: "搜索客户名称、联系人、标签..." },
   数据统计: { title: "数据统计", subtitle: "跨商品、跨周期判断哪些增长真正带来咨询与成交", placeholder: "当前页面无需搜索" },
-  经营分析中心: { title: "AI经营分析中心", subtitle: "从业务指标出发，基于证据发现问题并给出可解释的人工行动建议", placeholder: "当前页面无需搜索" },
+  经营分析中心: { title: "经营分析", subtitle: "现在有什么问题、为什么、下一步做什么", placeholder: "当前页面无需搜索" },
   AI经营助手: { title: "小策 · AI 技术与商业合伙人", subtitle: "让每个经营判断都有事实、反证和清晰的下一步", placeholder: "搜索项目、客户、知识与规则..." },
   设置中心: { title: "设置中心", subtitle: "管理账号信息、界面风格、运营日期、提醒与数据同步", placeholder: "搜索项目、客户或订单..." },
 };
 
 const settingsSections: SettingsSectionName[] = ["个人资料", "账号设置", "记账设置", "项目默认值", "提醒通知", "渠道连接", "商品采集", "AI与回复", "报价参数", "数据迁移", "数据与同步", "界面主题"];
-const projectDetailTabs: ProjectDetailTab[] = ["overview", "tasks", "gantt", "immersive", "codex", "verification", "communication", "quote", "logs", "files", "edit"];
+const projectDetailTabs: ProjectDetailTab[] = ["overview", "immersive", "edit"];
 
 function sameProjectRoute(left: ProjectPageRoute | null, right: ProjectPageRoute | null) {
   return left?.projectId === right?.projectId && left?.tab === right?.tab;
@@ -266,6 +236,14 @@ function customerRouteHash(route: CustomerRequirementRoute | null) {
   return `#${encodeURIComponent(value)}`;
 }
 
+function projectSectionHash(route: ProjectPageRoute) {
+  const base = projectRouteHash(route);
+  const current = decodedHashRoute();
+  const section = new URLSearchParams(current.split('?')[1] || '').get('section');
+  return current.split('?')[0] === decodeURIComponent(base.slice(1)) && ['requirements','tasks','payments','records'].includes(section || '')
+    ? `#${encodeURIComponent(`${current.split('?')[0]}?section=${section}`)}` : base;
+}
+
 function readAppRoute() {
   let requested = "";
   try {
@@ -273,8 +251,9 @@ function readAppRoute() {
   } catch {
     requested = "";
   }
-  const [page, rawSection, rawProjectTab, rawCaseId] = requested.split("/");
-  const resolvedPage = navItems.some((item) => item.label === page) ? page : "首页概览";
+  const [page, rawSection, rawProjectTab, rawCaseId] = requested.split('?')[0].split("/");
+  const compatiblePage = page === "收入记录" || page === "支出记录" ? "经营记录" : page;
+  const resolvedPage = navItems.some((item) => item.label === compatiblePage) ? compatiblePage : "首页概览";
   const projectRoute = resolvedPage === "项目管理" && rawSection
     ? {
         projectId: rawSection,
@@ -390,7 +369,7 @@ function buildHeaderReminders(
       title,
       description,
       meta: "当前",
-      actionLabel: "去回复",
+      actionLabel: "查看会话",
       targetPage: "客户消息",
       targetHash: operations.first_pending_conversation_id
         ? reminderRouteHash("客户消息", "conversation", operations.first_pending_conversation_id)
@@ -623,387 +602,7 @@ function CardHeader({
   );
 }
 
-function Sidebar({
-  active,
-  onActiveChange,
-  onSecondaryNavigate,
-  onQuickAdd,
-  open,
-  onClose,
-  projects,
-}: {
-  active: string;
-  onActiveChange: (value: string) => void;
-  onSecondaryNavigate: (parent: string, route: string) => void;
-  onQuickAdd: () => void;
-  open: boolean;
-  onClose: () => void;
-  projects: Project[];
-}) {
-  const [expandedParent, setExpandedParent] = useState<string | null>(
-    secondaryNavItems[active] ? active : null,
-  );
-  const [routeVersion, setRouteVersion] = useState(0);
-  const activeProjects = projects.filter((project) => project.status === "in_progress");
-  const furthestDelivery = Math.max(
-    0,
-    ...activeProjects.map((project) => remainingDays(project.dueDate)),
-  );
 
-  useEffect(() => {
-    if (secondaryNavItems[active]) setExpandedParent(active);
-  }, [active]);
-
-  useEffect(() => {
-    const syncRoute = () => setRouteVersion((value) => value + 1);
-    window.addEventListener("hashchange", syncRoute);
-    window.addEventListener("popstate", syncRoute);
-    window.addEventListener("xianyu:route-focus", syncRoute);
-    return () => {
-      window.removeEventListener("hashchange", syncRoute);
-      window.removeEventListener("popstate", syncRoute);
-      window.removeEventListener("xianyu:route-focus", syncRoute);
-    };
-  }, []);
-
-  return (
-    <>
-      <button
-        className={`sidebar-scrim ${open ? "is-open" : ""}`}
-        aria-label="关闭导航"
-        onClick={onClose}
-      />
-      <aside className={`sidebar ${open ? "is-open" : ""}`}>
-        <div className="brand xunying-brand">
-          <img src="/assets/xunying/orbit-mark.png" alt="" aria-hidden="true" draggable={false} />
-          <div>
-            <strong>循营</strong>
-            <span>一人经营台</span>
-          </div>
-          <button className="mobile-close" aria-label="关闭导航" onClick={onClose}>
-            <X size={20} />
-          </button>
-        </div>
-
-        <nav aria-label="主导航">
-          {navItems.map(({ label, displayLabel, icon: Icon }) => {
-            const children = secondaryNavItems[label];
-            const expanded = expandedParent === label;
-            const selectedChild = activeSecondaryKey(label);
-            void routeVersion;
-            return <div className={`sidebar-nav-group ${children ? "has-children" : ""} ${expanded ? "is-expanded" : ""}`} key={label}>
-              <button
-                type="button"
-                className={`sidebar-nav-parent ${active === label ? "active" : ""}`}
-                aria-expanded={children ? expanded : undefined}
-                onClick={() => {
-                  if (children) {
-                    setExpandedParent((current) => current === label ? null : label);
-                    return;
-                  }
-                  onActiveChange(label);
-                  onClose();
-                }}
-              >
-                <Icon size={22} weight={active === label ? "fill" : "regular"} />
-                <span>{displayLabel || label}</span>
-                {children ? (expanded ? <CaretDown className="sidebar-nav-caret" size={17} /> : <CaretRight className="sidebar-nav-caret" size={17} />) : active === label ? <Sparkle className="nav-sparkle" size={17} weight="fill" /> : null}
-              </button>
-              {children && expanded && <div className="sidebar-subnav" aria-label={`${label}二级导航`}>
-                {children.map((child) => <button
-                  type="button"
-                  className={active === label && selectedChild === child.key ? "active" : ""}
-                  aria-current={active === label && selectedChild === child.key ? "page" : undefined}
-                  onClick={() => {
-                    onSecondaryNavigate(label, child.route);
-                    onClose();
-                  }}
-                  key={child.key}
-                >
-                  <i aria-hidden="true" />
-                  <span>{child.label}</span>
-                </button>)}
-              </div>}
-            </div>;
-          })}
-        </nav>
-
-        <div className="sidebar-spacer" />
-
-        <div className="sidebar-promo xiaoce-sidebar-card">
-          <div>
-            <small>小策 · AI 技术与商业合伙人</small>
-            <strong>把不确定，<br />变成可验证行动</strong>
-            <button onClick={() => { onActiveChange("AI经营助手"); onClose(); }}>
-              查看今日判断 <ArrowRight size={15} weight="bold" />
-            </button>
-          </div>
-          <div className="sidebar-promo-artwork" aria-hidden="true">
-            <img src="/assets/xunying/xiaoce-avatar.png" alt="" draggable={false} />
-          </div>
-        </div>
-
-        <div className="sidebar-countdown">
-          <div className="eyebrow"><HourglassMedium size={18} weight="fill" /> 本月工期倒计时</div>
-          <strong>{furthestDelivery}<small>天</small></strong>
-          <span>{activeProjects.length} 个项目待交付</span>
-          <div className="countdown-bar"><i style={{ width: `${Math.min(100, furthestDelivery * 7)}%` }} /></div>
-          <div className="sidebar-countdown-artwork" aria-hidden="true">
-            <img src="/assets/chrome-v2/delivery-hourglass.png" alt="" draggable={false} />
-          </div>
-        </div>
-
-        <footer>© {new Date().getFullYear()} 循营 · 一人经营台<br />Local-first business OS.</footer>
-      </aside>
-    </>
-  );
-}
-
-function TopHeader({
-  search,
-  onSearch,
-  onMenu,
-  activePage,
-  reminders,
-  onReminderAction,
-  onViewAllReminders,
-  onRefreshReminders,
-  onOpenSettings,
-  profileName,
-  profilePlan,
-}: {
-  search: string;
-  onSearch: (value: string) => void;
-  onMenu: () => void;
-  activePage: string;
-  reminders: HeaderReminder[];
-  onReminderAction: (reminder: HeaderReminder) => void;
-  onViewAllReminders: () => void;
-  onRefreshReminders: () => void;
-  onOpenSettings: (section: SettingsSectionName) => void;
-  profileName: string;
-  profilePlan: string;
-}) {
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const notificationAnchorRef = useRef<HTMLDivElement>(null);
-  const notificationButtonRef = useRef<HTMLButtonElement>(null);
-  const notificationPanelRef = useRef<HTMLElement>(null);
-  const profileAnchorRef = useRef<HTMLDivElement>(null);
-  const profileButtonRef = useRef<HTMLButtonElement>(null);
-  const meta = pageMeta[activePage] || pageMeta["首页概览"];
-  const searchable = ["首页概览", "项目管理", "收入记录", "支出记录", "客户管理"].includes(activePage);
-  const visibleReminders = reminders.slice(0, 4);
-
-  useEffect(() => {
-    if (!notificationsOpen && !profileOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (notificationsOpen && !notificationAnchorRef.current?.contains(target)) setNotificationsOpen(false);
-      if (profileOpen && !profileAnchorRef.current?.contains(target)) setProfileOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [notificationsOpen, profileOpen]);
-
-  useEffect(() => {
-    if (!notificationsOpen) return;
-    const panel = notificationPanelRef.current;
-    const frame = window.requestAnimationFrame(() => panel?.focus());
-    const mobile = window.matchMedia("(max-width: 560px)").matches;
-    const previousOverflow = document.body.style.overflow;
-    if (mobile) document.body.style.overflow = "hidden";
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setNotificationsOpen(false);
-        window.requestAnimationFrame(() => notificationButtonRef.current?.focus());
-        return;
-      }
-      if (event.key !== "Tab" || !panel) return;
-      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
-      )).filter((element) => element.getClientRects().length > 0);
-      if (!focusable.length) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (document.activeElement === panel) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      } else if (!panel.contains(document.activeElement)) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [notificationsOpen]);
-
-  useEffect(() => {
-    if (!profileOpen) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setProfileOpen(false);
-      window.requestAnimationFrame(() => profileButtonRef.current?.focus());
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [profileOpen]);
-
-  const closeNotifications = () => setNotificationsOpen(false);
-
-  return (
-    <header className={`top-header ${activePage === "AI经营助手" ? "top-header-partner" : ""}`}>
-      <button className={`menu-button ${activePage === "AI经营助手" ? "partner-brand-menu" : ""}`} aria-label="打开导航" onClick={onMenu}>
-        {activePage === "AI经营助手" ? <><img src="/assets/xunying/orbit-mark.png" alt="" aria-hidden="true" /><span>循营</span></> : <List size={24} />}
-      </button>
-      <div className="greeting">
-        <h1>{meta.title}{activePage === "数据统计" && <em className="page-context-tag">商品增长复盘</em>}{activePage === "经营分析中心" && <em className="page-context-tag">证据链优先</em>}{activePage === "首页概览" && <span aria-hidden="true"><HandWaving size={25} weight="duotone" /></span>}</h1>
-        <p>{meta.subtitle}</p>
-      </div>
-      <img className={`header-planet ${activePage === "AI经营助手" ? "header-partner-avatar" : ""}`} src={activePage === "AI经营助手" ? "/assets/xunying/xiaoce-avatar.png" : "/assets/chrome-v2/header-planet.png"} alt="" aria-hidden="true" draggable={false} />
-      <label className="search-box">
-        <MagnifyingGlass size={23} />
-        <input
-          value={search}
-          onChange={(event) => onSearch(event.target.value)}
-          placeholder={searchable ? meta.placeholder : "当前页面无需搜索"}
-          aria-label="搜索项目、客户或订单"
-          disabled={!searchable}
-        />
-      </label>
-      <div className="header-actions">
-        <div className="popover-anchor" ref={notificationAnchorRef}>
-          <button
-            ref={notificationButtonRef}
-            className="round-button"
-            aria-label={`查看智能提醒，${reminders.length} 项待处理`}
-            aria-expanded={notificationsOpen}
-            aria-controls="smart-reminder-panel"
-            aria-haspopup="dialog"
-            onClick={() => {
-              setProfileOpen(false);
-              if (!notificationsOpen) onRefreshReminders();
-              setNotificationsOpen((value) => !value);
-            }}
-          >
-            <Bell size={23} />
-            {reminders.length > 0 && <b>{reminders.length}</b>}
-          </button>
-          {notificationsOpen && (
-            <>
-              <button className="notification-backdrop" aria-label="关闭智能提醒" onClick={closeNotifications} tabIndex={-1} />
-              <section
-                ref={notificationPanelRef}
-                id="smart-reminder-panel"
-                className="header-popover notification-popover"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="smart-reminder-title"
-                tabIndex={-1}
-              >
-                <span className="notification-drawer-handle" aria-hidden="true" />
-                <header className="notification-heading">
-                  <span className="notification-heading-icon"><Bell size={21} weight="duotone" /></span>
-                  <span className="notification-heading-copy">
-                    <strong id="smart-reminder-title">智能提醒</strong>
-                    <small>客户消息、商品经营与连接异常</small>
-                  </span>
-                  <span className="notification-status">{reminders.length > 0 ? `${reminders.length} 项待处理` : "当前已清空"}</span>
-                  <button className="notification-close" aria-label="关闭智能提醒" onClick={closeNotifications}><X size={19} /></button>
-                </header>
-
-                {visibleReminders.length > 0 ? (
-                  <ul className="notification-list" aria-label="待处理客户、商品经营与连接异常事项">
-                    {visibleReminders.map((reminder) => {
-                      const ReminderIcon = headerReminderIcons[reminder.kind];
-                      return (
-                        <li key={reminder.id}>
-                          <button
-                            className={`notification-item is-${reminder.kind}`}
-                            onClick={() => {
-                              closeNotifications();
-                              onReminderAction(reminder);
-                            }}
-                          >
-                            <span className="notification-item-icon"><ReminderIcon size={21} weight="duotone" /></span>
-                            <span className="notification-item-copy">
-                              <small>{reminder.label}</small>
-                              <strong>{reminder.title}</strong>
-                              <span>{reminder.description}</span>
-                            </span>
-                            <span className="notification-item-side">
-                              <time>{reminder.meta}</time>
-                              <span>{reminder.actionLabel}<ArrowRight size={14} /></span>
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                ) : (
-                  <div className="notification-empty">
-                    <span><CheckCircle size={25} weight="duotone" /></span>
-                    <strong>当前事项已处理完成</strong>
-                    <p>新的客户消息、商品经营事项或明确连接异常会显示在这里。</p>
-                  </div>
-                )}
-
-                <footer className="notification-footer">
-                  <button onClick={() => { closeNotifications(); onViewAllReminders(); }}>
-                    查看全部提醒 <ArrowRight size={15} />
-                  </button>
-                  <button onClick={() => { closeNotifications(); onOpenSettings("提醒通知"); }}>
-                    <GearSix size={16} />提醒设置
-                  </button>
-                </footer>
-              </section>
-            </>
-          )}
-        </div>
-        <div className="popover-anchor" ref={profileAnchorRef}>
-          <button
-            ref={profileButtonRef}
-            className="profile-button"
-            aria-label="打开个人与账户设置"
-            aria-expanded={profileOpen}
-            onClick={() => {
-              setNotificationsOpen(false);
-              setProfileOpen((value) => !value);
-            }}
-          >
-            <span className="avatar"><UserCircle size={33} weight="duotone" /></span>
-            <span><strong>{profileName}</strong><small>{profilePlan}</small></span>
-            <CaretDown size={16} />
-          </button>
-          {profileOpen && (
-            <div className="header-popover profile-popover">
-              <button onClick={() => { onOpenSettings("个人资料"); setProfileOpen(false); }}>个人资料</button>
-              <button onClick={() => { onOpenSettings("账号设置"); setProfileOpen(false); }}>账号设置</button>
-            </div>
-          )}
-        </div>
-      </div>
-    </header>
-  );
-}
 
 function MiniChart({ type, color, empty = false }: { type: "line" | "bar"; color: string; empty?: boolean }) {
   const chartData = (type === "line" ? miniLineData : miniBars).map((item) => ({ value: empty ? 0 : item.value }));
@@ -1701,16 +1300,17 @@ function DashboardLayout({
   }, [activeNav]);
 
   const changePage = (value: string) => {
-    const nextSettingsSection = value === "设置中心" ? "个人资料" : settingsSection;
-    if (value === activeNav && nextSettingsSection === settingsSection && projectRoute === null && customerRoute === null) return;
-    routeRef.current = { page: value, settingsSection: nextSettingsSection, projectRoute: null, customerRoute: null };
+    const nextPage = value === "收入记录" || value === "支出记录" ? "经营记录" : value;
+    const nextSettingsSection = nextPage === "设置中心" ? "个人资料" : settingsSection;
+    if (nextPage === activeNav && nextSettingsSection === settingsSection && projectRoute === null && customerRoute === null) return;
+    routeRef.current = { page: nextPage, settingsSection: nextSettingsSection, projectRoute: null, customerRoute: null };
     runPageTransition(() => {
-      setActiveNav(value);
+      setActiveNav(nextPage);
       setSettingsSection(nextSettingsSection);
       setProjectRoute(null);
       setCustomerRoute(null);
       setSearch("");
-      window.history.replaceState(null, "", value === "首页概览" ? window.location.pathname : `#${encodeURIComponent(value)}`);
+      window.history.pushState(null, "", nextPage === "首页概览" ? window.location.pathname : `#${encodeURIComponent(nextPage)}`);
     });
   };
 
@@ -1808,6 +1408,12 @@ function DashboardLayout({
   useEffect(() => {
     const syncHash = () => {
       const route = readAppRoute();
+      if (route.page === "项目管理" && route.projectRoute) {
+        const expectedProjectHash = projectSectionHash(route.projectRoute);
+        if (window.location.hash !== expectedProjectHash) {
+          window.history.replaceState(window.history.state, "", expectedProjectHash);
+        }
+      }
       if (route.page === routeRef.current.page && route.settingsSection === routeRef.current.settingsSection && sameProjectRoute(route.projectRoute, routeRef.current.projectRoute) && sameCustomerRoute(route.customerRoute, routeRef.current.customerRoute)) return;
       routeRef.current = route;
       runPageTransition(() => {
@@ -1834,7 +1440,7 @@ function DashboardLayout({
       window.history.replaceState(null, "", projectRouteHash(null));
       return;
     }
-    const expectedHash = projectRouteHash(projectRoute);
+    const expectedHash = projectSectionHash(projectRoute);
     if (window.location.hash !== expectedHash) window.history.replaceState(window.history.state, "", expectedHash);
   }, [activeNav, projectRoute, settingsSection, snapshot.projects]);
 
@@ -2013,18 +1619,17 @@ function DashboardLayout({
   ];
 
   return (
-    <div className="app-shell">
+    <AppShell>
       <Sidebar
         active={activeNav}
         onActiveChange={changePage}
         onSecondaryNavigate={navigateSecondaryPage}
-        onQuickAdd={() => openQuickAccounting()}
+        items={navItems} secondary={secondaryNavItems} selectedChild={activeSecondaryKey}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
-        projects={snapshot.projects}
       />
       <main className="dashboard-main">
-        <TopHeader search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} reminders={headerReminders} onReminderAction={openHeaderReminder} onViewAllReminders={viewAllReminders} onRefreshReminders={() => setReminderRefreshVersion((value) => value + 1)} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "张同学"} profilePlan={snapshot.settings.accountPlan || "高级版"} />
+        <TopBar meta={pageMeta[activeNav] || pageMeta["首页概览"]} snapshot={snapshot} search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} reminders={headerReminders} onReminderAction={openHeaderReminder} onViewAllReminders={viewAllReminders} onRefreshReminders={() => setReminderRefreshVersion((value) => value + 1)} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "张同学"} profilePlan={snapshot.settings.accountPlan || "高级版"} />
         <div className="page-route-view" key={`${activeNav}-${settingsSection}-${projectRoute?.projectId || ""}-${customerRoute?.caseId || customerRoute?.customerId || ""}`}>
           {activeNav === "首页概览" && normalizedSearch && (
             <div className="search-status">
@@ -2034,19 +1639,16 @@ function DashboardLayout({
           )}
           {activeNav === "首页概览" ? <>
             <section className="metrics-grid" aria-label="经营核心指标">
-              {metrics.map((metric, index) => <MetricCard key={metric.title} {...metric} index={index} />)}
+              {metrics.map((metric, index) => <MetricCard key={metric.title} {...metric} chart={undefined} index={index} />)}
             </section>
-            <PredictionSummaryStrip context="home" onNavigate={changePage} />
             <OperatingInsightStrip snapshot={snapshot} onNavigate={changePage} />
-            <CustomerPipelineStrip onNavigate={changePage} />
-            <ProductStrategyStrip onNavigate={changePage} />
             <section className="main-grid">
               <IncomeTrendCard snapshot={snapshot} />
               <ActiveProjectsCard snapshot={snapshot} projects={filteredProjects} onNavigate={() => changePage("项目管理")} onOpenProject={(projectId) => changeProjectRoute({ projectId, tab: "overview" }, "push")} />
               <OperationDurationCard startedAt={snapshot.settings.xianyuStartedAt} />
             </section>
             <section className="bottom-grid">
-              <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("收入记录")} />
+              <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("经营记录")} />
               <div className="bottom-stack center-stack">
                 <DailyBalanceCard todayIncome={todayIncome} todayExpense={todayExpense} />
                 <ReminderCard reminders={headerReminders} onOpen={openHeaderReminder} />
@@ -2058,6 +1660,13 @@ function DashboardLayout({
                   <DeliveryCountdownCard projects={snapshot.projects} onNavigate={() => changePage("项目管理")} />
                 </div>
               </div>
+            </section>
+            <section className="august-current-actions" aria-label="当前待处理事项">
+            <ActionWorkbench
+              snapshot={snapshot}
+              onConfirmPayment={(projectId) => setReceiptTarget({ projectId })}
+              connectionActions={headerReminders.filter(item=>item.kind==='connection')}
+            />
             </section>
           </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => openQuickAccounting()} onCreatePaymentPlan={(projectId) => openQuickAccounting(projectId)} onCreateChangeOrder={(projectId) => setChangeOrderTarget({ projectId })} onConfirmPayment={(projectId, paymentId) => setReceiptTarget({ projectId, paymentId })} onRecordSettlementIssue={(projectId) => setSettlementIssueTarget({ projectId })} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} projectRoute={projectRoute} onProjectRouteChange={changeProjectRoute} customerRoute={customerRoute} onCustomerRouteChange={changeCustomerRoute} />}
         </div>
@@ -2110,7 +1719,7 @@ function DashboardLayout({
           {[0, 1, 2, 3, 4].map((item) => <Sparkle key={item} className={`success-spark s${item}`} size={14 + item} weight="fill" />)}
         </div>
       )}
-    </div>
+    </AppShell>
   );
 }
 

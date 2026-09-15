@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from types import SimpleNamespace
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import select
 
 from backend.app.database import Database
+from backend.app.ledger_api import ledger_router
 from backend.app.ledger import (
     LedgerService,
     PaymentConfirmationError,
@@ -16,6 +20,7 @@ from backend.app.ledger import (
     default_snapshot,
 )
 from backend.app.models import (
+    BusinessCustomer,
     BusinessProject,
     BusinessTask,
     PaymentNode,
@@ -68,6 +73,177 @@ def test_snapshot_revision_prevents_cross_browser_overwrite(tmp_path: Path) -> N
     with pytest.raises(RevisionConflict) as raised:
         ledger.save(snapshot, revision)
     assert raised.value.revision == 1
+
+
+@pytest.mark.parametrize("following_status", ["new", "contacted", "proposal"])
+def test_completed_client_project_promotes_following_customer_atomically(
+    tmp_path: Path,
+    following_status: str,
+) -> None:
+    ledger = service(tmp_path)
+    initial = sample_snapshot()
+    initial["customers"][0]["followUpStatus"] = following_status
+    revision, saved = ledger.save(initial, 0)
+
+    saved["projects"][0]["status"] = "completed"
+    next_revision, completed = ledger.save(
+        saved,
+        revision,
+        sync_customer_lifecycle=True,
+    )
+
+    assert next_revision == revision + 1
+    assert completed["projects"][0]["status"] == "completed"
+    assert completed["customers"][0]["followUpStatus"] == "won"
+    with ledger.database.session() as session:
+        project = session.get(BusinessProject, "project-1")
+        customer = session.get(BusinessCustomer, "customer-1")
+        assert project is not None and project.status == "completed"
+        assert customer is not None and customer.follow_up_status == "won"
+
+
+@pytest.mark.parametrize(
+    ("customer_status", "project_kind", "next_status", "terminal_issue", "expected"),
+    [
+        ("contacted", "client", "delivered", False, "contacted"),
+        ("inactive", "client", "completed", False, "inactive"),
+        ("contacted", "client", "completed", True, "contacted"),
+        ("contacted", "personal", "completed", False, "contacted"),
+        ("won", "client", "completed", False, "won"),
+    ],
+)
+def test_customer_lifecycle_sync_preserves_non_qualifying_states(
+    tmp_path: Path,
+    customer_status: str,
+    project_kind: str,
+    next_status: str,
+    terminal_issue: bool,
+    expected: str,
+) -> None:
+    ledger = service(tmp_path)
+    initial = sample_snapshot()
+    initial["customers"][0]["followUpStatus"] = customer_status
+    initial["projects"][0]["projectKind"] = project_kind
+    if project_kind == "personal":
+        initial["projects"][0]["customerId"] = "customer-1"
+    revision, saved = ledger.save(initial, 0)
+    saved["projects"][0]["status"] = next_status
+    if terminal_issue:
+        saved["settlementIssues"].append({
+            "id": "issue-terminal",
+            "projectId": "project-1",
+            "customerId": "customer-1",
+            "type": "cooperation_terminated",
+            "receivableImpact": 0,
+            "refundAmount": 0,
+            "occurredAt": "2026-08-20T10:00:00+08:00",
+            "reason": "测试终止合作",
+            "notes": "",
+            "requestId": "terminal-test-request",
+        })
+
+    _, result = ledger.save(
+        saved,
+        revision,
+        sync_customer_lifecycle=True,
+    )
+
+    assert result["customers"][0]["followUpStatus"] == expected
+
+
+def test_task_progress_and_historical_completion_do_not_promote_customer(
+    tmp_path: Path,
+) -> None:
+    ledger = service(tmp_path)
+    historical = sample_snapshot()
+    historical["customers"][0]["followUpStatus"] = "new"
+    historical["projects"][0]["status"] = "completed"
+    historical["projects"][0]["progress"] = 100
+    historical["tasks"] = [{
+        "id": "task-1",
+        "projectId": "project-1",
+        "title": "已经实现",
+        "status": "done",
+        "startDate": "2026-08-06",
+        "dueDate": "2026-08-20",
+        "estimatedHours": 4,
+        "actualHours": 4,
+    }]
+    revision, saved = ledger.save(historical, 0)
+
+    same_revision, unchanged = ledger.save(
+        saved,
+        revision,
+        sync_customer_lifecycle=True,
+    )
+    read_revision, read_only = ledger.get()
+
+    assert same_revision == revision + 1
+    assert read_revision == same_revision
+    assert unchanged["customers"][0]["followUpStatus"] == "new"
+    assert read_only["customers"][0]["followUpStatus"] == "new"
+
+
+def test_new_completed_client_project_promotes_customer_but_revision_conflict_does_not(
+    tmp_path: Path,
+) -> None:
+    ledger = service(tmp_path)
+    initial = sample_snapshot()
+    initial["customers"][0]["followUpStatus"] = "proposal"
+    initial["projects"] = []
+    revision, saved = ledger.save(initial, 0)
+
+    completed_project = sample_snapshot()["projects"][0]
+    completed_project["status"] = "completed"
+    stale = {**saved, "projects": [completed_project]}
+    latest_revision, latest = ledger.save(saved, revision)
+
+    with pytest.raises(RevisionConflict):
+        ledger.save(
+            stale,
+            revision,
+            sync_customer_lifecycle=True,
+        )
+
+    assert latest_revision == revision + 1
+    assert latest["projects"] == []
+    assert latest["customers"][0]["followUpStatus"] == "proposal"
+
+    latest["projects"] = [completed_project]
+    _, completed = ledger.save(
+        latest,
+        latest_revision,
+        sync_customer_lifecycle=True,
+    )
+    assert completed["customers"][0]["followUpStatus"] == "won"
+
+
+def test_snapshot_api_applies_completed_customer_lifecycle_rule(tmp_path: Path) -> None:
+    ledger = service(tmp_path)
+    initial = sample_snapshot()
+    initial["customers"][0]["followUpStatus"] = "contacted"
+    revision, saved = ledger.save(initial, 0)
+    saved["projects"][0]["status"] = "completed"
+
+    events: list[dict] = []
+    app = FastAPI()
+    app.include_router(ledger_router)
+    app.state.runtime = SimpleNamespace(
+        ledger=ledger,
+        event_hub=SimpleNamespace(publish_nowait=events.append),
+    )
+    client = TestClient(app)
+
+    response = client.put(
+        "/api/ledger/snapshot",
+        json={"expected_revision": revision, "snapshot": saved},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["snapshot"]["projects"][0]["status"] == "completed"
+    assert payload["snapshot"]["customers"][0]["followUpStatus"] == "won"
+    assert events[-1] == {"type": "ledger_updated", "revision": revision + 1}
 
 
 def test_personal_project_and_task_persist_without_customer(tmp_path: Path) -> None:

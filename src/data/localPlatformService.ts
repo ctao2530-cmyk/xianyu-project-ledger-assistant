@@ -1,4 +1,9 @@
 import type { LedgerSnapshot } from "../types";
+import { localApi as api } from "./localApi";
+import { productIntelligenceClient } from "./productIntelligenceClient";
+import { customerImageClient } from "./customerImageClient";
+import { customerConversationClient } from "./customerConversationClient";
+import { customerAccessClient } from "./customerAccessClient";
 
 export interface PlatformStatus {
   listener: string;
@@ -26,6 +31,81 @@ export interface CodexTaskContext {
   actual_hours: number;
   acceptance_points: unknown[];
   test_commands: string[];
+}
+
+export interface ProjectRequirementBlueprintView {
+  case_id?: string | null;
+  customer_id?: string | null;
+  metrics?: Record<string, number>;
+  diff?: Record<string, Record<string, {id: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null}[]>>;
+  id: number;
+  project_id: string;
+  version: number;
+  schema_version: string;
+  title: string;
+  readiness: string;
+  change_summary: string;
+  source_type: string;
+  source_label: string;
+  source_filename: string;
+  source_sha256: string;
+  imported_at: string | null;
+  created_at: string;
+}
+
+export interface RequirementProposalView {
+  id: string; request_id: string; review_token: string; expected_version: number;
+  document: RequirementBlueprint;
+  diff: NonNullable<ProjectRequirementBlueprintView['diff']>;
+}
+
+export interface ProjectRequirementImportPreview {
+  project_id: string;
+  current_revision: number;
+  next_version: number;
+  preview_token: string;
+  source_sha256: string;
+  blueprint: Record<string, unknown>;
+}
+
+export type ProjectTaskDraftClassification = "new" | "unchanged" | "update_allowed" | "protected" | "conflict";
+
+export interface ProjectTaskDraftItemView {
+  id: string;
+  task_key: string;
+  workspace_key: string;
+  stage_key: string;
+  classification: ProjectTaskDraftClassification;
+  current: Record<string, unknown>;
+  proposed: Record<string, unknown>;
+  protected_fields: string[];
+  conflict_reason: string;
+  selected: boolean;
+  ordinal: number;
+}
+
+export interface ProjectTaskDraftPreviewView {
+  id: string;
+  project_id: string;
+  requirement_version_id: number;
+  requirement_version: number;
+  source_label: string;
+  project_revision: number;
+  preview_token: string;
+  status: string;
+  summary: Record<ProjectTaskDraftClassification, number>;
+  created_at: string;
+  expires_at: string;
+  items: ProjectTaskDraftItemView[];
+}
+
+export interface ProjectTaskDraftConfirmResult {
+  project_id: string;
+  preview_id: string;
+  revision: number;
+  created_task_ids: string[];
+  updated_task_ids: string[];
+  idempotent: boolean;
 }
 
 export interface CodexRunView {
@@ -367,6 +447,9 @@ export interface ConversationMessage {
   status: string;
   risk_flags: string[];
   received_at: string;
+  images?: CustomerImageArchiveView[];
+  customer_images?: CustomerImageArchiveView[];
+  source_item_title?: string | null;
 }
 
 export interface ReplyDraft {
@@ -385,6 +468,7 @@ export interface ConversationDetail {
   customer_name: string;
   item: { external_id: string; title: string; price?: string | null; description?: string | null } | null;
   messages: ConversationMessage[];
+  has_older_messages: boolean;
   pending_message_id: number | null;
   drafts: ReplyDraft[];
   ai_task: { id: number; provider: string; model?: string | null; status: string; risk_level?: string | null; risk_reasons?: string[]; error_code?: string | null; error_message?: string | null; started_at?: string | null; finished_at?: string | null; duration_seconds?: number | null } | null;
@@ -434,6 +518,15 @@ export interface CustomerImageArchiveView {
   integrity_verified: boolean;
   content_url: string;
   download_url: string;
+  archive_id?: string;
+  capture_status?: string;
+  status?: string;
+  media_index?: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  preview_url?: string | null;
+  source_item_id?: string | null;
+  source_item_title?: string | null;
 }
 
 export interface CustomerImageListView {
@@ -458,6 +551,7 @@ export interface CustomerImageArchiveStatus {
 export interface CustomerImageFilters {
   channels: string[];
   conversations: Array<{ id: number; customer_name: string; channel: string; image_count: number }>;
+  items?: Array<{ id: string; title: string }>;
 }
 
 export interface CustomerImageHistoryPreview {
@@ -525,7 +619,17 @@ export interface ConversationHistoryPreview {
   platform_message_count: number;
   existing_count: number;
   new_count: number;
+  image_candidate_count?: number;
   unsupported_count: number;
+  history_scope: "recent" | "full" | "page";
+  has_more?: boolean;
+  next_continuation_token?: string | null;
+  history_complete?: boolean;
+}
+
+export interface ConversationMessagePage {
+  messages: ConversationMessage[];
+  has_more: boolean;
 }
 
 export interface ConversationHistoryCommitResult {
@@ -541,6 +645,9 @@ export interface ConversationHistoryCommitResult {
   image_stored_count: number;
   image_failed_count: number;
   idempotent: boolean;
+  has_more?: boolean;
+  next_continuation_token?: string | null;
+  history_complete?: boolean;
 }
 
 export type DraftProvider = "deepseek" | "codex_cli";
@@ -588,7 +695,7 @@ export interface RequirementBlueprint {
   assumptions: string[];
   open_questions: string[];
   risks: Array<{ id: string; title: string; description: string; severity: "low" | "medium" | "high"; mitigation: string; evidence_refs: string[] }>;
-  evidence_refs: Array<{ id: string; message_number: number; quote: string }>;
+  evidence_refs: Array<{ id: string; message_number?: number | null; message_id?:number | null; archive_id?:string | null; conversation_id?:number | null; quote: string }>;
 }
 
 export interface ProductRegistrationCandidate {
@@ -1684,6 +1791,11 @@ export interface GlobalAgentToolReference {
   label: string;
   status: string;
   duration_ms: number;
+  source: string;
+  observed_at: string | null;
+  revision: number | null;
+  read_only: boolean;
+  sensitivity: string;
 }
 
 export interface GlobalAgentFact {
@@ -1730,6 +1842,35 @@ export interface GlobalAgentRequirementBlueprint {
   risks: GlobalAgentRequirementRisk[];
 }
 
+export interface GlobalAgentExecutionPlanStage {
+  id: string;
+  task_key: string;
+  workspace_key: string;
+  title: string;
+  objective: string;
+  dependency_task_keys: string[];
+  allowed_changes: string[];
+  deliverables: string[];
+  process_tests: string[];
+  acceptance_criteria: string[];
+  stop_conditions: string[];
+  evidence_refs: string[];
+}
+
+export interface GlobalAgentExecutionPlan {
+  title: string;
+  objective: string;
+  readiness: "discovery" | "clarifying" | "ready";
+  change_summary: string;
+  allowed_changes: string[];
+  must_not_change: string[];
+  out_of_scope: string[];
+  stages: GlobalAgentExecutionPlanStage[];
+  assumptions: string[];
+  open_questions: string[];
+  risks: GlobalAgentRequirementRisk[];
+}
+
 export interface GlobalAgentCustomerProposalText {
   value: string;
   evidence_refs: string[];
@@ -1764,7 +1905,112 @@ export interface GlobalAgentAnswer {
   updated_customer_context?: GlobalAgentCustomerSummary | null;
   requirement_analysis?: GlobalAgentRequirementAnalysis | null;
   requirement_blueprint?: GlobalAgentRequirementBlueprint | null;
+  execution_plan?: GlobalAgentExecutionPlan | null;
   customer_create_proposal?: GlobalAgentCustomerCreateProposal | null;
+}
+
+export type CustomerContextAudience = "openai_chatgpt" | "openai_api" | "codex_cli";
+
+export interface CustomerContextGrant {
+  id: string;
+  thread_id: string;
+  conversation_id: number;
+  provider_scope: "openai";
+  audience: CustomerContextAudience;
+  allow_text: boolean;
+  allow_images: boolean;
+  allow_artifacts: boolean;
+  allow_new_messages: boolean;
+  consent_policy_version: string;
+  consent_text_hash: string;
+  status: "active" | "expired" | "revoked";
+  revision: number;
+  thread_revision: number;
+  authorization_note: string;
+  confirmed_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+  capability_token?: string | null;
+  idempotent?: boolean;
+}
+
+export interface CustomerConversationAccessState {
+  conversation_id: number;
+  revision: number;
+  latest_grant: CustomerContextGrant | null;
+}
+
+export interface CustomerContextTunnelBindingState {
+  auth_mode: "oauth" | "tunnel_binding";
+  configured: boolean;
+  header_name: string;
+  slot: "openai_chatgpt";
+  revision: number;
+  active: boolean;
+  grant: CustomerContextGrant | null;
+  idempotent?: boolean;
+}
+
+export interface CustomerContextThreadBinding {
+  id: string;
+  auth_mode: "oauth" | "tunnel_binding";
+  context_key_hint: string;
+  status: "active" | "expired" | "revoked";
+  revision: number;
+  active: boolean;
+  identity_claimed: boolean;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+  grant: CustomerContextGrant | null;
+  context_key?: string | null;
+  idempotent?: boolean;
+}
+
+export interface CustomerContextThreadBindingList {
+  auth_mode: "oauth" | "tunnel_binding";
+  configured: boolean;
+  legacy_binding_active: boolean;
+  legacy_grant: CustomerContextGrant | null;
+  bindings: CustomerContextThreadBinding[];
+}
+
+export interface CustomerAnalysisSubscription {
+  id: string;
+  thread_id: string;
+  conversation_id: number;
+  provider_scope: "openai";
+  model: string;
+  configured: boolean;
+  external_conversation_ready: boolean;
+  status: "active" | "paused";
+  analysis_state: "waiting" | "pending" | "analyzing" | "completed" | "failed" | "configuration_required";
+  include_images: boolean;
+  debounce_seconds: number;
+  max_wait_seconds: number;
+  last_enqueued_message_id: number | null;
+  last_analyzed_message_id: number | null;
+  latest_message_id: number | null;
+  pending_message_count: number;
+  latest_artifact_version: number;
+  next_run_at: string | null;
+  last_started_at: string | null;
+  last_completed_at: string | null;
+  last_error_code: string;
+  last_error_message: string;
+  consent_policy_version: string;
+  consent_text_hash: string;
+  authorization_note: string;
+  confirmed_at: string;
+  revision: number;
+  paused_at: string | null;
+  created_at: string;
+  updated_at: string;
+  idempotent?: boolean;
 }
 
 export interface GlobalAgentCustomerSummaryItem {
@@ -1790,6 +2036,7 @@ export interface GlobalAgentCustomerContextOption {
   customer_name: string;
   item_title: string | null;
   text_message_count: number;
+  image_message_count?: number;
   latest_text_message_id: number | null;
   latest_message_at: string | null;
   summary_version: number | null;
@@ -1807,6 +2054,7 @@ export interface GlobalAgentMessage {
   content: string;
   status: string;
   run_id: string | null;
+  run_elapsed_ms: number | null;
   answer: GlobalAgentAnswer | null;
   citations: GlobalAgentKnowledgeCitation[];
   tool_references: GlobalAgentToolReference[];
@@ -1828,6 +2076,58 @@ export interface GlobalAgentRun {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+}
+
+export type GlobalAgentRunStepStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "interrupted" | "skipped";
+export type GlobalAgentRunTracePhase = "context" | "evidence" | "tools" | "generate" | "validate" | "persist";
+
+export interface GlobalAgentRunStep {
+  id: string;
+  position: number;
+  node_name: string;
+  label: string;
+  phase: GlobalAgentRunTracePhase;
+  status: GlobalAgentRunStepStatus;
+  summary: string;
+  duration_ms: number;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface GlobalAgentRunTool {
+  id: string;
+  position: number;
+  name: string;
+  label: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  summary: string;
+  duration_ms: number;
+  source: string;
+  observed_at: string | null;
+  revision: number | null;
+  read_only: boolean;
+  sensitivity: string;
+  created_at: string;
+}
+
+export interface GlobalAgentRunTrace {
+  run_id: string;
+  thread_id: string;
+  provider: GlobalAgentProvider;
+  model: string;
+  status: GlobalAgentRun["status"];
+  completed_steps: number;
+  total_steps: number;
+  tool_count: number;
+  elapsed_ms: number;
+  decision_summary: string;
+  legacy: boolean;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  steps: GlobalAgentRunStep[];
+  tools: GlobalAgentRunTool[];
 }
 
 export interface GlobalAgentThread {
@@ -1870,24 +2170,6 @@ export interface GlobalAgentBootstrap {
   knowledge: GlobalAgentKnowledgeStatus;
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  const response = await fetch(path, {
-    ...init,
-    headers,
-  });
-  const body = await response.json().catch(() => null) as { detail?: string | { message?: string } } | null;
-  if (!response.ok) {
-    const detail = body?.detail;
-    const message = typeof detail === "string" ? detail : detail?.message;
-    throw new Error(message || `本机服务请求失败（${response.status}）`);
-  }
-  return body as T;
-}
-
 export const localPlatformService = {
   status: () => api<PlatformStatus>("/api/status"),
   customerIntakeCandidates: () => api<CustomerIntakeCandidatesView>("/api/customers/intake-candidates", { headers: { "X-Yuda-Desktop": "1" } }),
@@ -1898,16 +2180,38 @@ export const localPlatformService = {
   createGlobalAgentThread: (payload: { request_id: string; profile_id: string; title: string }) => api<GlobalAgentThread>("/api/global-agent/threads", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   updateGlobalAgentThreadProfile: (threadId: string, payload: { request_id: string; expected_revision: number; profile_id: string }) => api<GlobalAgentThread>(`/api/global-agent/threads/${encodeURIComponent(threadId)}/profile`, { method: "PATCH", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   updateGlobalAgentThreadContext: (threadId: string, payload: { request_id: string; expected_revision: number; context_scope: "general_business" | "customer_conversation"; conversation_id: number | null }) => api<GlobalAgentThread>(`/api/global-agent/threads/${encodeURIComponent(threadId)}/context`, { method: "PATCH", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  customerContextGrant: (threadId: string) => api<CustomerContextGrant | null>(`/api/customer-context/threads/${encodeURIComponent(threadId)}/grant`, { headers: { "X-Yuda-Desktop": "1" } }),
+  customerAnalysisSubscription: (threadId: string) => api<CustomerAnalysisSubscription | null>(`/api/customer-context/threads/${encodeURIComponent(threadId)}/analysis`, { headers: { "X-Yuda-Desktop": "1" } }),
+  upsertCustomerAnalysisSubscription: (payload: { request_id: string; thread_id: string; expected_thread_revision: number; expected_subscription_revision: number; provider_scope: "openai"; model: string; include_images: boolean; debounce_seconds: number; max_wait_seconds: number; authorization_note: string; confirmed_automatic_analysis: true }) => api<CustomerAnalysisSubscription>("/api/customer-context/analysis-subscriptions", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  pauseCustomerAnalysisSubscription: (subscriptionId: string, payload: { request_id: string; expected_revision: number; reason: string; confirmed: true }) => api<CustomerAnalysisSubscription>(`/api/customer-context/analysis-subscriptions/${encodeURIComponent(subscriptionId)}/pause`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  retryCustomerAnalysisSubscription: (subscriptionId: string, payload: { request_id: string; expected_revision: number; confirmed: true }) => api<CustomerAnalysisSubscription>(`/api/customer-context/analysis-subscriptions/${encodeURIComponent(subscriptionId)}/retry`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  createCustomerContextGrant: (payload: { request_id: string; thread_id: string; expected_revision: number; provider_scope: "openai"; audience: CustomerContextAudience; allow_text: boolean; allow_images: boolean; allow_artifacts: boolean; allow_new_messages: boolean; expires_in_seconds: number; authorization_note: string; confirmed: true }) => api<CustomerContextGrant>("/api/customer-context/grants", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  customerContextTunnelBinding: () => api<CustomerContextTunnelBindingState>("/api/customer-context/tunnel-binding", { headers: { "X-Yuda-Desktop": "1" } }),
+  replaceCustomerContextTunnelBinding: (payload: { request_id: string; conversation_id: number; expected_binding_revision: number; expected_conversation_revision: number; allow_text: boolean; allow_images: boolean; allow_artifacts: boolean; allow_new_messages: boolean; expires_in_seconds: number; authorization_note: string; confirmed: true }) => api<CustomerContextTunnelBindingState>("/api/customer-context/tunnel-binding", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  revokeCustomerContextTunnelBinding: (payload: { request_id: string; expected_binding_revision: number; reason: string; confirmed: true }) => api<CustomerContextTunnelBindingState>("/api/customer-context/tunnel-binding/revoke", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  ...customerAccessClient,
+  createCustomerConversationGrant: (payload: { request_id: string; conversation_id: number; expected_revision: number; provider_scope: "openai"; audience: CustomerContextAudience; allow_text: boolean; allow_images: boolean; allow_artifacts: boolean; allow_new_messages: boolean; expires_in_seconds: number; authorization_note: string; confirmed: true }) => api<CustomerContextGrant>("/api/customer-context/conversation-grants", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
+  revokeCustomerContextGrant: (grantId: string, payload: { request_id: string; expected_revision: number; reason: string; confirmed: true }) => api<CustomerContextGrant>(`/api/customer-context/grants/${encodeURIComponent(grantId)}/revoke`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   deleteGlobalAgentThread: (threadId: string, payload: { request_id: string; expected_revision: number }) => api<void>(`/api/global-agent/threads/${encodeURIComponent(threadId)}`, { method: "DELETE", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   sendGlobalAgentMessage: (threadId: string, payload: { request_id: string; expected_revision: number; content: string; recheck_full_context?: boolean }) => api<GlobalAgentRun>(`/api/global-agent/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   confirmGlobalAgentCustomerCreate: (threadId: string, payload: { assistant_message_id: string; request_id: string; expected_revision: number; confirmed: true }) => api<CustomerCreateResult>(`/api/global-agent/threads/${encodeURIComponent(threadId)}/customer-create/confirm`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   globalAgentRun: (runId: string) => api<GlobalAgentRun>(`/api/global-agent/runs/${encodeURIComponent(runId)}`, { headers: { "X-Yuda-Desktop": "1" } }),
+  globalAgentRunTrace: (runId: string) => api<GlobalAgentRunTrace>(`/api/global-agent/runs/${encodeURIComponent(runId)}/trace`, { headers: { "X-Yuda-Desktop": "1" } }),
   cancelGlobalAgentRun: (runId: string, requestId: string) => api<GlobalAgentRun>(`/api/global-agent/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId }) }),
   createGlobalAgentProfile: (payload: { request_id: string; expected_revision: 0; provider: GlobalAgentProvider; model: string; reasoning_effort: string; label: string; enabled: boolean; is_default: boolean }) => api<GlobalAgentProfile>("/api/global-agent/profiles", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   updateGlobalAgentProfile: (profileId: string, payload: { request_id: string; expected_revision: number; model: string; reasoning_effort: string; label: string; enabled: boolean; is_default: boolean }) => api<GlobalAgentProfile>(`/api/global-agent/profiles/${encodeURIComponent(profileId)}`, { method: "PATCH", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   globalAgentProviderModels: (provider: GlobalAgentProvider) => api<GlobalAgentModelOption[]>(`/api/global-agent/providers/${encodeURIComponent(provider)}/models`, { headers: { "X-Yuda-Desktop": "1" } }),
   reindexGlobalAgentKnowledge: (requestId: string) => api<GlobalAgentKnowledgeReindexResult>("/api/global-agent/knowledge/reindex", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId, confirmed: true }) }),
   codexProjectSync: (projectId: string) => api<CodexProjectSyncView>(`/api/projects/${encodeURIComponent(projectId)}/codex-sync`),
+  projectRequirementBlueprints: (projectId: string) => api<ProjectRequirementBlueprintView[]>(`/api/projects/${encodeURIComponent(projectId)}/requirement-blueprints`),
+  requirementProposals: (customerId:string) => api<RequirementProposalView[]>(`/api/customers/${encodeURIComponent(customerId)}/requirement-proposals`, {headers:{'X-Yuda-Desktop':'1'}}),
+  confirmRequirementProposal: (payload:{request_id:string; review_token:string; expected_version:number; confirmed:true}) => api<{case_id:string;version:number}>('/api/requirement-proposals/confirm',{method:'POST',headers:{'X-Yuda-Desktop':'1'},body:JSON.stringify(payload)}),
+  linkProjectRequirement: (projectId:string,payload:{case_id:string; expected_revision:number;request_id:string;confirmed:true}) => api<{revision:number}>(`/api/projects/${encodeURIComponent(projectId)}/requirement-case`,{method:'POST',headers:{'X-Yuda-Desktop':'1'},body:JSON.stringify(payload)}),
+  previewProjectRequirementImport: (projectId: string, payload: { expected_revision: number; source_filename: string; blueprint: Record<string, unknown> }) => api<ProjectRequirementImportPreview>(`/api/projects/${encodeURIComponent(projectId)}/requirement-blueprints/preview`, { method: "POST", body: JSON.stringify(payload) }),
+  commitProjectRequirementImport: (projectId: string, payload: { request_id: string; expected_revision: number; source_filename: string; blueprint: Record<string, unknown>; preview_token: string; confirmed: true }) => api<{ project_id: string; requirement_version_id: number; version: number; revision: number; idempotent: boolean }>(`/api/projects/${encodeURIComponent(projectId)}/requirement-blueprints/commit`, { method: "POST", body: JSON.stringify(payload) }),
+  createProjectTaskDraftPreview: (projectId: string, payload: { expected_revision: number; requirement_version_id?: number | null }) => api<ProjectTaskDraftPreviewView>(`/api/projects/${encodeURIComponent(projectId)}/task-draft-previews`, { method: "POST", body: JSON.stringify(payload) }),
+  latestProjectTaskDraft: (projectId: string) => api<ProjectTaskDraftPreviewView | null>(`/api/projects/${encodeURIComponent(projectId)}/task-drafts`),
+  confirmProjectTaskDraft: (projectId: string, payload: { request_id: string; expected_revision: number; preview_id: string; preview_token: string; selected_task_keys: string[]; apply_allowed_updates_only: true; note: string; confirmed: true }) => api<ProjectTaskDraftConfirmResult>(`/api/projects/${encodeURIComponent(projectId)}/task-drafts/confirm`, { method: "POST", body: JSON.stringify(payload) }),
   codexManagedProject: (projectId: string) => api<CodexManagedProjectView>(`/api/projects/${encodeURIComponent(projectId)}/codex-runtime`, { headers: { "X-Yuda-Desktop": "1" } }),
   startCodexManagedRun: (payload: { request_id: string; project_id: string; task_key: string; binding_id: string; model: string; reasoning_effort: string; sandbox_mode: "workspace-write"; approval_mode: "untrusted"; acknowledge_dirty_repository: boolean }) => api<CodexManagedRun>("/api/codex/runs", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   pauseCodexManagedRun: (runId: string, requestId: string) => api<CodexManagedRun>(`/api/codex/runs/${encodeURIComponent(runId)}/pause`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId }) }),
@@ -1929,33 +2233,14 @@ export const localPlatformService = {
   recoverDeepSeek: (apiKey: string) => api<ConnectionRecoveryResult>("/api/connections/deepseek/recover", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ api_key: apiKey }) }),
   reloadConnection: (provider: "xianyu" | "deepseek") => api<ConnectionRecoveryResult>("/api/connections/reload", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ provider }) }),
   checkCodexConnection: () => api<ConnectionRecoveryResult>("/api/connections/codex/check", { method: "POST", headers: { "X-Yuda-Desktop": "1" } }),
-  conversations: (channel = "all") => api<ConversationSummary[]>(`/api/conversations?channel=${encodeURIComponent(channel)}`),
   phraseLibrary: () => api<PhraseLibraryView>("/api/phrase-library", { headers: { "X-Yuda-Desktop": "1" } }),
   createPhraseCategory: (payload: { request_id: string; expected_revision: number; name: string }) => api<PhraseLibraryView>("/api/phrase-library/categories", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   createPhrase: (payload: { request_id: string; expected_revision: number; category_id: string; content: string }) => api<PhraseLibraryView>("/api/phrase-library/phrases", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   updatePhrase: (phraseId: string, payload: { request_id: string; expected_revision: number; category_id: string; content: string }) => api<PhraseLibraryView>(`/api/phrase-library/phrases/${encodeURIComponent(phraseId)}`, { method: "PATCH", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   reorderPhrases: (payload: { request_id: string; expected_revision: number; category_id: string; phrase_ids: string[] }) => api<PhraseLibraryView>("/api/phrase-library/phrases/reorder", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
   setPhraseActivation: (phraseId: string, payload: { request_id: string; expected_revision: number; active: boolean }) => api<PhraseLibraryView>(`/api/phrase-library/phrases/${encodeURIComponent(phraseId)}/activation`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
-  customerImages: (filters: { channel?: string; conversationId?: number | null; dateFrom?: string; dateTo?: string; limit?: number; offset?: number } = {}) => {
-    const params = new URLSearchParams();
-    if (filters.channel && filters.channel !== "all") params.set("channel", filters.channel);
-    if (filters.conversationId) params.set("conversation_id", String(filters.conversationId));
-    if (filters.dateFrom) params.set("date_from", filters.dateFrom);
-    if (filters.dateTo) params.set("date_to", filters.dateTo);
-    params.set("limit", String(filters.limit || 100));
-    params.set("offset", String(filters.offset || 0));
-    return api<CustomerImageListView>(`/api/customer-images?${params.toString()}`);
-  },
-  customerImageStatus: () => api<CustomerImageArchiveStatus>("/api/customer-images/status"),
-  customerImageFilters: () => api<CustomerImageFilters>("/api/customer-images/filters"),
-  previewCustomerImageHistory: () => api<CustomerImageHistoryPreview>("/api/customer-images/history-preview"),
-  customerImageAttention: () => api<CustomerImageAttentionItem[]>("/api/customer-images/attention"),
-  recoverCustomerImageHistory: (requestId: string) => api<CustomerImageHistoryResult>("/api/customer-images/history-recover", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ request_id: requestId, confirmed: true }) }),
-  deleteCustomerImage: (archiveId: string) => api<void>(`/api/customer-images/${encodeURIComponent(archiveId)}/delete`, { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ confirmed: true }) }),
-  searchConversationHistory: (payload: { query: string; days: 7 | 30 | 90 | 365; limit?: number }) => api<ConversationHistorySearchItem[]>("/api/conversations/history-import/search", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ ...payload, limit: payload.limit || 100 }) }),
-  previewConversationHistory: (externalConversationId: string, messageLimit = 100) => api<ConversationHistoryPreview>("/api/conversations/history-import/preview", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ external_conversation_id: externalConversationId, message_limit: messageLimit }) }),
-  commitConversationHistory: (payload: { request_id: string; preview_token: string; mark_latest_pending: boolean }) => api<ConversationHistoryCommitResult>("/api/conversations/history-import/commit", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
-  conversation: (id: number) => api<ConversationDetail>(`/api/conversations/${id}`),
+  ...customerImageClient,
+  ...customerConversationClient,
   providers: (refresh = false) => api<AIProviderStatus[]>(`/api/ai/providers${refresh ? "?refresh=true" : ""}`),
   customerRequirements: (customerId: string) => api<RequirementCaseSummary[]>(`/api/customers/${encodeURIComponent(customerId)}/requirements`),
   requirementCase: (caseId: string, version?: number) => api<RequirementCaseDetail>(`/api/requirement-cases/${encodeURIComponent(caseId)}${version ? `?version=${version}` : ""}`),
@@ -1973,58 +2258,7 @@ export const localPlatformService = {
   analyzeBusinessRequirement: (content: string) => api<BusinessRequirementAnalysis>("/api/ai/business/analyze", { method: "POST", body: JSON.stringify({ content }) }),
   createBusinessQuote: (analysis: BusinessRequirementAnalysis, complexity: "standard" | "advanced" | "complex", riskBuffer = 0.15) => api<BusinessQuote>("/api/ai/business/quote", { method: "POST", body: JSON.stringify({ analysis, complexity, risk_buffer: riskBuffer }) }),
   reviewBusinessProject: (payload: Record<string, unknown>) => api<BusinessReview>("/api/ai/business/review", { method: "POST", body: JSON.stringify(payload) }),
-  productIntelligence: () => api<ProductIntelligenceView>("/api/products/intelligence"),
-  trafficGrowth: () => api<TrafficGrowthOverviewView>("/api/products/traffic-growth"),
-  previewTrafficExperiment: (payload: { item_external_id: string; target_windows: string[]; baseline_weekly_budget: number; hard_weekly_cap: number }) => api("/api/products/traffic-experiments/preview", { method: "POST", body: JSON.stringify(payload) }),
-  createTrafficExperiment: (payload: { request_id: string; item_external_id: string; target_windows: string[]; baseline_weekly_budget: number; hard_weekly_cap: number }) => api<TrafficExperimentView>("/api/products/traffic-experiments", { method: "POST", body: JSON.stringify(payload) }),
-  advanceTrafficExperiment: (experimentId: string, payload: { request_id: string; expected_updated_at: string }) => api<TrafficExperimentView>(`/api/products/traffic-experiments/${encodeURIComponent(experimentId)}/advance`, { method: "POST", body: JSON.stringify(payload) }),
-  createTrafficScaleCohort: (experimentId: string, payload: { request_id: string; stage: "S1" | "S2" | "S3"; no_other_promotion_confirmed: true; listing_unchanged_confirmed: true }) => api<TrafficExperimentView>(`/api/products/traffic-experiments/${encodeURIComponent(experimentId)}/cohorts`, { method: "POST", body: JSON.stringify(payload) }),
-  refreshTrafficAttributions: (experimentId: string, requestId: string) => api<TrafficExperimentView>(`/api/products/traffic-experiments/${encodeURIComponent(experimentId)}/attributions/refresh`, { method: "POST", body: JSON.stringify({ request_id: requestId }) }),
-  confirmTrafficAttribution: (attributionId: string, payload: { request_id: string; expected_updated_at: string; project_id: string; reason?: string }) => api<TrafficExperimentView>(`/api/products/traffic-attributions/${encodeURIComponent(attributionId)}/confirm`, { method: "POST", body: JSON.stringify(payload) }),
-  rejectTrafficAttribution: (attributionId: string, payload: { request_id: string; expected_updated_at: string; project_id?: string | null; reason?: string }) => api<TrafficExperimentView>(`/api/products/traffic-attributions/${encodeURIComponent(attributionId)}/reject`, { method: "POST", body: JSON.stringify(payload) }),
-  refreshTrafficBudgetDecision: (experimentId: string, requestId: string) => api<TrafficExperimentView>(`/api/products/traffic-experiments/${encodeURIComponent(experimentId)}/budget-decisions/refresh`, { method: "POST", body: JSON.stringify({ request_id: requestId }) }),
-  applyTrafficBudgetDecision: (decisionId: string, payload: { request_id: string; expected_experiment_updated_at: string }) => api<TrafficExperimentView>(`/api/products/traffic-budget-decisions/${encodeURIComponent(decisionId)}/apply`, { method: "POST", body: JSON.stringify(payload) }),
-  collectProducts: () => api<ProductCollectionRunView>("/api/products/collect", { method: "POST" }),
-  collectProductsManual: (externalId?: string) => api<ProductCollectionRunView>("/api/products/collect/manual", { method: "POST", body: JSON.stringify({ external_id: externalId || null }) }),
-  discoverOwnedListings: () => api<ProductRegistrationPreview>("/api/products/owned-listings/discover", { headers: { "X-Yuda-Desktop": "1" } }),
-  resolveProductReference: (reference: string) => api<ProductRegistrationPreview>("/api/products/references/resolve", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ reference }) }),
-  commitProductRegistration: (payload: { request_id: string; preview_token: string; external_ids: string[] }) => api<ProductRegistrationCommitResult>("/api/products/register/batch", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify(payload) }),
-  updateProductMonitor: (externalId: string, enabled: boolean) => api<ProductView>(`/api/products/${encodeURIComponent(externalId)}/monitor`, { method: "PUT", body: JSON.stringify({ enabled }) }),
-  disableProductMonitors: (externalIds: string[]) => api<ProductMonitorBatchDisableResult>("/api/products/monitors/disable-batch", { method: "POST", headers: { "X-Yuda-Desktop": "1" }, body: JSON.stringify({ external_ids: externalIds, confirmed: true }) }),
-  recordProductAction: (externalId: string, payload: { action_type: string; status: "planned" | "completed" | "cancelled"; note: string; cost: number; recommendation_id?: string | null; observation_days: number }) => api<ProductActionView>(`/api/products/${encodeURIComponent(externalId)}/actions`, { method: "POST", body: JSON.stringify(payload) }),
-  updateProductRecommendation: (recommendationId: string, status: "active" | "in_progress" | "completed" | "dismissed") => api<void>(`/api/products/recommendations/${encodeURIComponent(recommendationId)}`, { method: "PUT", body: JSON.stringify({ status }) }),
-  createTrafficBatch: (payload: { request_id: string; item_external_ids: string[]; planned_at: string; actual_cost: number; plan_slot_id?: string | null; note?: string; checkpoint_collection_mode?: "auto" | "manual" }) => api<ProductTrafficBatchView>("/api/products/traffic-batches", { method: "POST", body: JSON.stringify(payload) }),
-  recordTrafficBatch: (payload: { request_id: string; item_external_ids: string[]; actual_cost: number; plan_slot_id?: string | null; note?: string; checkpoint_collection_mode?: "auto" | "manual"; confirmed_already_purchased: true }) => api<ProductTrafficBatchView>("/api/products/traffic-batches/recorded", { method: "POST", body: JSON.stringify(payload) }),
-  trafficBatches: (options: { cursor?: string | null; limit?: number; status?: string | null } = {}) => {
-    const params = new URLSearchParams();
-    if (options.cursor) params.set("cursor", options.cursor);
-    if (options.limit) params.set("limit", String(options.limit));
-    if (options.status) params.set("status", options.status);
-    const suffix = params.size ? `?${params.toString()}` : "";
-    return api<ProductTrafficBatchPageView>(`/api/products/traffic-batches${suffix}`);
-  },
-  trafficStartPreview: (batchId: string) => api<ProductTrafficStartPreviewView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/start-preview`),
-  prepareTrafficBaseline: (batchId: string, payload: { request_id: string; expected_updated_at: string; mode: "remote_refresh" | "manual"; items: ProductTrafficMetricsInput[] }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/baseline`, { method: "POST", body: JSON.stringify(payload) }),
-  startTrafficBatch: (batchId: string, payload: { request_id: string; expected_updated_at: string; expected_baseline_captured_at: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/start`, { method: "POST", body: JSON.stringify(payload) }),
-  recordActualTrafficStart: (batchId: string, payload: { request_id: string; expected_updated_at: string; confirmed_already_purchased: boolean; items: ProductTrafficMetricsInput[] }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/actual-start`, { method: "POST", body: JSON.stringify(payload) }),
-  trafficReplanPreview: (batchId: string) => api<ProductTrafficReplanPreviewView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/replan-preview`),
-  replanTrafficBatch: (batchId: string, payload: { request_id: string; expected_updated_at: string; preview_hash: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/replan`, { method: "POST", body: JSON.stringify(payload) }),
-  completeTrafficBatch: (batchId: string, payload: { completed_at?: string | null; actual_cost: number; total_exposure?: number | null; note?: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/complete`, { method: "POST", body: JSON.stringify(payload) }),
-  recordTrafficCheckpoint: (batchId: string, payload: { checkpoint: "h1" | "h6" | "h24" | "h48" | "h72"; recorded_at?: string | null; items: ProductTrafficMetricsInput[]; note?: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/checkpoints`, { method: "POST", body: JSON.stringify(payload) }),
-  updateTrafficCheckpointCollectionMode: (batchId: string, payload: { request_id: string; expected_updated_at: string; mode: "auto" | "manual" }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/checkpoint-collection-mode`, { method: "PUT", body: JSON.stringify(payload) }),
-  retryTrafficCheckpointCollection: (batchId: string, checkpoint: "h1" | "h6" | "h24" | "h48" | "h72", payload: { request_id: string; expected_updated_at: string }) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/checkpoints/${encodeURIComponent(checkpoint)}/retry`, { method: "POST", body: JSON.stringify(payload) }),
-  cancelTrafficBatch: (batchId: string) => api<ProductTrafficBatchView>(`/api/products/traffic-batches/${encodeURIComponent(batchId)}/cancel`, { method: "POST" }),
-  refreshOperatingPlan: () => api<ProductOperatingPlanView>("/api/products/operating-plan/refresh", { method: "POST" }),
-  updateOperatingPlanSlot: (slotId: string, locked: boolean) => api<ProductOperatingPlanView>(`/api/products/operating-plan/slots/${encodeURIComponent(slotId)}`, { method: "PUT", body: JSON.stringify({ locked }) }),
-  marketReference: () => api<ProductMarketReferenceView>("/api/products/market-reference"),
-  updateMarketKeyword: (payload: { mode: "recommended" | "custom"; keyword: string; save_as_common?: boolean }) => api<ProductMarketReferenceView>("/api/products/market-reference/keyword", { method: "PUT", body: JSON.stringify(payload) }),
-  importMarketReference: (payload: { keyword: string; captured_at: string; results: Array<{ position: number; title: string; price: number | null; tags: string[] }>; note?: string }) => api<ProductMarketReferenceView>("/api/products/market-reference/import", { method: "POST", body: JSON.stringify(payload) }),
-  snoozeMarketReminder: (hours = 2) => api<ProductMarketReferenceView>("/api/products/market-reference/reminder/snooze", { method: "POST", body: JSON.stringify({ hours }) }),
-  skipMarketReminder: () => api<ProductMarketReferenceView>("/api/products/market-reference/reminder/skip", { method: "POST" }),
-  createLaunchPlan: (payload: { keyword: string; title?: string | null }) => api<ProductLaunchPlanView>("/api/products/launch-plans", { method: "POST", body: JSON.stringify(payload) }),
-  updateLaunchPlan: (planId: string, status: "proposed" | "planned" | "completed" | "cancelled") => api<ProductLaunchPlanView>(`/api/products/launch-plans/${encodeURIComponent(planId)}`, { method: "PUT", body: JSON.stringify({ status }) }),
-  createModificationExperiment: (externalId: string, payload: { variable: "title" | "cover" | "description" | "price"; before_value: string; after_value: string; observation_days?: number }) => api<ProductModificationExperimentView>(`/api/products/${encodeURIComponent(externalId)}/modification-experiments`, { method: "POST", body: JSON.stringify(payload) }),
-  updateModificationExperiment: (experimentId: string, payload: { decision: "keep" | "rollback" | "continue"; note?: string }) => api<ProductModificationExperimentView>(`/api/products/modification-experiments/${encodeURIComponent(experimentId)}`, { method: "PUT", body: JSON.stringify(payload) }),
+  ...productIntelligenceClient,
 };
 
 export function connectPlatformEvents(

@@ -113,6 +113,19 @@ from .product_references import (
     ProductReferenceResolutionError,
     resolve_product_reference,
 )
+from .product_traffic_domain import (
+    ACTUAL_CHECKPOINT_ORDER,
+    CHECKPOINT_HOURS,
+    CHECKPOINT_ORDER,
+    CHECKPOINT_SHORT_LABELS,
+    INVALID_BASELINE_REASONS,
+    LEGACY_CHECKPOINT_ORDER,
+    ProductTrafficAccounting,
+    ProductTrafficAttribution,
+    ProductTrafficConflict,
+    ProductTrafficLifecycle,
+    ProductTrafficProtocol,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -142,10 +155,6 @@ class ProductItemUnavailable(AdapterError):
     pass
 
 
-class ProductTrafficConflict(RuntimeError):
-    pass
-
-
 class ProductMarketConflict(RuntimeError):
     pass
 
@@ -163,30 +172,6 @@ DEMAND_THEMES: tuple[tuple[str, tuple[str, ...]], ...] = (
 WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 TERMINATED_PROJECT_ISSUE_TYPES = ("project_cancelled", "cooperation_terminated")
 RULES_VERSION = "v2.4.3"
-CHECKPOINT_HOURS = {"h1": 1, "h6": 6, "h24": 24, "h48": 48, "h72": 72}
-LEGACY_CHECKPOINT_ORDER = ("h1", "h6", "h24", "h72")
-ACTUAL_CHECKPOINT_ORDER = ("h1", "h6", "h24", "h48")
-CHECKPOINT_ORDER = tuple(CHECKPOINT_HOURS)
-CHECKPOINT_MAX_DELAY_MINUTES = {
-    "h1": 30,
-    "h6": 60,
-    "h24": 180,
-    "h48": 360,
-    "h72": 360,
-}
-CHECKPOINT_SHORT_LABELS = {
-    "h1": "+1h",
-    "h6": "+6h",
-    "h24": "+24h",
-    "h48": "+48h",
-    "h72": "+72h",
-}
-INVALID_BASELINE_REASONS = {
-    "missing_baseline": "缺少投放前 T0",
-    "legacy_baseline": "使用不可靠的历史 T0",
-    "stale_baseline": "T0 与实际投放间隔超过 30 分钟",
-    "invalid_baseline_time": "T0 时间关系异常",
-}
 MODIFICATION_ACTIONS = {"title", "cover", "description", "price", "republish"}
 PLAN_ACTION_LABELS = {
     "traffic": "安排曝光",
@@ -340,32 +325,31 @@ class ProductIntelligenceService:
 
     @staticmethod
     def _observation_window_hours(batch: ProductTrafficBatch) -> int:
-        """Return the immutable protocol window, defaulting legacy rows to 72h."""
-
-        return 48 if int(getattr(batch, "observation_window_hours", 72) or 72) == 48 else 72
+        return ProductTrafficProtocol.observation_window_hours(batch)
 
     def _checkpoint_order_for_batch(
         self,
         batch: ProductTrafficBatch,
     ) -> tuple[str, ...]:
-        return (
-            ACTUAL_CHECKPOINT_ORDER
-            if self._observation_window_hours(batch) == 48
-            else LEGACY_CHECKPOINT_ORDER
-        )
+        return ProductTrafficProtocol.checkpoint_order(batch)
 
     def _terminal_checkpoint_for_batch(self, batch: ProductTrafficBatch) -> str:
-        return self._checkpoint_order_for_batch(batch)[-1]
+        return ProductTrafficProtocol.terminal_checkpoint(batch)
 
     def _observation_title(self, batch: ProductTrafficBatch) -> str:
-        anchor = self._local(batch.started_at or batch.planned_at)
-        window = self._observation_window_hours(batch)
-        if anchor is None:
-            return f"{window} 小时投流观察"
-        return (
-            f"{anchor.month}月{anchor.day}日 {anchor.hour:02d}:{anchor.minute:02d} "
-            f"投流后的 {window} 小时观察结论"
+        return ProductTrafficProtocol.observation_title(
+            batch,
+            localize=self._local,
         )
+
+    def require_current_traffic_protocol(self, batch_id: str) -> None:
+        """Reject writes to immutable legacy 72-hour traffic records."""
+
+        with self.database.session() as session:
+            batch = session.get(ProductTrafficBatch, batch_id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            self.traffic_lifecycle.require_current_protocol(batch)
 
     def __init__(
         self,
@@ -382,6 +366,12 @@ class ProductIntelligenceService:
         self.event_hub = event_hub
         self.notifier = notifier
         self.ledger = ledger
+        self.traffic_protocol = ProductTrafficProtocol()
+        self.traffic_attribution = ProductTrafficAttribution()
+        self.traffic_lifecycle = ProductTrafficLifecycle(
+            baseline_max_age_minutes=settings.product_traffic_baseline_max_age_minutes
+        )
+        self.traffic_accounting = ProductTrafficAccounting(ledger)
         self.timezone = ZoneInfo(settings.product_collection_timezone)
         self._task: asyncio.Task | None = None
         self._collection_lock = asyncio.Lock()
@@ -852,61 +842,22 @@ class ProductIntelligenceService:
         self,
         session,
         batch: ProductTrafficBatch,
+        *,
+        _legacy_fixture: bool = False,
     ) -> list[ProductTrafficCheckpointJob]:
-        """Create the four durable jobs once an actual start exists."""
-
-        started_at = self._utc(batch.started_at)
-        if started_at is None or batch.status in {"planned", "cancelled", "invalidated"}:
-            return []
-        batch_items = session.scalars(
-            select(ProductTrafficBatchItem)
-            .where(ProductTrafficBatchItem.batch_id == batch.id)
-            .order_by(ProductTrafficBatchItem.position)
-        ).all()
-        existing = {
-            row.checkpoint: row
-            for row in session.scalars(
-                select(ProductTrafficCheckpointJob).where(
-                    ProductTrafficCheckpointJob.batch_id == batch.id
-                )
-            ).all()
-        }
-        jobs: list[ProductTrafficCheckpointJob] = []
-        now = self._now().astimezone(timezone.utc)
-        for checkpoint in self._checkpoint_order_for_batch(batch):
-            hours = CHECKPOINT_HOURS[checkpoint]
-            job = existing.get(checkpoint)
-            if job is None:
-                job = ProductTrafficCheckpointJob(
-                    id=f"traffic-checkpoint-job-{uuid4()}",
-                    batch_id=batch.id,
-                    checkpoint=checkpoint,
-                    scheduled_for=started_at + timedelta(hours=hours),
-                    status="scheduled",
-                    total_count=len(batch_items),
-                    created_at=now,
-                    updated_at=now,
-                )
-                session.add(job)
-                session.flush()
-                for batch_item in batch_items:
-                    session.add(
-                        ProductTrafficCheckpointJobItem(
-                            job_id=job.id,
-                            item_id=batch_item.item_id,
-                            status="pending",
-                            created_at=now,
-                            updated_at=now,
-                        )
-                    )
-            jobs.append(job)
-        return jobs
+        return self.traffic_lifecycle.ensure_checkpoint_jobs_in_session(
+            session,
+            batch,
+            now=self._now().astimezone(timezone.utc),
+            allow_legacy_fixture=_legacy_fixture,
+        )
 
     def _checkpoint_job_views(
         self,
         session,
         batch: ProductTrafficBatch,
     ) -> list[ProductTrafficCheckpointJobView]:
+        current_protocol = self._observation_window_hours(batch) == 48
         jobs = session.scalars(
             select(ProductTrafficCheckpointJob)
             .where(ProductTrafficCheckpointJob.batch_id == batch.id)
@@ -935,14 +886,16 @@ class ProductIntelligenceService:
                     last_error_code=job.last_error_code,
                     last_error_detail=job.last_error_detail,
                     can_retry_auto=(
-                        batch.status in {"running", "observing"}
+                        current_protocol
+                        and batch.status in {"running", "observing"}
                         and batch.checkpoint_collection_mode == "auto"
                         and job.status
                         in {"waiting_connection", "partial", "waiting_manual", "circuit_open"}
                         and job.collected_count < job.total_count
                     ),
                     can_complete_manually=(
-                        batch.status in {"running", "observing"}
+                        current_protocol
+                        and batch.status in {"running", "observing"}
                         and job.status != "completed"
                     ),
                     items=[
@@ -971,15 +924,11 @@ class ProductIntelligenceService:
 
     @staticmethod
     def _traffic_conversion(inquiries: int, browses: int) -> float | None:
-        if browses <= 0:
-            return None
-        return round(inquiries / browses * 100, 2)
+        return ProductTrafficAttribution.conversion(inquiries, browses)
 
     @staticmethod
     def _traffic_unit_cost(cost: float, increment: int) -> float | None:
-        if increment <= 0:
-            return None
-        return round(cost / increment, 2)
+        return ProductTrafficAttribution.unit_cost(cost, increment)
 
     def _week_bounds(self, value: datetime | None = None) -> tuple[datetime, datetime]:
         current = (value or self._now()).astimezone(self.timezone)
@@ -1019,8 +968,7 @@ class ProductIntelligenceService:
         batch: ProductTrafficBatch,
         expected_updated_at: datetime,
     ) -> None:
-        if not self._same_timestamp(batch.updated_at, expected_updated_at):
-            raise ProductTrafficConflict("批次已在其他页面更新，请刷新后重试")
+        self.traffic_lifecycle.require_revision(batch, expected_updated_at)
 
     def _existing_batch_event(
         self,
@@ -1070,45 +1018,7 @@ class ProductIntelligenceService:
         batch: ProductTrafficBatch,
         batch_items: list[ProductTrafficBatchItem],
     ) -> str | None:
-        """Return a terminal reason only for a batch that really started."""
-
-        if (
-            batch.started_at is None
-            or batch.status not in {"running", "observing", "closed"}
-            or not batch_items
-        ):
-            return None
-        # An explicitly restored exploratory observation deliberately uses an
-        # older, auditable reference snapshot.  It may collect factual
-        # checkpoints, but `_traffic_batch_view` keeps it permanently outside
-        # decision-grade attribution.
-        if batch.attribution_status == "exploratory":
-            return None
-        if any(
-            item.baseline_captured_at is None
-            or item.baseline_source in {"missing", "pending"}
-            for item in batch_items
-        ):
-            return "missing_baseline"
-        if any(item.baseline_source == "legacy_snapshot" for item in batch_items):
-            return "legacy_baseline"
-        started_at = self._minute_utc(batch.started_at)
-        captured_minutes = [
-            self._minute_utc(item.baseline_captured_at)
-            for item in batch_items
-            if item.baseline_captured_at is not None
-        ]
-        if len(captured_minutes) != len(batch_items):
-            return "missing_baseline"
-        if any(captured_at > started_at for captured_at in captured_minutes):
-            return "invalid_baseline_time"
-        oldest_age = max(
-            int((started_at - captured_at).total_seconds() // 60)
-            for captured_at in captured_minutes
-        )
-        if oldest_age > self.settings.product_traffic_baseline_max_age_minutes:
-            return "stale_baseline"
-        return None
+        return self.traffic_lifecycle.baseline_invalidation_reason(batch, batch_items)
 
     def _invalidate_batch_in_session(
         self,
@@ -1118,6 +1028,7 @@ class ProductIntelligenceService:
         reason: str,
         invalidated_at: datetime,
     ) -> bool:
+        self.traffic_lifecycle.require_current_protocol(batch)
         if batch.status == "invalidated":
             return False
         request_id = f"traffic-auto-invalidate-{batch.id}"
@@ -1153,23 +1064,18 @@ class ProductIntelligenceService:
                 },
                 result={"batch_id": batch.id, "status": "invalidated"},
             )
-        batch.status = "invalidated"
-        batch.invalidated_at = invalidated_at
-        batch.invalidation_reason = reason
-        batch.updated_at = invalidated_at
         jobs = session.scalars(
             select(ProductTrafficCheckpointJob).where(
                 ProductTrafficCheckpointJob.batch_id == batch.id,
                 ProductTrafficCheckpointJob.status != "completed",
             )
         ).all()
-        for job in jobs:
-            job.status = "missed"
-            job.last_error_code = "baseline_invalidated"
-            job.last_error_detail = "基线无效，检查点任务已停止"
-            job.completed_at = invalidated_at
-            job.updated_at = invalidated_at
-        return True
+        return self.traffic_lifecycle.invalidate(
+            batch,
+            jobs,
+            reason=reason,
+            invalidated_at=invalidated_at,
+        )
 
     def _restore_traffic_checkpoint_jobs(self) -> None:
         """Backfill active batches and recover interrupted collecting states."""
@@ -1180,22 +1086,24 @@ class ProductIntelligenceService:
                 select(ProductTrafficBatch).where(
                     ProductTrafficBatch.status.in_(("running", "observing")),
                     ProductTrafficBatch.started_at.is_not(None),
+                    ProductTrafficBatch.observation_window_hours == 48,
                 )
             ).all()
             for batch in batches:
                 self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
-            interrupted = session.scalars(
-                select(ProductTrafficCheckpointJob).where(
-                    ProductTrafficCheckpointJob.status == "collecting"
+            interrupted = session.execute(
+                select(ProductTrafficCheckpointJob, ProductTrafficBatch)
+                .join(
+                    ProductTrafficBatch,
+                    ProductTrafficBatch.id == ProductTrafficCheckpointJob.batch_id,
+                )
+                .where(
+                    ProductTrafficCheckpointJob.status == "collecting",
+                    ProductTrafficBatch.observation_window_hours == 48,
                 )
             ).all()
-            for job in interrupted:
-                job.status = "waiting_manual"
-                job.last_error_code = "service_restarted"
-                job.last_error_detail = (
-                    "服务在采集中重启；已保留成功商品，请手动补齐或明确恢复补采"
-                )
-                job.updated_at = now
+            for job, batch in interrupted:
+                self.traffic_lifecycle.mark_job_interrupted(batch, job, now=now)
             session.commit()
 
     def _invalidate_unusable_traffic_baselines(self) -> list[str]:
@@ -1208,6 +1116,7 @@ class ProductIntelligenceService:
                 select(ProductTrafficBatch).where(
                     ProductTrafficBatch.status.in_(("running", "observing", "closed")),
                     ProductTrafficBatch.started_at.is_not(None),
+                    ProductTrafficBatch.observation_window_hours == 48,
                 )
             ).all()
             for batch in batches:
@@ -1334,7 +1243,10 @@ class ProductIntelligenceService:
         with self.database.session() as session:
             batches = session.scalars(
                 select(ProductTrafficBatch)
-                .where(ProductTrafficBatch.status.in_(("planned", "running", "observing")))
+                .where(
+                    ProductTrafficBatch.status.in_(("planned", "running", "observing")),
+                    ProductTrafficBatch.observation_window_hours == 48,
+                )
                 .order_by(ProductTrafficBatch.planned_at)
                 .limit(50)
             ).all()
@@ -1438,6 +1350,7 @@ class ProductIntelligenceService:
                 )
                 .where(
                     ProductTrafficBatch.status.in_(("running", "observing")),
+                    ProductTrafficBatch.observation_window_hours == 48,
                     ProductTrafficCheckpointJob.scheduled_for <= now,
                     ProductTrafficCheckpointJob.status.in_(
                         ("scheduled", "waiting_connection")
@@ -1450,11 +1363,12 @@ class ProductIntelligenceService:
                 batch = session.get(ProductTrafficBatch, job.batch_id)
                 if batch is None:
                     continue
-                if batch.checkpoint_collection_mode == "manual":
-                    job.status = "waiting_manual"
-                    job.updated_at = now
-                    continue
-                if job.status == "waiting_connection" and not self.settings.xianyu_configured:
+                if not self.traffic_lifecycle.should_dispatch_due_job(
+                    job,
+                    batch,
+                    now=now,
+                    connection_configured=self.settings.xianyu_configured,
+                ):
                     continue
                 due_ids.append(job.id)
             session.commit()
@@ -1468,10 +1382,11 @@ class ProductIntelligenceService:
                 job = session.get(ProductTrafficCheckpointJob, job_id)
                 if job is None or job.status == "completed":
                     return
-                job.status = "waiting_connection"
-                job.last_error_code = "connection_unconfigured"
-                job.last_error_detail = "闲鱼商品采集凭证未配置，任务已保留"
-                job.updated_at = now
+                batch = session.get(ProductTrafficBatch, job.batch_id)
+                if batch is None:
+                    return
+                self.traffic_lifecycle.require_current_protocol(batch)
+                self.traffic_lifecycle.mark_job_waiting_connection(batch, job, now=now)
                 session.commit()
             return
 
@@ -1482,16 +1397,14 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, job.batch_id)
             if batch is None or batch.status not in {"running", "observing"}:
                 return
-            if batch.checkpoint_collection_mode != "auto":
-                job.status = "waiting_manual"
+            self.traffic_lifecycle.require_current_protocol(batch)
+            if not self.traffic_lifecycle.begin_automatic_job(
+                job,
+                batch,
+                now=now,
+            ):
                 session.commit()
                 return
-            job.status = "collecting"
-            job.started_at = job.started_at or now
-            job.last_attempt_at = now
-            job.attempt_count += 1
-            job.last_error_code = None
-            job.last_error_detail = ""
             pending_rows = session.scalars(
                 select(ProductTrafficCheckpointJobItem)
                 .where(
@@ -1537,25 +1450,25 @@ class ProductIntelligenceService:
                     self._mark_checkpoint_job_item_error(job_id, item_id, code, detail)
                     with self.database.session() as session:
                         job = session.get(ProductTrafficCheckpointJob, job_id)
-                        if job is not None:
-                            job.status = "circuit_open"
-                            job.last_error_code = code
-                            job.last_error_detail = detail
-                            job.updated_at = self._now().astimezone(timezone.utc)
                         remaining_ids = [value[0] for value in targets[index + 1 :]]
+                        remaining_rows = []
                         if remaining_ids:
-                            rows = session.scalars(
+                            remaining_rows = session.scalars(
                                 select(ProductTrafficCheckpointJobItem).where(
                                     ProductTrafficCheckpointJobItem.job_id == job_id,
                                     ProductTrafficCheckpointJobItem.item_id.in_(remaining_ids),
                                     ProductTrafficCheckpointJobItem.status == "pending",
                                 )
                             ).all()
-                            for row in rows:
-                                row.status = "protection_skipped"
-                                row.error_code = "access_verification_circuit"
-                                row.error_detail = "首个访问验证后已停止剩余请求"
-                                row.updated_at = self._now().astimezone(timezone.utc)
+                        if job is not None:
+                            self.traffic_lifecycle.open_access_verification_circuit(
+                                batch,
+                                job,
+                                remaining_rows,
+                                code=code,
+                                detail=detail,
+                                now=self._now().astimezone(timezone.utc),
+                            )
                         session.commit()
                     break
                 except Exception as exc:
@@ -1577,10 +1490,17 @@ class ProductIntelligenceService:
             )
             if row is None:
                 return
-            row.status = "failed"
-            row.error_code = code[:64]
-            row.error_detail = detail[:500]
-            row.updated_at = self._now().astimezone(timezone.utc)
+            job = session.get(ProductTrafficCheckpointJob, row.job_id)
+            batch = session.get(ProductTrafficBatch, job.batch_id) if job else None
+            if batch is None:
+                return
+            self.traffic_lifecycle.mark_job_item_error(
+                batch,
+                row,
+                code=code,
+                detail=detail,
+                now=self._now().astimezone(timezone.utc),
+            )
             session.commit()
 
     def _store_automatic_checkpoint_item(self, job_id: str, item_id: int) -> None:
@@ -1607,71 +1527,15 @@ class ProductIntelligenceService:
             )
             if batch is None or batch_item is None or snapshot is None:
                 raise ProductCollectionUnavailable("采集完成但未形成可用商品快照")
-            counts = (
-                snapshot.browse_count,
-                snapshot.collect_count,
-                snapshot.want_count,
-                snapshot.inquiry_count,
+            self.traffic_lifecycle.require_current_protocol(batch)
+            self.traffic_lifecycle.store_automatic_checkpoint_in_session(
+                session,
+                batch=batch,
+                job=job,
+                batch_item=batch_item,
+                snapshot=snapshot,
+                captured_at=captured_at,
             )
-            floor = (
-                batch_item.baseline_browse_count,
-                batch_item.baseline_collect_count,
-                batch_item.baseline_want_count,
-                batch_item.baseline_inquiry_count,
-            )
-            prior = session.scalars(
-                select(ProductTrafficCheckpoint).where(
-                    ProductTrafficCheckpoint.batch_id == job.batch_id,
-                    ProductTrafficCheckpoint.item_id == item_id,
-                    ProductTrafficCheckpoint.checkpoint.in_(
-                        CHECKPOINT_ORDER[: CHECKPOINT_ORDER.index(job.checkpoint)]
-                    ),
-                )
-            ).all()
-            for row in prior:
-                floor = tuple(
-                    max(current, previous)
-                    for current, previous in zip(
-                        floor,
-                        (row.browse_count, row.collect_count, row.want_count, row.inquiry_count),
-                    )
-                )
-            if any(current < previous for current, previous in zip(counts, floor)):
-                raise ProductTrafficConflict("采集累计值低于基线或更早检查点")
-            checkpoint = session.scalar(
-                select(ProductTrafficCheckpoint).where(
-                    ProductTrafficCheckpoint.batch_id == job.batch_id,
-                    ProductTrafficCheckpoint.item_id == item_id,
-                    ProductTrafficCheckpoint.checkpoint == job.checkpoint,
-                )
-            )
-            if checkpoint is None:
-                checkpoint = ProductTrafficCheckpoint(
-                    id=f"traffic-checkpoint-{uuid4()}",
-                    batch_id=job.batch_id,
-                    item_id=item_id,
-                    checkpoint=job.checkpoint,
-                )
-                session.add(checkpoint)
-            checkpoint.browse_count = counts[0]
-            checkpoint.collect_count = counts[1]
-            checkpoint.want_count = counts[2]
-            checkpoint.inquiry_count = counts[3]
-            checkpoint.recorded_at = captured_at
-            checkpoint.source = "automatic"
-            checkpoint.note = "到点自动只读采集"
-            job_item = session.scalar(
-                select(ProductTrafficCheckpointJobItem).where(
-                    ProductTrafficCheckpointJobItem.job_id == job.id,
-                    ProductTrafficCheckpointJobItem.item_id == item_id,
-                )
-            )
-            if job_item is not None:
-                job_item.status = "completed"
-                job_item.captured_at = captured_at
-                job_item.error_code = None
-                job_item.error_detail = ""
-                job_item.updated_at = captured_at
             session.commit()
 
     def _finalize_checkpoint_job(self, job_id: str) -> None:
@@ -1681,39 +1545,20 @@ class ProductIntelligenceService:
             if job is None:
                 return
             batch = session.get(ProductTrafficBatch, job.batch_id)
+            if batch is None:
+                return
+            self.traffic_lifecycle.require_current_protocol(batch)
             rows = session.scalars(
                 select(ProductTrafficCheckpointJobItem).where(
                     ProductTrafficCheckpointJobItem.job_id == job.id
                 )
             ).all()
-            completed_rows = [row for row in rows if row.status == "completed"]
-            job.collected_count = len(completed_rows)
-            job.total_count = len(rows)
-            captured = [self._utc(row.captured_at) for row in completed_rows if row.captured_at]
-            job.captured_at = max(captured) if captured else None
-            if len(completed_rows) == len(rows) and rows:
-                job.status = "completed"
-                job.completed_at = now
-                job.capture_delay_minutes = max(
-                    0,
-                    int((now - self._utc(job.scheduled_for)).total_seconds() // 60),
-                )
-                job.last_error_code = None
-                job.last_error_detail = ""
-                if batch is not None:
-                    batch.status = (
-                        "closed"
-                        if job.checkpoint == self._terminal_checkpoint_for_batch(batch)
-                        else "observing"
-                    )
-                    batch.updated_at = now
-            elif job.status != "circuit_open":
-                job.status = "partial" if completed_rows else "waiting_manual"
-                job.last_error_code = job.last_error_code or "partial_collection"
-                job.last_error_detail = (
-                    f"已采集 {len(completed_rows)}/{len(rows)} 件；不会自动重试"
-                )
-            job.updated_at = now
+            self.traffic_lifecycle.finalize_checkpoint_job(
+                job,
+                batch,
+                rows,
+                now=now,
+            )
             session.commit()
             batch_id = job.batch_id
             checkpoint = job.checkpoint
@@ -5273,6 +5118,7 @@ class ProductIntelligenceService:
         checkpoint_order = self._checkpoint_order_for_batch(batch)
         terminal_checkpoint = self._terminal_checkpoint_for_batch(batch)
         observation_window_hours = self._observation_window_hours(batch)
+        is_legacy_protocol = observation_window_hours == 72
         batch_items = session.scalars(
             select(ProductTrafficBatchItem)
             .where(ProductTrafficBatchItem.batch_id == batch.id)
@@ -5522,11 +5368,9 @@ class ProductIntelligenceService:
             if observation_checkpoint
             else None
         )
-        checkpoint_capture_late = bool(
-            observation_job
-            and observation_job.capture_delay_minutes is not None
-            and observation_job.capture_delay_minutes
-            > CHECKPOINT_MAX_DELAY_MINUTES.get(observation_checkpoint or "", 0)
+        checkpoint_capture_late = ProductTrafficAttribution.checkpoint_capture_is_late(
+            observation_job,
+            observation_checkpoint,
         )
         latest_metric = checkpoint_metrics[-1] if checkpoint_metrics else None
         browse_delta = latest_metric.browse_delta if latest_metric else 0
@@ -5534,211 +5378,40 @@ class ProductIntelligenceService:
         want_delta = latest_metric.want_delta if latest_metric else 0
         inquiry_delta = latest_metric.inquiry_delta if latest_metric else 0
         observation_hours = CHECKPOINT_HOURS.get(observation_checkpoint or "", 0)
-        baseline_missing = bool(started_at) and any(
-            value.baseline_captured_at is None for value in batch_items
+        inconsistent = ProductTrafficAttribution.checkpoint_series_is_inconsistent(
+            list(batch_items),
+            dict(by_item),
+            checkpoint_rank,
         )
-        baseline_ages = [
-            max(
-                0,
-                int(
-                    (
-                        started_at
-                        - (self._utc(value.baseline_captured_at) or started_at)
-                    ).total_seconds()
-                    // 60
-                ),
-            )
-            for value in batch_items
-            if started_at and value.baseline_captured_at is not None
-        ]
-        baseline_age_minutes = max(baseline_ages) if baseline_ages else None
-        prepared_at = self._utc(batch.baseline_prepared_at)
-        baseline_expires_at = (
-            prepared_at
-            + timedelta(minutes=self.settings.product_traffic_baseline_max_age_minutes)
-            if prepared_at
-            else None
+        attribution = ProductTrafficAttribution.classify(
+            batch,
+            list(batch_items),
+            now=self._now().astimezone(timezone.utc),
+            baseline_max_age_minutes=(
+                self.settings.product_traffic_baseline_max_age_minutes
+            ),
+            observation_checkpoint=observation_checkpoint,
+            terminal_checkpoint=terminal_checkpoint,
+            observation_window_hours=observation_window_hours,
+            checkpoint_capture_late=checkpoint_capture_late,
+            attribution_overlap=attribution_overlap,
+            inconsistent=inconsistent,
+            exploratory_available=bool(exploratory["available"]),
+            invalidation_reason_label=invalidation_reason_label,
         )
-        baseline_sources = {value.baseline_source for value in batch_items}
-        exploratory_baseline = bool(
-            batch.attribution_status == "exploratory"
-            or "daily_exploratory" in baseline_sources
-        )
-        baseline_complete = bool(batch_items) and all(
-            value.baseline_captured_at is not None
-            and value.baseline_source
-            in {"remote_refresh", "manual", "legacy_snapshot", "daily_exploratory"}
-            for value in batch_items
-        )
-        reliable_baseline = bool(batch_items) and not is_invalidated and all(
-            value.baseline_captured_at is not None
-            and value.baseline_source in {"remote_refresh", "manual"}
-            for value in batch_items
-        )
-        baseline_fresh_now = bool(
-            prepared_at
-            and baseline_complete
-            and baseline_expires_at
-            and self._now().astimezone(timezone.utc) <= baseline_expires_at
-        )
-        if is_invalidated:
-            baseline_status = "invalidated"
-            baseline_status_label = "基线无效 · 已终止观察"
-        elif batch.status != "planned":
-            baseline_status = (
-                "exploratory"
-                if exploratory_baseline
-                else "legacy"
-                if "legacy_snapshot" in baseline_sources
-                else "used"
-            )
-            baseline_status_label = (
-                "早间参考基线 · 探索观察"
-                if baseline_status == "exploratory"
-                else "历史基线"
-                if baseline_status == "legacy"
-                else "已用于实际投放"
-            )
-        elif not baseline_complete or prepared_at is None:
-            baseline_status = "pending"
-            baseline_status_label = "待准备 T0"
-        elif not baseline_fresh_now:
-            baseline_status = "expired"
-            baseline_status_label = "T0 已过期"
-        else:
-            baseline_status = "ready"
-            baseline_status_label = "T0 已就绪"
-        legacy_baseline = "legacy_snapshot" in baseline_sources
-        baseline_stale = legacy_baseline or (
-            bool(started_at)
-            and bool(
-                baseline_age_minutes is not None
-                and baseline_age_minutes
-                > self.settings.product_traffic_baseline_max_age_minutes
-            )
-        )
-        if is_invalidated:
-            baseline_quality = "invalidated"
-            baseline_quality_label = "基线无效 · 已终止观察"
-            baseline_quality_detail = (
-                f"{invalidation_reason_label}；真实费用、投放时间、商品组合和已有记录均保留，"
-                "但不会再产生检查点提醒或经营结论"
-            )
-        elif exploratory_baseline:
-            baseline_quality = "exploratory"
-            baseline_quality_label = "早间参考基线 · 低置信"
-            baseline_quality_detail = (
-                f"参考快照距实际投放约 {baseline_age_minutes or 0} 分钟；"
-                "允许继续采集和生成方向性观察，但自然增长不能解释为曝光贡献，"
-                "且永久排除预算、时段、复投和商品优先级结论"
-            )
-        elif batch.status == "planned":
-            baseline_quality = baseline_status
-            baseline_quality_label = baseline_status_label
-            baseline_quality_detail = (
-                "T0 已准备，可在 30 分钟内完成人工投放并开始计时"
-                if baseline_status == "ready"
-                else "T0 已超过 30 分钟，需要重新刷新或重新填写"
-                if baseline_status == "expired"
-                else "先刷新整批 T0；远程失败时可人工填写全部商品"
-            )
-        elif baseline_missing:
-            baseline_quality = "missing"
-            baseline_quality_label = "缺少 T0"
-            baseline_quality_detail = "没有可审计的投放前快照，不能进入经营结论"
-        elif baseline_stale:
-            baseline_quality = "weak"
-            baseline_quality_label = "历史 T0" if legacy_baseline else "T0 偏旧"
-            baseline_quality_detail = (
-                "该批次沿用 v2.4 之前的历史快照，数据继续保留，"
-                "但不能进入成熟结论或获得商品复投资格"
-                if legacy_baseline
-                else (
-                    f"T0 距实际投放约 {baseline_age_minutes} 分钟，超过 "
-                    f"{self.settings.product_traffic_baseline_max_age_minutes} 分钟门槛；"
-                    "数据继续保留，但不进入成熟结论"
-                )
-            )
-        else:
-            baseline_quality = "fresh"
-            baseline_quality_label = "T0 新鲜"
-            baseline_quality_detail = (
-                f"T0 距实际投放约 {baseline_age_minutes or 0} 分钟，"
-                "可继续完成长尾观察"
-            )
-        inconsistent = False
-        for batch_item in batch_items:
-            previous = (
-                batch_item.baseline_browse_count,
-                batch_item.baseline_collect_count,
-                batch_item.baseline_want_count,
-                batch_item.baseline_inquiry_count,
-            )
-            for checkpoint in sorted(
-                by_item[batch_item.item_id],
-                key=lambda value: checkpoint_rank.get(value.checkpoint, -1),
-            ):
-                current = (
-                    checkpoint.browse_count,
-                    checkpoint.collect_count,
-                    checkpoint.want_count,
-                    checkpoint.inquiry_count,
-                )
-                if any(current_value < previous_value for current_value, previous_value in zip(current, previous)):
-                    inconsistent = True
-                    break
-                previous = current
-            if inconsistent:
-                break
-
-        if is_invalidated:
-            data_quality = "invalidated"
-        elif batch.status == "planned":
-            data_quality = "planned"
-        elif exploratory_baseline:
-            data_quality = "exploratory_baseline"
-        elif batch.attribution_status in {"overlap", "cohort_overlap"}:
-            data_quality = "confounded"
-        elif baseline_missing:
-            data_quality = "missing_baseline"
-        elif inconsistent:
-            data_quality = "inconsistent"
-        elif checkpoint_capture_late:
-            data_quality = "late_capture"
-        elif attribution_overlap:
-            data_quality = "confounded"
-        elif baseline_stale:
-            data_quality = "stale_baseline"
-        elif observation_checkpoint in (
-            {"h24", "h72"}
-            if observation_window_hours == 72
-            else {terminal_checkpoint}
-        ):
-            data_quality = "mature"
-        elif observation_checkpoint:
-            data_quality = "early"
-        else:
-            data_quality = "baseline"
-        analysis_eligible = data_quality == "mature" and not is_invalidated
-        analysis_tier = (
-            "decision_grade"
-            if analysis_eligible
-            else "exploratory"
-            if exploratory["available"]
-            else "fact_only"
-        )
-        analysis_tier_label = {
-            "decision_grade": "决策级分析",
-            "exploratory": "探索性分析",
-            "fact_only": "事实记录",
-        }[analysis_tier]
-        analysis_confidence = (
-            "high"
-            if analysis_eligible and observation_checkpoint == terminal_checkpoint
-            else "medium"
-            if analysis_eligible
-            else "low"
-        )
+        reliable_baseline = attribution.reliable_baseline
+        baseline_expires_at = attribution.baseline_expires_at
+        baseline_age_minutes = attribution.baseline_age_minutes
+        baseline_status = attribution.baseline_status
+        baseline_status_label = attribution.baseline_status_label
+        baseline_quality = attribution.baseline_quality
+        baseline_quality_label = attribution.baseline_quality_label
+        baseline_quality_detail = attribution.baseline_quality_detail
+        data_quality = attribution.data_quality
+        analysis_eligible = attribution.analysis_eligible
+        analysis_tier = attribution.analysis_tier
+        analysis_tier_label = attribution.analysis_tier_label
+        analysis_confidence = attribution.analysis_confidence
         if is_invalidated:
             # Existing raw checkpoint rows remain available on each item as
             # historical facts, but aggregate deltas must not look like a
@@ -5769,9 +5442,13 @@ class ProductIntelligenceService:
                     planned_actual_delta_label = (
                         f"较计划早 {self._duration_label(abs(planned_actual_delta_minutes))}"
                     )
-        needs_replan = bool(batch.status == "planned" and start_blocked_reason)
+        needs_replan = bool(
+            not is_legacy_protocol
+            and batch.status == "planned"
+            and start_blocked_reason
+        )
         replan_reason = start_blocked_reason if needs_replan else None
-        if batch.status == "planned" and include_replan:
+        if not is_legacy_protocol and batch.status == "planned" and include_replan:
             proposal = self._traffic_replan_proposal(session, batch)
             current_ids = self._batch_external_ids(session, batch.id)
             proposed_ids = proposal["proposed_ids"]
@@ -5801,7 +5478,7 @@ class ProductIntelligenceService:
             observation_window_hours=observation_window_hours,
             terminal_checkpoint=terminal_checkpoint,
             checkpoint_sequence=list(checkpoint_order),
-            is_legacy_protocol=observation_window_hours == 72,
+            is_legacy_protocol=is_legacy_protocol,
             observation_title=self._observation_title(batch),
             checkpoint_jobs=self._checkpoint_job_views(session, batch),
             has_reliable_baseline=reliable_baseline,
@@ -5809,10 +5486,13 @@ class ProductIntelligenceService:
             baseline_status=baseline_status,
             baseline_status_label=baseline_status_label,
             can_prepare_baseline=(
-                batch.status == "planned" and not bool(start_blocked_items)
+                not is_legacy_protocol
+                and batch.status == "planned"
+                and not bool(start_blocked_items)
             ),
             can_start=(
-                batch.status == "planned"
+                not is_legacy_protocol
+                and batch.status == "planned"
                 and not bool(start_blocked_items)
                 and baseline_status == "ready"
             ),
@@ -6013,8 +5693,13 @@ class ProductIntelligenceService:
                 continue
             if not include_later_batches and source_started_at > anchor:
                 continue
-            source_window_hours = 48 if int(other_window_hours or 72) == 48 else 72
-            overlap_window_hours = max(target_window_hours, source_window_hours)
+            source_window_hours = ProductTrafficProtocol.normalize_window_hours(
+                other_window_hours
+            )
+            overlap_window_hours = ProductTrafficAttribution.overlap_window_hours(
+                target_window_hours,
+                source_window_hours,
+            )
             cooldown = timedelta(hours=overlap_window_hours)
             if abs((source_started_at - anchor).total_seconds()) >= cooldown.total_seconds():
                 continue
@@ -6224,8 +5909,7 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status != "planned":
-                raise ProductTrafficConflict("只有尚未开始的批次可以重排")
+            self.traffic_lifecycle.require_replannable(batch)
             proposal = self._traffic_replan_proposal(session, batch)
             canonical = {
                 "batch_id": batch.id,
@@ -6274,6 +5958,7 @@ class ProductIntelligenceService:
         expected_updated_at: datetime,
         preview_hash: str,
     ) -> ProductTrafficBatchView:
+        self.require_current_traffic_protocol(batch_id)
         self._cleanup_traffic_replan_previews()
         payload = {
             "batch_id": batch_id,
@@ -6296,8 +5981,7 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status != "planned":
-                raise ProductTrafficConflict("只有尚未开始的批次可以重排")
+            self.traffic_lifecycle.require_replannable(batch)
             self._require_batch_revision(batch, expected_updated_at)
             preview = self._traffic_replan_previews.get(preview_hash)
             if preview is None or preview["batch_id"] != batch.id:
@@ -6338,22 +6022,18 @@ class ProductIntelligenceService:
             )
             for position, external_id in enumerate(proposal["proposed_ids"]):
                 session.add(
-                    ProductTrafficBatchItem(
+                    self.traffic_lifecycle.new_pending_batch_item(
                         batch_id=batch.id,
                         item_id=item_by_external_id[external_id].id,
                         position=position,
-                        baseline_browse_count=0,
-                        baseline_collect_count=0,
-                        baseline_want_count=0,
-                        baseline_inquiry_count=0,
-                        baseline_captured_at=None,
-                        baseline_source="pending",
                     )
                 )
             changed_at = self._now().astimezone(timezone.utc)
-            batch.planned_at = proposal["proposed_planned_at"]
-            batch.baseline_prepared_at = None
-            batch.updated_at = changed_at
+            self.traffic_lifecycle.apply_replan(
+                batch,
+                planned_at=proposal["proposed_planned_at"],
+                changed_at=changed_at,
+            )
             self._record_batch_event(
                 session,
                 batch_id=batch.id,
@@ -6454,6 +6134,7 @@ class ProductIntelligenceService:
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
             view = self._traffic_batch_view(session, batch)
+            current_protocol = view.observation_window_hours == 48
             batch_items = session.scalars(
                 select(ProductTrafficBatchItem).where(
                     ProductTrafficBatchItem.batch_id == batch.id
@@ -6474,6 +6155,8 @@ class ProductIntelligenceService:
                 for value in batch_items
             )
             reasons: list[str] = []
+            if not current_protocol:
+                reasons.append("历史 72h 曝光批次为只读记录")
             if batch.status != "planned":
                 reasons.append("只有尚未开始的计划批次可以执行开始准备")
             if not ownership_ready:
@@ -6526,16 +6209,23 @@ class ProductIntelligenceService:
                 default=None,
             )
             can_start_cohort = bool(
-                cohort_item_id is not None
+                current_protocol
+                and cohort_item_id is not None
                 and not reasons
                 and view.can_start
                 and not unsafe_overlap_items
             )
             can_start_clean = bool(
-                cohort_item_id is None and not reasons and view.can_start
+                current_protocol
+                and cohort_item_id is None
+                and not reasons
+                and view.can_start
             )
             can_record_actual = (
-                batch.status == "planned" and ownership_ready and bool(overlap_items)
+                current_protocol
+                and batch.status == "planned"
+                and ownership_ready
+                and bool(overlap_items)
                 and cohort_item_id is None
             )
             actions: list[str] = []
@@ -6543,7 +6233,12 @@ class ProductIntelligenceService:
                 actions.append("start")
             elif can_start_cohort:
                 actions.append("start_cohort")
-            elif batch.status == "planned" and ownership_ready and not overlap_items:
+            elif (
+                current_protocol
+                and batch.status == "planned"
+                and ownership_ready
+                and not overlap_items
+            ):
                 actions.extend(["remote_refresh", "manual"])
             elif can_record_actual:
                 actions.extend(["remove_overlap", "replan", "wait", "actual_start"])
@@ -6633,6 +6328,9 @@ class ProductIntelligenceService:
         mode: str,
         items: list[dict],
     ) -> ProductTrafficBatchView:
+        # The protocol guard runs before any adapter call, failure audit, or
+        # request-id replay so immutable 72h history remains byte-for-byte stable.
+        self.require_current_traffic_protocol(batch_id)
         payload = {
             "batch_id": batch_id,
             "expected_updated_at": self._utc(expected_updated_at).isoformat(),
@@ -6663,8 +6361,7 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status != "planned":
-                raise ProductTrafficConflict("已经开始或取消的批次不能重新准备 T0")
+            self.traffic_lifecycle.require_baseline_preparable(batch)
             self._require_batch_revision(batch, expected_updated_at)
             (
                 blocked_items,
@@ -6839,23 +6536,21 @@ class ProductIntelligenceService:
                     ProductTrafficBatchItem.batch_id == batch.id
                 )
             ).all()
-            for batch_item in batch_items:
-                if mode == "manual":
-                    counts = manual_values[batch_item.item_id]
-                    item_captured_at = captured_at
-                else:
-                    counts = fetched[batch_item.item_id][:4]
-                    item_captured_at = fetched[batch_item.item_id][4]
-                (
-                    batch_item.baseline_browse_count,
-                    batch_item.baseline_collect_count,
-                    batch_item.baseline_want_count,
-                    batch_item.baseline_inquiry_count,
-                ) = counts
-                batch_item.baseline_captured_at = item_captured_at
-                batch_item.baseline_source = mode
-            batch.baseline_prepared_at = captured_at
-            batch.updated_at = captured_at
+            baseline_values = (
+                {
+                    item_id: (*counts, captured_at)
+                    for item_id, counts in manual_values.items()
+                }
+                if mode == "manual"
+                else fetched
+            )
+            self.traffic_lifecycle.apply_baseline(
+                batch,
+                batch_items,
+                values=baseline_values,
+                source=mode,
+                captured_at=captured_at,
+            )
             result = self._traffic_batch_view(session, batch)
             self._record_batch_event(
                 session,
@@ -7166,30 +6861,18 @@ class ProductIntelligenceService:
         self,
         session,
         batch: ProductTrafficBatch,
+        *,
+        _legacy_fixture: bool = False,
     ) -> tuple[int | None, bool]:
-        if self.ledger is None or batch.started_at is None:
-            return None, False
-        product_count = int(
-            session.scalar(
-                select(func.count(ProductTrafficBatchItem.id)).where(
-                    ProductTrafficBatchItem.batch_id == batch.id
-                )
-            )
-            or 0
-        )
-        paid_at = self._local(batch.started_at)
-        revision, changed = self.ledger.upsert_system_expense_in_session(
+        return self.traffic_accounting.sync_expense_in_session(
             session,
-            expense_id=f"expense-traffic-{batch.id}",
-            name=f"闲鱼曝光批次 · {product_count} 件商品",
-            category="traffic",
-            amount=batch.actual_cost,
-            paid_at=(paid_at or self._now()).isoformat(),
-            notes="商品经营自动记账；一笔费用对应整个多商品曝光批次。",
+            batch,
+            localize=self._local,
+            now=self._now,
+            allow_legacy_fixture=_legacy_fixture,
         )
-        return revision, changed
 
-    def create_traffic_batch(
+    def create_legacy_planned_traffic_batch_for_test(
         self,
         *,
         request_id: str,
@@ -7200,6 +6883,12 @@ class ProductIntelligenceService:
         note: str,
         checkpoint_collection_mode: str = "auto",
     ) -> ProductTrafficBatchView:
+        """Build a legacy 72-hour planned batch for compatibility fixtures only.
+
+        Production HTTP and browser flows must never call this helper.  New
+        purchases are recorded by ``record_traffic_batch_now`` after the user
+        has already completed the Xianyu purchase.
+        """
         if checkpoint_collection_mode not in {"auto", "manual"}:
             raise ProductTrafficConflict("不支持的检查点采集方式")
         unique_ids = list(dict.fromkeys(item_external_ids))
@@ -7330,6 +7019,36 @@ class ProductIntelligenceService:
         )
         return result
 
+    def create_current_planned_traffic_batch_for_test(
+        self,
+        *,
+        request_id: str,
+        item_external_ids: list[str],
+        planned_at: datetime,
+        actual_cost: float,
+        plan_slot_id: str | None,
+        note: str,
+        checkpoint_collection_mode: str = "auto",
+    ) -> ProductTrafficBatchView:
+        """Build an explicit 48h planned fixture for guarded transition tests."""
+
+        created = self.create_legacy_planned_traffic_batch_for_test(
+            request_id=request_id,
+            item_external_ids=item_external_ids,
+            planned_at=planned_at,
+            actual_cost=actual_cost,
+            plan_slot_id=plan_slot_id,
+            note=note,
+            checkpoint_collection_mode=checkpoint_collection_mode,
+        )
+        with self.database.session() as session:
+            batch = session.get(ProductTrafficBatch, created.id)
+            if batch is None:
+                raise ProductRecordNotFound("曝光批次不存在")
+            batch.observation_window_hours = 48
+            session.commit()
+            return self._traffic_batch_view(session, batch)
+
     async def record_traffic_batch_now(
         self,
         *,
@@ -7344,25 +7063,18 @@ class ProductIntelligenceService:
         """Record one already-purchased batch at the server confirmation minute.
 
         The final confirmation performs one serialized, read-only remote T0
-        collection for every selected listing.  Only a complete live T0 may
-        enter the transaction that creates the batch, expense and audit event.
+        collection for every selected listing.  The purchase fact and its one
+        batch-level expense are preserved even when that collection cannot form
+        a reliable T0; such a batch is terminally fact-only and never retried.
         """
 
-        if not confirmed_already_purchased:
-            raise ProductTrafficConflict("请先确认这批曝光已经在闲鱼真实购买")
-        if plan_slot_id:
-            raise ProductTrafficConflict("新投流记录不再接受经营计划关联")
-        if checkpoint_collection_mode not in {"auto", "manual"}:
-            raise ProductTrafficConflict("不支持的检查点采集方式")
-        unique_ids = list(dict.fromkeys(item_external_ids))
-        if not unique_ids:
-            raise ProductTrafficConflict("至少选择一件商品")
-        if len(unique_ids) != len(item_external_ids):
-            raise ProductTrafficConflict("同一商品不能在一个曝光批次中重复选择")
-        if len(unique_ids) > self.settings.product_traffic_batch_max_items:
-            raise ProductTrafficConflict(
-                f"一个批次最多选择 {self.settings.product_traffic_batch_max_items} 件商品"
-            )
+        unique_ids = self.traffic_lifecycle.validate_record_now_request(
+            item_external_ids=item_external_ids,
+            confirmed_already_purchased=confirmed_already_purchased,
+            plan_slot_id=plan_slot_id,
+            checkpoint_collection_mode=checkpoint_collection_mode,
+            max_items=self.settings.product_traffic_batch_max_items,
+        )
         payload = {
             "item_external_ids": unique_ids,
             "actual_cost": round(actual_cost, 2),
@@ -7428,7 +7140,10 @@ class ProductIntelligenceService:
                     for external_id in unique_ids
                 ]
 
+            confirmed_at = self._now().astimezone(timezone.utc)
+            started_at = self._minute_utc(confirmed_at)
             failures: list[str] = []
+            failure_codes: list[str] = []
             fetched: dict[int, tuple[int, int, int, int, datetime]] = {}
             for index, (monitor_id, item_id, external_id) in enumerate(remote_targets):
                 snapshot_date = self._day_key()
@@ -7468,6 +7183,7 @@ class ProductIntelligenceService:
                 except AdapterAccessVerificationError as exc:
                     code, detail = self._safe_collection_error(exc)
                     failures.append(detail)
+                    failure_codes.append(code)
                     with self.database.session() as session:
                         failed_monitor = session.get(ProductMonitor, monitor_id)
                         if failed_monitor is not None:
@@ -7497,27 +7213,23 @@ class ProductIntelligenceService:
                 except ProductOwnershipRestricted:
                     raise
                 except Exception as exc:
-                    _code, detail = self._safe_collection_error(exc)
+                    code, detail = self._safe_collection_error(exc)
                     failures.append(detail)
+                    failure_codes.append(code)
                     with self.database.session() as session:
                         failed_monitor = session.get(ProductMonitor, monitor_id)
                         if failed_monitor is not None:
                             self._set_monitor_failure(failed_monitor, exc)
                             session.commit()
 
-            if failures or len(fetched) != len(remote_targets):
-                raise ProductCollectionUnavailable(
-                    "整批实时 T0 未全部成功；本次未创建曝光批次或费用，且不会自动重试"
-                )
-
-            captured_at = max(value[4] for value in fetched.values())
+            complete_t0 = not failures and len(fetched) == len(remote_targets)
+            captured_at = (
+                max(value[4] for value in fetched.values()) if complete_t0 else None
+            )
             transaction_now = max(
                 self._now().astimezone(timezone.utc),
-                captured_at,
+                captured_at or confirmed_at,
             )
-            started_at = self._minute_utc(transaction_now)
-            planned_at = started_at
-
             with self.database.session() as session:
                 replay = self._existing_batch_event(
                     session,
@@ -7560,40 +7272,37 @@ class ProductIntelligenceService:
                         "只能选择已确认属于本人且启用监测的商品"
                     )
 
-                batch = ProductTrafficBatch(
-                    id=f"traffic-batch-{uuid4()}",
+                batch = self.traffic_lifecycle.new_actual_batch(
                     request_id=request_id,
-                    plan_slot_id=None,
-                    status="running",
-                    planned_at=planned_at,
                     started_at=started_at,
-                    baseline_prepared_at=captured_at,
-                    recording_mode="actual_now",
-                    observation_window_hours=48,
+                    captured_at=captured_at,
+                    transaction_now=transaction_now,
                     actual_cost=round(actual_cost, 2),
                     note=note.strip(),
                     checkpoint_collection_mode=checkpoint_collection_mode,
-                    created_at=started_at,
-                    updated_at=transaction_now,
                 )
                 session.add(batch)
                 session.flush()
                 for index, external_id in enumerate(unique_ids):
                     monitor = by_external_id[external_id]
-                    values = fetched[monitor.item_id]
-                    session.add(
-                        ProductTrafficBatchItem(
-                            batch_id=batch.id,
-                            item_id=monitor.item_id,
-                            position=index,
-                            baseline_browse_count=values[0],
-                            baseline_collect_count=values[1],
-                            baseline_want_count=values[2],
-                            baseline_inquiry_count=values[3],
-                            baseline_captured_at=values[4],
-                            baseline_source="remote_refresh",
+                    if complete_t0:
+                        values = fetched[monitor.item_id]
+                        session.add(
+                            self.traffic_lifecycle.new_actual_batch_item(
+                                batch_id=batch.id,
+                                item_id=monitor.item_id,
+                                position=index,
+                                baseline=values,
+                            )
                         )
-                    )
+                    else:
+                        session.add(
+                            self.traffic_lifecycle.new_missing_actual_batch_item(
+                                batch_id=batch.id,
+                                item_id=monitor.item_id,
+                                position=index,
+                            )
+                        )
                 session.flush()
                 overlap = self._traffic_overlap_details(
                     session,
@@ -7601,10 +7310,31 @@ class ProductIntelligenceService:
                     anchor_at=started_at,
                     include_later_batches=False,
                 )
-                if overlap["items"]:
-                    batch.recording_mode = "actual_overlap"
-                    batch.attribution_status = "overlap"
-                self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
+                self.traffic_lifecycle.mark_overlap(
+                    batch,
+                    has_overlap=bool(overlap["items"]),
+                )
+                batch_items = list(
+                    session.scalars(
+                        select(ProductTrafficBatchItem).where(
+                            ProductTrafficBatchItem.batch_id == batch.id
+                        )
+                    ).all()
+                )
+                invalidation_reason = (
+                    self._traffic_baseline_invalidation_reason(batch, batch_items)
+                    if complete_t0
+                    else "missing_baseline"
+                )
+                if invalidation_reason:
+                    self._invalidate_batch_in_session(
+                        session,
+                        batch,
+                        reason=invalidation_reason,
+                        invalidated_at=transaction_now,
+                    )
+                else:
+                    self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
                 ledger_revision, ledger_changed = self._sync_traffic_expense_in_session(
                     session,
                     batch,
@@ -7617,7 +7347,18 @@ class ProductIntelligenceService:
                     payload_hash=payload_hash,
                     summary={
                         "item_count": len(unique_ids),
-                        "baseline_source": "live_remote_refresh",
+                        "baseline_source": (
+                            "live_remote_refresh" if complete_t0 else "missing"
+                        ),
+                        "t0_collection_status": (
+                            "complete"
+                            if complete_t0 and not invalidation_reason
+                            else "unreliable"
+                            if complete_t0
+                            else "failed_or_incomplete"
+                        ),
+                        "t0_failure_codes": sorted(set(failure_codes)),
+                        "facts_preserved": True,
                         "overlap_item_count": len(
                             {value["item_id"] for value in overlap["items"]}
                         ),
@@ -7628,6 +7369,7 @@ class ProductIntelligenceService:
                         "batch_id": batch.id,
                         "started_at": started_at.isoformat(),
                         "status": batch.status,
+                        "invalidation_reason": batch.invalidation_reason,
                         "observation_window_hours": 48,
                     },
                 )
@@ -7658,6 +7400,7 @@ class ProductIntelligenceService:
     ) -> ProductTrafficBatchView:
         """Audited repair for a historical start recorded after batch creation."""
 
+        self.require_current_traffic_protocol(batch_id)
         payload = {
             "batch_id": batch_id,
             "expected_created_at": self._utc(expected_created_at).isoformat(),
@@ -7682,20 +7425,13 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.started_at is None:
-                raise ProductTrafficConflict("未开始批次没有可更正的实际时间")
-            if not self._same_timestamp(batch.created_at, expected_created_at):
-                raise ProductTrafficConflict("批次建立时间已变化，请停止更正并重新核对")
-            if not self._same_timestamp(batch.started_at, expected_started_at):
-                raise ProductTrafficConflict("批次实际时间已变化，请停止更正并重新核对")
-            target = self._minute_utc(batch.created_at)
-            current = self._utc(batch.started_at)
-            assert current is not None
-            if target > current:
-                raise ProductTrafficConflict("建立时间晚于实际投放时间，不能自动倒置历史事实")
             transaction_now = self._now().astimezone(timezone.utc)
-            batch.started_at = target
-            batch.updated_at = transaction_now
+            target = self.traffic_lifecycle.correct_start_from_created_at(
+                batch,
+                expected_created_at=expected_created_at,
+                expected_started_at=expected_started_at,
+                transaction_now=transaction_now,
+            )
             batch_items = list(
                 session.scalars(
                     select(ProductTrafficBatchItem).where(
@@ -7763,6 +7499,7 @@ class ProductIntelligenceService:
         missed.  It never upgrades the batch to decision-grade attribution.
         """
 
+        self.require_current_traffic_protocol(batch_id)
         try:
             datetime.fromisoformat(snapshot_date).date()
         except ValueError as exc:
@@ -7788,15 +7525,7 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status != "invalidated" or batch.started_at is None:
-                raise ProductTrafficConflict("只有已真实投放且基线无效的批次可以恢复探索观察")
-            if batch.invalidation_reason not in {
-                "missing_baseline",
-                "legacy_baseline",
-                "stale_baseline",
-                "invalid_baseline_time",
-            }:
-                raise ProductTrafficConflict("当前终止原因不支持探索观察恢复")
+            self.traffic_lifecycle.require_exploratory_restorable(batch)
             started_at = self._utc(batch.started_at)
             assert started_at is not None
             batch_items = list(
@@ -7821,38 +7550,25 @@ class ProductIntelligenceService:
                 )
                 if snapshot is not None:
                     snapshot_by_item[batch_item.item_id] = snapshot
-            if not batch_items or len(snapshot_by_item) != len(batch_items):
-                raise ProductTrafficConflict("指定日期没有覆盖整批商品的投放前参考快照")
-            reference_times: list[datetime] = []
-            for batch_item in batch_items:
-                snapshot = snapshot_by_item[batch_item.item_id]
-                batch_item.baseline_browse_count = snapshot.browse_count
-                batch_item.baseline_collect_count = snapshot.collect_count
-                batch_item.baseline_want_count = snapshot.want_count
-                batch_item.baseline_inquiry_count = snapshot.inquiry_count
-                batch_item.baseline_captured_at = snapshot.captured_at
-                batch_item.baseline_source = "daily_exploratory"
-                reference_times.append(self._utc(snapshot.captured_at))
             transaction_now = self._now().astimezone(timezone.utc)
-            batch.baseline_prepared_at = max(reference_times)
-            batch.status = "running" if batch.completed_at is None else "observing"
-            batch.recording_mode = "exploratory_recovery"
-            batch.attribution_status = "exploratory"
-            batch.invalidated_at = None
-            batch.invalidation_reason = None
-            batch.updated_at = transaction_now
+            self.traffic_lifecycle.restore_exploratory_baseline(
+                batch,
+                batch_items,
+                snapshot_by_item=snapshot_by_item,
+                transaction_now=transaction_now,
+            )
             self._mark_plan_slot_executed(session, batch, transaction_now)
-            for job in session.scalars(
+            invalidated_jobs = session.scalars(
                 select(ProductTrafficCheckpointJob).where(
                     ProductTrafficCheckpointJob.batch_id == batch.id,
                     ProductTrafficCheckpointJob.last_error_code == "baseline_invalidated",
                 )
-            ).all():
-                job.status = "scheduled"
-                job.completed_at = None
-                job.last_error_code = None
-                job.last_error_detail = ""
-                job.updated_at = transaction_now
+            ).all()
+            self.traffic_lifecycle.restore_invalidated_jobs(
+                batch,
+                invalidated_jobs,
+                transaction_now=transaction_now,
+            )
             self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
             self._record_batch_event(
                 session,
@@ -7880,6 +7596,14 @@ class ProductIntelligenceService:
         )
         return result
 
+    def start_legacy_traffic_batch_for_test(
+        self,
+        batch_id: str,
+    ) -> ProductTrafficBatchView:
+        """Materialize a mutable 72h fixture without reopening a production path."""
+
+        return self.start_traffic_batch(batch_id, _legacy_fixture=True)
+
     def start_traffic_batch(
         self,
         batch_id: str,
@@ -7887,15 +7611,25 @@ class ProductIntelligenceService:
         request_id: str | None = None,
         expected_updated_at: datetime | None = None,
         expected_baseline_captured_at: datetime | None = None,
+        _legacy_fixture: bool = False,
     ) -> ProductTrafficBatchView:
-        # Compatibility for existing local Python callers and historical test
-        # fixtures.  The public HTTP route always supplies all three v2.4
-        # guards, so a new browser flow can never enter this branch.
+        # Only the explicitly named test helper may materialize historical
+        # fixtures. Missing production guards must never silently reopen the
+        # retired 72-hour mutation path.
         legacy_internal = (
-            request_id is None
+            _legacy_fixture
+            and request_id is None
             and expected_updated_at is None
             and expected_baseline_captured_at is None
         )
+        if not legacy_internal and (
+            request_id is None
+            or expected_updated_at is None
+            or expected_baseline_captured_at is None
+        ):
+            raise ProductTrafficConflict("启动批次需要完整的请求标识、修订号和 T0 时间")
+        if not legacy_internal:
+            self.require_current_traffic_protocol(batch_id)
         if legacy_internal:
             with self.database.session() as session:
                 batch = session.get(ProductTrafficBatch, batch_id)
@@ -7919,14 +7653,15 @@ class ProductIntelligenceService:
                             .limit(1)
                         )
                         if snapshot:
-                            batch_item.baseline_browse_count = snapshot.browse_count
-                            batch_item.baseline_collect_count = snapshot.collect_count
-                            batch_item.baseline_want_count = snapshot.want_count
-                            batch_item.baseline_inquiry_count = snapshot.inquiry_count
-                            batch_item.baseline_captured_at = prepared_at
-                            batch_item.baseline_source = "legacy_snapshot"
-                    batch.baseline_prepared_at = prepared_at
-                    batch.updated_at = prepared_at
+                            self.traffic_lifecycle.apply_legacy_snapshot_baseline(
+                                batch_item,
+                                snapshot,
+                                prepared_at=prepared_at,
+                            )
+                    self.traffic_lifecycle.finish_legacy_baseline(
+                        batch,
+                        prepared_at=prepared_at,
+                    )
                     session.commit()
                 expected_updated_at = batch.updated_at
                 expected_baseline_captured_at = batch.baseline_prepared_at
@@ -7959,13 +7694,11 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status == "cancelled":
-                raise ProductTrafficConflict("已取消的批次不能开始")
-            if batch.status != "planned":
-                if legacy_internal:
-                    return self._traffic_batch_view(session, batch)
-                raise ProductTrafficConflict("批次已经开始；请刷新页面查看实际开始时间")
-            self._require_batch_revision(batch, expected_updated_at)
+            if not self.traffic_lifecycle.require_startable(
+                batch,
+                legacy_internal=legacy_internal,
+            ):
+                return self._traffic_batch_view(session, batch)
             (
                 blocked_items,
                 blocked_until,
@@ -7980,31 +7713,21 @@ class ProductIntelligenceService:
                 unfinished_observation,
                 global_attribution_gate,
             )
-            if blocked_reason:
-                raise ProductTrafficConflict(blocked_reason)
-            prepared_at = self._utc(batch.baseline_prepared_at)
-            expected_prepared = self._utc(expected_baseline_captured_at)
-            if prepared_at is None or not self._same_timestamp(
-                prepared_at, expected_prepared
-            ):
-                raise ProductTrafficConflict("T0 已变化，请刷新开始预览后重试")
             transaction_now = self._now().astimezone(timezone.utc)
-            if prepared_at + timedelta(
-                minutes=self.settings.product_traffic_baseline_max_age_minutes
-            ) < transaction_now:
-                raise ProductTrafficConflict("T0 已超过 30 分钟，请重新刷新或填写")
             batch_items = session.scalars(
                 select(ProductTrafficBatchItem).where(
                     ProductTrafficBatchItem.batch_id == batch.id
                 )
             ).all()
-            if not batch_items or any(
-                value.baseline_captured_at is None
-                or value.baseline_source
-                not in ({"remote_refresh", "manual", "legacy_snapshot"} if legacy_internal else {"remote_refresh", "manual"})
-                for value in batch_items
-            ):
-                raise ProductTrafficConflict("整批 T0 尚未准备完成")
+            started_at = self.traffic_lifecycle.apply_start(
+                batch,
+                batch_items,
+                expected_updated_at=expected_updated_at,
+                expected_baseline_captured_at=expected_baseline_captured_at,
+                transaction_now=transaction_now,
+                blocked_reason=blocked_reason,
+                legacy_internal=legacy_internal,
+            )
             monitors = {
                 value.item_id: value
                 for value in session.scalars(
@@ -8020,10 +7743,6 @@ class ProductIntelligenceService:
                 for item in batch_items
             ):
                 raise ProductOwnershipRestricted("批次包含未验证为本人或未启用的商品")
-            started_at = self._minute_utc(transaction_now)
-            batch.started_at = started_at
-            batch.status = "running"
-            batch.updated_at = transaction_now
             if self.traffic_growth is not None:
                 try:
                     self.traffic_growth.sync_started_batch_in_session(
@@ -8033,10 +7752,15 @@ class ProductIntelligenceService:
                 except RuntimeError as exc:
                     raise ProductTrafficConflict(str(exc)) from None
             self._mark_plan_slot_executed(session, batch, transaction_now)
-            self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
+            self._ensure_traffic_checkpoint_jobs_in_session(
+                session,
+                batch,
+                _legacy_fixture=legacy_internal,
+            )
             ledger_revision, ledger_changed = self._sync_traffic_expense_in_session(
                 session,
                 batch,
+                _legacy_fixture=legacy_internal,
             )
             result = self._traffic_batch_view(session, batch)
             self._record_batch_event(
@@ -8087,12 +7811,11 @@ class ProductIntelligenceService:
         factual spend but permanently excludes the batch from attribution.
         """
 
-        if not confirmed_already_purchased:
-            raise ProductTrafficConflict("请先确认这笔曝光已经在闲鱼真实购买")
-        if actual_started_at is not None:
-            raise ProductTrafficConflict(
-                "实际投放时间改为确认时由系统记录，请刷新页面后重新确认"
-            )
+        self.require_current_traffic_protocol(batch_id)
+        self.traffic_lifecycle.validate_actual_overlap_request(
+            confirmed_already_purchased=confirmed_already_purchased,
+            actual_started_at=actual_started_at,
+        )
         canonical_items = sorted(
             [dict(value) for value in items],
             key=lambda value: str(value.get("external_id", "")),
@@ -8121,8 +7844,7 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status != "planned":
-                raise ProductTrafficConflict("只有尚未开始的批次可以补记实际投放")
+            self.traffic_lifecycle.require_actual_overlap_recordable(batch)
             self._require_batch_revision(batch, expected_updated_at)
             transaction_now = self._now().astimezone(timezone.utc)
             started_at = self._minute_utc(transaction_now)
@@ -8158,36 +7880,18 @@ class ProductIntelligenceService:
                 raise ProductTrafficConflict(
                     "该实际时间没有重叠商品，请使用正常的 T0 准备与开始流程"
                 )
-            if canonical_items:
-                manual_values = self._manual_baseline_values(
-                    session, batch, canonical_items
-                )
-                for batch_item in batch_items:
-                    (
-                        batch_item.baseline_browse_count,
-                        batch_item.baseline_collect_count,
-                        batch_item.baseline_want_count,
-                        batch_item.baseline_inquiry_count,
-                    ) = manual_values[batch_item.item_id]
-                    batch_item.baseline_captured_at = started_at
-                    batch_item.baseline_source = "manual"
-                batch.baseline_prepared_at = started_at
-                baseline_source = "manual"
-            else:
-                for batch_item in batch_items:
-                    batch_item.baseline_browse_count = 0
-                    batch_item.baseline_collect_count = 0
-                    batch_item.baseline_want_count = 0
-                    batch_item.baseline_inquiry_count = 0
-                    batch_item.baseline_captured_at = None
-                    batch_item.baseline_source = "missing"
-                batch.baseline_prepared_at = None
-                baseline_source = "missing"
-            batch.started_at = started_at
-            batch.status = "running"
-            batch.recording_mode = "actual_overlap"
-            batch.attribution_status = "overlap"
-            batch.updated_at = transaction_now
+            manual_values = (
+                self._manual_baseline_values(session, batch, canonical_items)
+                if canonical_items
+                else None
+            )
+            baseline_source = self.traffic_lifecycle.apply_actual_overlap_start(
+                batch,
+                batch_items,
+                manual_values=manual_values,
+                started_at=started_at,
+                transaction_now=transaction_now,
+            )
             if self.traffic_growth is not None:
                 try:
                     self.traffic_growth.sync_started_batch_in_session(
@@ -8246,7 +7950,7 @@ class ProductIntelligenceService:
             )
         return result
 
-    def complete_traffic_batch(
+    def complete_legacy_traffic_batch_for_test(
         self,
         batch_id: str,
         *,
@@ -8255,31 +7959,48 @@ class ProductIntelligenceService:
         total_exposure: int | None,
         note: str,
     ) -> ProductTrafficBatchView:
+        """Complete a seeded 72h history fixture; never used by production APIs."""
+
+        return self.complete_traffic_batch(
+            batch_id,
+            completed_at=completed_at,
+            actual_cost=actual_cost,
+            total_exposure=total_exposure,
+            note=note,
+            _legacy_fixture=True,
+        )
+
+    def complete_traffic_batch(
+        self,
+        batch_id: str,
+        *,
+        completed_at: datetime | None,
+        actual_cost: float,
+        total_exposure: int | None,
+        note: str,
+        _legacy_fixture: bool = False,
+    ) -> ProductTrafficBatchView:
+        if not _legacy_fixture:
+            self.require_current_traffic_protocol(batch_id)
         ledger_revision = None
         ledger_changed = False
         with self.database.session() as session:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status == "invalidated":
-                raise ProductTrafficConflict(
-                    "该批次已因基线无效终止观察，不能再记录套餐完成"
-                )
-            if batch.status == "planned":
-                raise ProductTrafficConflict("请先点击“开始批次”记录 T0 基线")
-            if batch.status == "cancelled":
-                raise ProductTrafficConflict("已取消的批次不能记录完成")
             completed = self._utc(completed_at) or self._now().astimezone(timezone.utc)
-            batch.completed_at = completed
-            batch.actual_cost = round(actual_cost, 2)
-            batch.total_exposure = total_exposure
-            if note.strip():
-                batch.note = note.strip()
-            if batch.status != "closed":
-                batch.status = "observing"
+            self.traffic_lifecycle.complete(
+                batch,
+                completed_at=completed,
+                actual_cost=actual_cost,
+                total_exposure=total_exposure,
+                note=note,
+                allow_legacy_fixture=_legacy_fixture,
+            )
             ledger_revision, ledger_changed = self._sync_traffic_expense_in_session(
                 session,
                 batch,
+                _legacy_fixture=_legacy_fixture,
             )
             session.commit()
             result = self._traffic_batch_view(session, batch)
@@ -8297,7 +8018,7 @@ class ProductIntelligenceService:
             )
         return result
 
-    def record_traffic_checkpoint(
+    def record_legacy_traffic_checkpoint_for_test(
         self,
         batch_id: str,
         *,
@@ -8306,154 +8027,44 @@ class ProductIntelligenceService:
         items: list[dict],
         note: str,
     ) -> ProductTrafficBatchView:
-        if checkpoint not in CHECKPOINT_HOURS:
-            raise ProductTrafficConflict("不支持的观察检查点")
+        """Append observations to a seeded 72h history fixture for read tests."""
+
+        return self.record_traffic_checkpoint(
+            batch_id,
+            checkpoint=checkpoint,
+            recorded_at=recorded_at,
+            items=items,
+            note=note,
+            _legacy_fixture=True,
+        )
+
+    def record_traffic_checkpoint(
+        self,
+        batch_id: str,
+        *,
+        checkpoint: str,
+        recorded_at: datetime | None,
+        items: list[dict],
+        note: str,
+        _legacy_fixture: bool = False,
+    ) -> ProductTrafficBatchView:
+        if not _legacy_fixture:
+            self.require_current_traffic_protocol(batch_id)
         with self.database.session() as session:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            checkpoint_order = self._checkpoint_order_for_batch(batch)
-            if checkpoint not in checkpoint_order:
-                raise ProductTrafficConflict("该批次协议不包含这个观察检查点")
-            if batch.status == "invalidated":
-                raise ProductTrafficConflict(
-                    "该批次已因基线无效终止观察，不能新增或修改检查点"
-                )
-            if batch.status not in {"running", "observing", "closed"}:
-                raise ProductTrafficConflict("批次尚未开始，不能记录观察数据")
-            batch_items = session.scalars(
-                select(ProductTrafficBatchItem).where(
-                    ProductTrafficBatchItem.batch_id == batch.id
-                )
-            ).all()
-            by_external_id = {
-                batch_item.item.external_id: batch_item for batch_item in batch_items
-            }
-            submitted = {str(value["external_id"]) for value in items}
-            if submitted != set(by_external_id):
-                raise ProductTrafficConflict("每个检查点需要填写该批次的全部商品")
-            recorded = self._utc(recorded_at) or self._now().astimezone(timezone.utc)
-            started_at = self._utc(batch.started_at)
-            if started_at is None:
-                raise ProductTrafficConflict("批次缺少实际开始时间，不能记录检查点")
-            due_at = started_at + timedelta(hours=CHECKPOINT_HOURS[checkpoint])
-            if recorded < due_at:
-                due_label = self._traffic_datetime_label(due_at)
-                raise ProductTrafficConflict(
-                    f"{checkpoint.upper()} 尚未到记录时间；最早可在北京时间 {due_label} 保存"
-                )
-            now_utc = self._now().astimezone(timezone.utc)
-            if recorded > now_utc + timedelta(minutes=5):
-                raise ProductTrafficConflict("检查点记录时间不能晚于当前北京时间")
-            for value in items:
-                batch_item = by_external_id[str(value["external_id"])]
-                submitted_counts = (
-                    int(value["browse_count"]),
-                    int(value.get("collect_count", 0)),
-                    int(value.get("want_count", 0)),
-                    int(value.get("inquiry_count", 0)),
-                )
-                baseline_counts = (
-                    batch_item.baseline_browse_count,
-                    batch_item.baseline_collect_count,
-                    batch_item.baseline_want_count,
-                    batch_item.baseline_inquiry_count,
-                )
-                if any(
-                    submitted < baseline
-                    for submitted, baseline in zip(submitted_counts, baseline_counts)
-                ):
-                    raise ProductTrafficConflict(
-                        f"{batch_item.item.title} 的累计值不能低于 T0 基线"
-                    )
-                other_checkpoints = session.scalars(
-                    select(ProductTrafficCheckpoint).where(
-                        ProductTrafficCheckpoint.batch_id == batch.id,
-                        ProductTrafficCheckpoint.item_id == batch_item.item_id,
-                        ProductTrafficCheckpoint.checkpoint != checkpoint,
-                    )
-                ).all()
-                submitted_rank = checkpoint_order.index(checkpoint)
-                for other in other_checkpoints:
-                    if other.checkpoint not in checkpoint_order:
-                        continue
-                    other_rank = checkpoint_order.index(other.checkpoint)
-                    other_counts = (
-                        other.browse_count,
-                        other.collect_count,
-                        other.want_count,
-                        other.inquiry_count,
-                    )
-                    if other_rank < submitted_rank and any(
-                        submitted < previous
-                        for submitted, previous in zip(submitted_counts, other_counts)
-                    ):
-                        raise ProductTrafficConflict(
-                            f"{batch_item.item.title} 的累计值不能低于更早检查点"
-                        )
-                    if other_rank > submitted_rank and any(
-                        submitted > later
-                        for submitted, later in zip(submitted_counts, other_counts)
-                    ):
-                        raise ProductTrafficConflict(
-                            f"{batch_item.item.title} 的累计值不能高于后续检查点"
-                        )
-                existing = session.scalar(
-                    select(ProductTrafficCheckpoint).where(
-                        ProductTrafficCheckpoint.batch_id == batch.id,
-                        ProductTrafficCheckpoint.item_id == batch_item.item_id,
-                        ProductTrafficCheckpoint.checkpoint == checkpoint,
-                    )
-                )
-                if existing is None:
-                    existing = ProductTrafficCheckpoint(
-                        id=f"traffic-checkpoint-{uuid4()}",
-                        batch_id=batch.id,
-                        item_id=batch_item.item_id,
-                        checkpoint=checkpoint,
-                    )
-                    session.add(existing)
-                existing.browse_count = submitted_counts[0]
-                existing.collect_count = submitted_counts[1]
-                existing.want_count = submitted_counts[2]
-                existing.inquiry_count = submitted_counts[3]
-                existing.recorded_at = recorded
-                existing.source = "manual"
-                existing.note = note.strip()
-            job = session.scalar(
-                select(ProductTrafficCheckpointJob).where(
-                    ProductTrafficCheckpointJob.batch_id == batch.id,
-                    ProductTrafficCheckpointJob.checkpoint == checkpoint,
-                )
+            self.traffic_lifecycle.record_checkpoint_in_session(
+                session,
+                batch,
+                checkpoint=checkpoint,
+                recorded_at=recorded_at,
+                items=items,
+                note=note,
+                now=self._now().astimezone(timezone.utc),
+                datetime_label=self._traffic_datetime_label,
+                allow_legacy_fixture=_legacy_fixture,
             )
-            if job is not None:
-                job_rows = session.scalars(
-                    select(ProductTrafficCheckpointJobItem).where(
-                        ProductTrafficCheckpointJobItem.job_id == job.id
-                    )
-                ).all()
-                for row in job_rows:
-                    row.status = "completed"
-                    row.captured_at = recorded
-                    row.error_code = None
-                    row.error_detail = ""
-                    row.updated_at = recorded
-                job.status = "completed"
-                job.collected_count = len(job_rows)
-                job.total_count = len(job_rows)
-                job.captured_at = recorded
-                job.completed_at = recorded
-                job.capture_delay_minutes = max(
-                    0,
-                    int((recorded - self._utc(job.scheduled_for)).total_seconds() // 60),
-                )
-                job.last_error_code = None
-                job.last_error_detail = ""
-                job.updated_at = recorded
-            if checkpoint == self._terminal_checkpoint_for_batch(batch):
-                batch.status = "closed"
-            elif batch.status == "running":
-                batch.status = "observing"
             session.commit()
             result = self._traffic_batch_view(session, batch)
         self._maintain_plans_after_write()
@@ -8474,8 +8085,8 @@ class ProductIntelligenceService:
         expected_updated_at: datetime,
         mode: str,
     ) -> ProductTrafficBatchView:
-        if mode not in {"auto", "manual"}:
-            raise ProductTrafficConflict("不支持的检查点采集方式")
+        self.require_current_traffic_protocol(batch_id)
+        self.traffic_lifecycle.validate_checkpoint_collection_mode(mode)
         payload_hash = self._payload_hash(
             {
                 "batch_id": batch_id,
@@ -8498,25 +8109,16 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status in {"cancelled", "invalidated", "closed"}:
-                raise ProductTrafficConflict("该批次已结束，不能修改采集方式")
+            self.traffic_lifecycle.require_checkpoint_mode_mutable(batch)
             self._require_batch_revision(batch, expected_updated_at)
             now = self._now().astimezone(timezone.utc)
-            batch.checkpoint_collection_mode = mode
-            batch.updated_at = now
             jobs = self._ensure_traffic_checkpoint_jobs_in_session(session, batch)
-            for job in jobs:
-                if job.status == "completed":
-                    continue
-                if mode == "manual" and self._utc(job.scheduled_for) <= now:
-                    job.status = "waiting_manual"
-                elif (
-                    mode == "auto"
-                    and job.status == "waiting_manual"
-                    and job.attempt_count == 0
-                ):
-                    job.status = "scheduled"
-                job.updated_at = now
+            self.traffic_lifecycle.update_checkpoint_collection_mode(
+                batch,
+                jobs,
+                mode=mode,
+                now=now,
+            )
             self._record_batch_event(
                 session,
                 batch_id=batch.id,
@@ -8537,6 +8139,7 @@ class ProductIntelligenceService:
         request_id: str,
         expected_updated_at: datetime,
     ) -> ProductTrafficBatchView:
+        self.require_current_traffic_protocol(batch_id)
         if checkpoint not in CHECKPOINT_HOURS:
             raise ProductTrafficConflict("不支持的观察检查点")
         payload_hash = self._payload_hash(
@@ -8561,13 +8164,7 @@ class ProductIntelligenceService:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if checkpoint not in self._checkpoint_order_for_batch(batch):
-                raise ProductTrafficConflict("该批次协议不包含这个观察检查点")
-            if batch.status not in {"running", "observing"}:
-                raise ProductTrafficConflict("该批次不再允许补采")
             self._require_batch_revision(batch, expected_updated_at)
-            if batch.checkpoint_collection_mode != "auto":
-                raise ProductTrafficConflict("请先切换到自动采集方式")
             job = session.scalar(
                 select(ProductTrafficCheckpointJob).where(
                     ProductTrafficCheckpointJob.batch_id == batch.id,
@@ -8576,27 +8173,22 @@ class ProductIntelligenceService:
             )
             if job is None:
                 raise ProductRecordNotFound("检查点任务不存在")
-            if job.status == "completed":
-                return self._traffic_batch_view(session, batch)
             rows = session.scalars(
                 select(ProductTrafficCheckpointJobItem).where(
                     ProductTrafficCheckpointJobItem.job_id == job.id,
                     ProductTrafficCheckpointJobItem.status != "completed",
                 )
             ).all()
-            if not rows:
-                raise ProductTrafficConflict("没有需要补采的商品")
             now = self._now().astimezone(timezone.utc)
-            for row in rows:
-                row.status = "pending"
-                row.error_code = None
-                row.error_detail = ""
-                row.updated_at = now
-            job.status = "scheduled"
-            job.last_error_code = None
-            job.last_error_detail = ""
-            job.updated_at = now
-            batch.updated_at = now
+            should_run = self.traffic_lifecycle.prepare_checkpoint_retry(
+                job,
+                rows,
+                batch,
+                checkpoint=checkpoint,
+                now=now,
+            )
+            if not should_run:
+                return self._traffic_batch_view(session, batch)
             self._record_batch_event(
                 session,
                 batch_id=batch.id,
@@ -8616,17 +8208,12 @@ class ProductIntelligenceService:
             return self._traffic_batch_view(session, batch)
 
     def cancel_traffic_batch(self, batch_id: str) -> ProductTrafficBatchView:
+        self.require_current_traffic_protocol(batch_id)
         with self.database.session() as session:
             batch = session.get(ProductTrafficBatch, batch_id)
             if batch is None:
                 raise ProductRecordNotFound("曝光批次不存在")
-            if batch.status == "invalidated":
-                raise ProductTrafficConflict(
-                    "该批次已因基线无效终止观察，必须保留终止状态和真实投放事实"
-                )
-            if batch.status in {"running", "observing", "closed"}:
-                raise ProductTrafficConflict("已经开始的批次不能取消，可继续补齐观察数据")
-            batch.status = "cancelled"
+            self.traffic_lifecycle.cancel(batch)
             if batch.plan_slot_id:
                 slot = session.get(ProductOperatingPlanSlot, batch.plan_slot_id)
                 if slot:

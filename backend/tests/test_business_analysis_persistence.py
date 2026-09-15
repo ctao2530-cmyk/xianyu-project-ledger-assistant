@@ -211,7 +211,7 @@ async def test_run_persists_explainable_ai_analysis_and_is_idempotent(
             == len(created.recommendations)
         )
 
-    latest = service.latest_or_overview()
+    latest = service.latest_or_overview(now=FIXED_NOW)
     history = service.history(limit=20, offset=0)
     detail = service.history_detail(created.analysis_id)
     assert latest.analysis_id == created.analysis_id
@@ -232,7 +232,7 @@ async def test_run_persists_explainable_ai_analysis_and_is_idempotent(
         }
     )
     ledger.save(changed_snapshot, revision)
-    assert service.latest_or_overview().is_stale is True
+    assert service.latest_or_overview(now=FIXED_NOW).is_stale is True
 
 
 @pytest.mark.asyncio
@@ -634,7 +634,7 @@ def test_business_analysis_alembic_migration_upgrades_existing_0013_database(
             )
         }
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-        assert version == ("20260820_0036",)
+        assert version == ("20260907_0045",)
     assert tables == {
         "business_analysis_records",
         "business_analysis_recommendation_events",

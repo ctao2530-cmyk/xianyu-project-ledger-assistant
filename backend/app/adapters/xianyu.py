@@ -27,6 +27,7 @@ from ..channels.base import (
     ChannelMedia,
     ChannelMediaContent,
     ChannelMessage,
+    ChannelMediaTooLargeError,
 )
 from ..config import PROJECT_ROOT, Settings
 from .base import (
@@ -548,22 +549,35 @@ class XianyuAdapter:
             )
             if "content-type" in request.headers:
                 del request.headers["content-type"]
-            response = await self.http.send(request, follow_redirects=False)
+            response = await self.http.send(request, follow_redirects=False, stream=True)
             if response.status_code not in {301, 302, 303, 307, 308}:
                 break
             location = response.headers.get("location") or ""
+            await response.aclose()
             current = _safe_image_url(urljoin(current, location))
             if not current:
                 raise AdapterError("闲鱼图片跳转来源不可信")
         if response is None:
             raise AdapterError("闲鱼图片读取失败")
-        response.raise_for_status()
-        if len(response.content) > 25 * 1024 * 1024:
-            raise AdapterError("闲鱼原图超过本地保存上限")
+        try:
+            if response.status_code == 401:
+                raise LoginExpiredError("闲鱼图片读取需要重新登录")
+            if response.status_code in {403, 429}:
+                raise AdapterAccessVerificationError("闲鱼图片读取触发访问保护")
+            if "text/html" in (response.headers.get("content-type") or "").lower():
+                raise AdapterAccessVerificationError("闲鱼图片返回访问验证页面")
+            response.raise_for_status()
+            data = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(data) + len(chunk) > 25 * 1024 * 1024:
+                    raise ChannelMediaTooLargeError("闲鱼原图超过本地保存上限")
+                data.extend(chunk)
+        finally:
+            await response.aclose()
         content_type = response.headers.get("content-type")
         name = media.original_name or Path(urlparse(current).path).name or None
         return ChannelMediaContent(
-            data=response.content,
+            data=bytes(data),
             mime_type=content_type,
             original_name=name,
         )
@@ -1063,6 +1077,83 @@ class XianyuAdapter:
         return sorted(
             [message for message in parsed if message is not None],
             key=lambda value: value.received_at,
+        )
+
+    async def fetch_messages_page(self, conversation_id: str, *, page_size: int = 100, cursor: object | None = None) -> tuple[list[IncomingMessage], object | None, bool]:
+        """One explicit historical page; the caller owns scope and continuation."""
+        response = await self._request("/r/MessageManager/listUserMessages", [f"{conversation_id}@goofish", False, 9007199254740991 if cursor is None else cursor, min(max(page_size, 1), 200), False])
+        body = response.get("body") or {}
+        if not isinstance(body, dict) or not isinstance(body.get("userMessageModels") or [], list):
+            raise AdapterError("闲鱼历史消息分页响应格式异常")
+        messages = [parse_history_message(model, self.own_user_id) for model in (body.get("userMessageModels") or [])]
+        has_more = body.get("hasMore") in {1, "1", True}
+        next_cursor = body.get("nextCursor") if has_more else None
+        if has_more and (next_cursor is None or str(next_cursor) == str(cursor)):
+            raise AdapterError("闲鱼历史消息分页游标异常")
+        return sorted([row for row in messages if row is not None and row.conversation_id == conversation_id], key=lambda row: (row.received_at, str(row.platform_message_id))), next_cursor, has_more
+
+    async def fetch_all_messages(
+        self,
+        conversation_id: str,
+        *,
+        page_size: int = 100,
+        max_messages: int = 5000,
+    ) -> list[IncomingMessage]:
+        """Read one conversation page by page without changing platform state.
+
+        The recent-message path above remains intentionally single-page because
+        it is also used by listener reconciliation and image recovery. A full
+        history read is an explicit import-only operation.
+        """
+
+        bounded_page_size = min(max(int(page_size), 1), 200)
+        bounded_max = min(max(int(max_messages), bounded_page_size), 5000)
+        cursor: object = 9007199254740991
+        seen_cursors: set[str] = set()
+        messages_by_id: dict[str, IncomingMessage] = {}
+
+        while True:
+            response = await self._request(
+                "/r/MessageManager/listUserMessages",
+                [
+                    f"{conversation_id}@goofish",
+                    False,
+                    cursor,
+                    bounded_page_size,
+                    False,
+                ],
+            )
+            body = response.get("body") or {}
+            if not isinstance(body, dict):
+                raise AdapterError("闲鱼历史消息分页响应格式异常")
+            models = body.get("userMessageModels") or []
+            if not isinstance(models, list):
+                raise AdapterError("闲鱼历史消息分页内容格式异常")
+            for model in models:
+                message = parse_history_message(model, self.own_user_id)
+                if message is None or message.conversation_id != conversation_id:
+                    continue
+                platform_id = str(message.platform_message_id or message.external_id)
+                messages_by_id[platform_id] = message
+
+            has_more = body.get("hasMore") in {1, "1", True}
+            if not has_more:
+                break
+            if len(messages_by_id) >= bounded_max:
+                raise AdapterError("闲鱼历史消息超过单次完整导入安全上限")
+            next_cursor = body.get("nextCursor")
+            cursor_key = str(next_cursor or "").strip()
+            if not cursor_key or cursor_key in seen_cursors:
+                raise AdapterError("闲鱼历史消息分页游标异常")
+            seen_cursors.add(cursor_key)
+            cursor = next_cursor
+
+        return sorted(
+            messages_by_id.values(),
+            key=lambda value: (
+                value.received_at,
+                str(value.platform_message_id or value.external_id),
+            ),
         )
 
     async def fetch_recent_conversation_messages(

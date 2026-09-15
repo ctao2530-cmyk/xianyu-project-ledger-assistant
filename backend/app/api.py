@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 
 from .ai import AIProviderError
 from .config import PROJECT_ROOT
+from .customer_time import utc_from_storage
 from .models import (
     AIGenerationTask,
     Conversation,
@@ -28,6 +29,7 @@ from .schemas import (
     ConversationHistorySearchItem,
     ConversationHistorySearchRequest,
     ConversationListItem,
+    ConversationMessagePage,
     AutomationStatusView,
     AutomationUpdateRequest,
     AITaskView,
@@ -87,6 +89,8 @@ def load_json_list(value: str) -> list[str]:
 
 
 def message_view(message: Message) -> MessageView:
+    from .services.customer_images import CustomerImageArchiveService
+    images = [CustomerImageArchiveService._view(row, "") for row in sorted(message.customer_images, key=lambda row: (row.media_index, row.id)) if row.deleted_at is None]
     return MessageView(
         id=message.id,
         channel=message.channel,
@@ -98,7 +102,10 @@ def message_view(message: Message) -> MessageView:
         content=message.content,
         status=message.status,
         risk_flags=load_json_list(message.risk_flags_json),
-        received_at=message.received_at,
+        received_at=utc_from_storage(message.received_at),
+        source_item_external_id=message.source_item_external_id,
+        images=images,
+        customer_images=images,
     )
 
 
@@ -701,7 +708,7 @@ async def list_conversations(
                     item_title=conversation.item.title if conversation.item else None,
                     unread_count=conversation.unread_count,
                     last_message=last_message.content if last_message else None,
-                    last_message_at=conversation.last_message_at,
+                    last_message_at=utc_from_storage(conversation.last_message_at),
                 )
             )
         return result
@@ -740,6 +747,8 @@ async def preview_conversation_history(
         result = await runtime_from(request).conversation_history_import.preview(
             external_conversation_id=payload.external_conversation_id,
             message_limit=payload.message_limit,
+            full_history=payload.history_scope == "full",
+            **({"paged": True, "continuation_token": payload.continuation_token} if payload.history_scope == "page" else {}),
         )
     except ConversationHistoryImportError as exc:
         _raise_history_import_error(exc)
@@ -778,9 +787,11 @@ async def get_conversation(conversation_id: int, request: Request) -> Conversati
                 select(Message)
                 .where(Message.conversation_id == conversation_id)
                 .order_by(Message.received_at.desc(), Message.id.desc())
-                .limit(100)
+                .limit(101)
             )
         )
+        has_older_messages = len(messages) > 100
+        messages = messages[:100]
         messages.reverse()
         pending = next(
             (
@@ -826,12 +837,10 @@ async def get_conversation(conversation_id: int, request: Request) -> Conversati
                 .limit(1)
             )
             ai_task = ai_task_view(task_row) if task_row else None
-        conversation.unread_count = 0
         linked_customer_id = RequirementExchangeService._linked_customer_id(
             session,
             conversation,
         )
-        session.commit()
         item = (
             ItemView.model_validate(conversation.item) if conversation.item else None
         )
@@ -845,9 +854,54 @@ async def get_conversation(conversation_id: int, request: Request) -> Conversati
             unread_count=conversation.unread_count,
             item=item,
             messages=[message_view(message) for message in messages],
+            has_older_messages=has_older_messages,
             pending_message_id=pending.id if pending else None,
             drafts=drafts,
             ai_task=ai_task,
+        )
+
+
+@router.get(
+    "/conversations/{conversation_id}/messages",
+    response_model=ConversationMessagePage,
+)
+async def get_older_conversation_messages(
+    conversation_id: int,
+    request: Request,
+    before_message_id: int = Query(gt=0),
+    limit: int = Query(default=100, ge=1, le=200),
+) -> ConversationMessagePage:
+    runtime = runtime_from(request)
+    with runtime.database.session() as session:
+        conversation = session.get(Conversation, conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        anchor = session.get(Message, before_message_id)
+        if anchor is None or anchor.conversation_id != conversation_id:
+            raise HTTPException(status_code=404, detail="分页锚点不存在")
+        rows = list(
+            session.scalars(
+                select(Message)
+                .where(
+                    Message.conversation_id == conversation_id,
+                    (
+                        (Message.received_at < anchor.received_at)
+                        | (
+                            (Message.received_at == anchor.received_at)
+                            & (Message.id < anchor.id)
+                        )
+                    ),
+                )
+                .order_by(Message.received_at.desc(), Message.id.desc())
+                .limit(limit + 1)
+            )
+        )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        rows.reverse()
+        return ConversationMessagePage(
+            messages=[message_view(message) for message in rows],
+            has_more=has_more,
         )
 
 

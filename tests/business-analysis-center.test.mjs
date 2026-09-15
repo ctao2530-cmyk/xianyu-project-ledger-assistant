@@ -9,13 +9,13 @@ const stylesPath = new URL("../src/pages/business-analysis.css", import.meta.url
 
 test("AI经营分析中心 remains after data statistics without a standalone goal route", async () => {
   const app = await readFile(appPath, "utf8");
-  const statisticsIndex = app.indexOf('{ label: "数据统计", icon: ChartBar }');
-  const analysisIndex = app.indexOf('{ label: "经营分析中心", icon: ChartLineUp }');
+  const statisticsIndex = app.indexOf('{ label: "数据统计", icon: ChartBar, hidden: true }');
+  const analysisIndex = app.indexOf('{ label: "经营分析中心", displayLabel: "经营分析", icon: ChartLineUp }');
 
   assert.ok(statisticsIndex >= 0);
   assert.ok(analysisIndex > statisticsIndex);
   assert.doesNotMatch(app, /\{ label: "目标计划", icon: Target \}/);
-  assert.match(app, /经营分析中心: \{ title: "AI经营分析中心"/);
+  assert.match(app, /经营分析中心: \{ title: "经营分析"/);
 });
 
 test("analysis client uses explicit read, run, history, and lifecycle feedback APIs", async () => {

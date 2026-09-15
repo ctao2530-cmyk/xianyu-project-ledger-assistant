@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Any
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -30,6 +30,9 @@ class MessageView(BaseModel):
     status: str
     risk_flags: list[str]
     received_at: datetime
+    source_item_external_id: str | None = None
+    images: list[dict[str, Any]] = Field(default_factory=list)
+    customer_images: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DraftView(BaseModel):
@@ -120,6 +123,7 @@ class ConversationDetail(BaseModel):
     unread_count: int
     item: ItemView | None
     messages: list[MessageView]
+    has_older_messages: bool = False
     pending_message_id: int | None
     drafts: list[DraftView]
     ai_task: AITaskView | None
@@ -145,6 +149,8 @@ class ConversationHistorySearchItem(BaseModel):
 class ConversationHistoryPreviewRequest(BaseModel):
     external_conversation_id: str = Field(min_length=1, max_length=128)
     message_limit: int = Field(default=100, ge=1, le=200)
+    history_scope: Literal["recent", "full", "page"] = "recent"
+    continuation_token: str | None = Field(default=None, max_length=4096)
 
 
 class ConversationHistoryPreviewMessage(BaseModel):
@@ -169,6 +175,17 @@ class ConversationHistoryPreviewView(BaseModel):
     existing_count: int
     new_count: int
     unsupported_count: int
+    history_scope: Literal["recent", "full", "page"]
+    image_candidate_count: int = 0
+    has_more: bool = False
+    next_continuation_token: str | None = None
+    history_complete: bool | None = None
+    history_limit: int = 200
+
+
+class ConversationMessagePage(BaseModel):
+    messages: list[MessageView]
+    has_more: bool
 
 
 class ConversationHistoryCommitRequest(BaseModel):
@@ -190,6 +207,8 @@ class ConversationHistoryCommitView(BaseModel):
     image_stored_count: int
     image_failed_count: int
     idempotent: bool
+    has_more: bool = False
+    next_continuation_token: str | None = None
 
 
 class SendRequest(BaseModel):

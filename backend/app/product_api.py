@@ -72,6 +72,15 @@ def require_local_desktop(request: Request) -> None:
         raise HTTPException(status_code=403, detail="仅允许本机桌面助手控制")
 
 
+def require_current_traffic_protocol(request: Request, batch_id: str) -> None:
+    try:
+        service_from(request).require_current_traffic_protocol(batch_id)
+    except ProductRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ProductTrafficConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 @product_router.get("/intelligence", response_model=ProductIntelligenceView)
 async def product_intelligence(request: Request) -> ProductIntelligenceView:
     return service_from(request).overview()
@@ -236,20 +245,11 @@ async def create_traffic_batch(
     payload: ProductTrafficBatchCreateRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
-    try:
-        return service_from(request).create_traffic_batch(
-            request_id=payload.request_id,
-            item_external_ids=payload.item_external_ids,
-            planned_at=payload.planned_at,
-            actual_cost=payload.actual_cost,
-            plan_slot_id=payload.plan_slot_id,
-            note=payload.note,
-            checkpoint_collection_mode=payload.checkpoint_collection_mode,
-        )
-    except ProductRecordNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
-    except (ProductTrafficConflict, ProductOwnershipRestricted) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
+    del payload, request
+    raise HTTPException(
+        status_code=410,
+        detail="旧计划批次入口已停用；请在闲鱼完成真实投流后使用记录接口",
+    )
 
 
 @product_router.post(
@@ -323,6 +323,7 @@ async def replan_traffic_batch(
     payload: ProductTrafficReplanRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return service_from(request).replan_traffic_batch(
             batch_id,
@@ -358,6 +359,7 @@ async def prepare_traffic_batch_baseline(
     payload: ProductTrafficBaselineRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return await service_from(request).prepare_traffic_baseline(
             batch_id,
@@ -383,6 +385,7 @@ async def start_traffic_batch(
     payload: ProductTrafficStartRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return service_from(request).start_traffic_batch(
             batch_id,
@@ -405,6 +408,7 @@ async def record_actual_overlap_start(
     payload: ProductTrafficActualStartRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return service_from(request).record_actual_overlap_start(
             batch_id,
@@ -429,6 +433,7 @@ async def complete_traffic_batch(
     payload: ProductTrafficBatchCompleteRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return service_from(request).complete_traffic_batch(
             batch_id,
@@ -452,6 +457,7 @@ async def record_traffic_checkpoint(
     payload: ProductTrafficCheckpointCreateRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return service_from(request).record_traffic_checkpoint(
             batch_id,
@@ -475,6 +481,7 @@ async def update_traffic_checkpoint_collection_mode(
     payload: ProductTrafficCollectionModeRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return service_from(request).update_traffic_checkpoint_collection_mode(
             batch_id,
@@ -498,6 +505,7 @@ async def retry_traffic_checkpoint_collection(
     payload: ProductTrafficCheckpointRetryRequest,
     request: Request,
 ) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return await service_from(request).retry_traffic_checkpoint_collection(
             batch_id,
@@ -516,6 +524,7 @@ async def retry_traffic_checkpoint_collection(
     response_model=ProductTrafficBatchView,
 )
 async def cancel_traffic_batch(batch_id: str, request: Request) -> ProductTrafficBatchView:
+    require_current_traffic_protocol(request, batch_id)
     try:
         return service_from(request).cancel_traffic_batch(batch_id)
     except ProductRecordNotFound as exc:

@@ -60,6 +60,16 @@ class XianyuAdapterProtocol(Protocol):
         self, conversation_id: str, limit: int
     ) -> list[IncomingMessage]: ...
 
+    async def fetch_all_messages(
+        self,
+        conversation_id: str,
+        *,
+        page_size: int = 100,
+        max_messages: int = 5000,
+    ) -> list[IncomingMessage]: ...
+
+    async def fetch_messages_page(self, conversation_id: str, *, page_size: int = 100, cursor: object | None = None) -> tuple[list[IncomingMessage], object | None, bool]: ...
+
     async def fetch_recent_conversation_messages(
         self, limit: int
     ) -> list[IncomingMessage]: ...

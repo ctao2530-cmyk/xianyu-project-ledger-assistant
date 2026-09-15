@@ -11,7 +11,8 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from .requirement_conversion import blueprint_diff
 
 from ..database import Database
 from ..ledger import LedgerService
@@ -924,6 +925,7 @@ class RequirementExchangeService:
             change_summary=change_summary,
         )
         with self.database.session() as session:
+            session.execute(text('BEGIN IMMEDIATE'))
             case = session.get(RequirementCase, case_id)
             if not case:
                 raise RequirementExchangeError("case_not_found", "需求案例不存在")
@@ -954,6 +956,7 @@ class RequirementExchangeService:
                 case_id=case.id,
                 schema_version="2.0",
                 source_type="manual_edit",
+                import_metadata_json=canonical_json({'diff': blueprint_diff(json.loads(previous.structured_json), blueprint.model_dump(mode='json'))}),
                 source_label="人工编辑",
                 imported_at=utcnow(),
                 version=version_number,

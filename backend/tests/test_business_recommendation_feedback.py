@@ -436,7 +436,7 @@ def test_migration_handles_metadata_created_event_table_before_0016(
             "WHERE type='table' AND name='business_analysis_recommendation_events'"
         ).fetchone()
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-    assert version == ("20260820_0036",)
+    assert version == ("20260907_0045",)
     assert {
         "target_scope",
         "accepted_at",

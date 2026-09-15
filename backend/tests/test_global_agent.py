@@ -12,7 +12,7 @@ from alembic import command
 from alembic.config import Config
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from backend.app.agents.global_agent import (
     GlobalAgentBusinessTools,
@@ -20,6 +20,12 @@ from backend.app.agents.global_agent import (
     GlobalAgentService,
     GlobalAgentServiceError,
 )
+from backend.app.agents.global_agent.graph import GLOBAL_AGENT_GRAPH_NODE_ORDER
+from backend.app.agents.global_agent.langchain_adapter import (
+    LOCAL_RUNNABLE_CONFIG,
+    local_tracing_disabled,
+)
+from backend.app.agents.global_agent.tools import ToolExecution
 from backend.app.ai.base import AIProvider, AIProviderError, ProviderHealth
 from backend.app.config import Settings, get_settings
 from backend.app.database import Database
@@ -29,6 +35,8 @@ from backend.app.global_agent_schemas import (
     AgentCustomerPriceProposal,
     AgentCustomerProposalText,
     AgentCustomerSummaryItem,
+    AgentExecutionPlan,
+    AgentExecutionPlanStage,
     AgentFact,
     AgentMessageCreate,
     AgentModelAnswer,
@@ -52,13 +60,17 @@ from backend.app.models import (
     GlobalAgentMessage,
     GlobalAgentMutationRequest,
     GlobalAgentRun,
+    GlobalAgentRunStep,
     GlobalAgentToolCall,
+    Item,
     Message,
+    ProductMonitor,
     RequirementCase,
     RequirementDocumentVersion,
 )
 from backend.app.services.event_hub import EventHub
 from backend.app.services.customer_intake import CustomerIntakeService
+from langsmith.run_helpers import get_tracing_context
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,21 +91,49 @@ def upgrade(path: Path, revision: str) -> None:
 
 
 class FakeOverview:
+    def __init__(
+        self,
+        *,
+        summary: str = "当前证据基线",
+        ledger_revision: int = 7,
+        is_stale: bool = False,
+    ) -> None:
+        self.summary = summary
+        self.ledger_revision = ledger_revision
+        self.is_stale = is_stale
+
     def model_dump(self, *, mode: str = "json") -> dict:
         return {
-            "summary": "当前证据基线",
+            "summary": self.summary,
             "metrics": {},
             "insights": [],
             "recommendations": [],
+            "data_sources": [],
             "data_gaps": ["仍需真实数据"],
             "period": {"timezone": "Asia/Shanghai"},
-            "generated_at": "2026-08-19T00:00:00Z",
+            "ledger_revision": self.ledger_revision,
+            "generated_at": "2026-08-28T00:00:00Z",
+            "snapshot_time": "2026-08-28T00:00:00Z",
+            "is_stale": self.is_stale,
         }
 
 
 class FakeAnalysis:
-    def latest_or_overview(self) -> FakeOverview:
+    def __init__(self) -> None:
+        self.overview_calls = 0
+        self.latest_calls = 0
+
+    def overview(self) -> FakeOverview:
+        self.overview_calls += 1
         return FakeOverview()
+
+    def latest_or_overview(self) -> FakeOverview:
+        self.latest_calls += 1
+        return FakeOverview(
+            summary="过期历史分析",
+            ledger_revision=1,
+            is_stale=True,
+        )
 
 
 class EvidenceProvider(AIProvider):
@@ -291,6 +331,46 @@ class RequirementArtifactProvider(CustomerContextProvider):
         )
 
 
+class ExecutionPlanProvider(EvidenceProvider):
+    """Always proposes a plan so the service-side request filter can be tested."""
+
+    async def generate_structured(self, prompt: str, *, result_type, **kwargs):
+        self.calls += 1
+        self.prompts.append(json.loads(prompt))
+        return result_type(
+            conclusion="已形成当前问题的处理建议。",
+            facts=[],
+            causes=[],
+            knowledge_citation_ids=[],
+            limitations=[],
+            confidence="medium",
+            observation_period="当前本地快照",
+            next_step="人工核对",
+            target_page="",
+            execution_plan=AgentExecutionPlan(
+                title="客户需求执行计划",
+                objective="只实现用户明确确认的范围",
+                readiness="ready",
+                change_summary="以独立工作区分阶段实施",
+                allowed_changes=["计划列明的代码与测试"],
+                must_not_change=["客户关系与真实业务数据"],
+                out_of_scope=["自动业务动作"],
+                stages=[
+                    AgentExecutionPlanStage(
+                        id="stage_context",
+                        task_key="CTX-100",
+                        workspace_key="customer-context/gateway",
+                        title="上下文授权",
+                        objective="完成只读短时授权",
+                        allowed_changes=["客户上下文网关"],
+                        process_tests=["运行授权对抗性测试"],
+                        acceptance_criteria=["未授权时零客户数据释放"],
+                    )
+                ],
+            ),
+        )
+
+
 class CustomerCreateProposalProvider(CustomerContextProvider):
     """Return a reviewable proposal without performing any write."""
 
@@ -461,6 +541,431 @@ def build_service(
     )
     service.bootstrap_profiles()
     return database, service, rag, hub
+
+
+def test_graph_topology_is_fixed_and_langsmith_tracing_is_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, service, _rag, _hub = build_service(tmp_path)
+    assert service.graph_node_names == GLOBAL_AGENT_GRAPH_NODE_ORDER
+    assert service.graph_node_names == (
+        "prepare_run",
+        "load_context",
+        "collect_evidence",
+        "execute_tools",
+        "build_prompt",
+        "generate_answer",
+        "validate_answer",
+        "persist_answer",
+        "publish_completed",
+    )
+    assert LOCAL_RUNNABLE_CONFIG["callbacks"] == []
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    with local_tracing_disabled():
+        assert get_tracing_context()["enabled"] is False
+
+
+def test_business_tools_use_current_overview_and_report_full_owned_product_count(
+    tmp_path: Path,
+) -> None:
+    database, service, _rag, _hub = build_service(tmp_path)
+    analysis = service.tools.business_analysis_service
+    current = service.tools.business_analysis("")
+    assert current["scope"] == "current_local_business_overview"
+    assert current["summary"] == "当前证据基线"
+    assert current["ledger_revision"] == 7
+    assert current["is_stale"] is False
+    assert analysis.overview_calls == 1
+    assert analysis.latest_calls == 0
+
+    with database.session() as session:
+        for index in range(12):
+            item = Item(
+                external_id=f"owned-current-{index}",
+                title=f"当前卖家商品 {index}",
+            )
+            session.add(item)
+            session.flush()
+            session.add(
+                ProductMonitor(
+                    item_id=item.id,
+                    enabled=index < 4,
+                    ownership_status="owned",
+                    ownership_source="test",
+                )
+            )
+        excluded = Item(external_id="excluded-current", title="其他卖家商品")
+        session.add(excluded)
+        session.flush()
+        session.add(
+            ProductMonitor(
+                item_id=excluded.id,
+                enabled=False,
+                ownership_status="excluded",
+                ownership_source="test",
+            )
+        )
+        session.commit()
+
+    products = service.tools.product_lookup("")
+    assert products["scope"] == "verified_owned_local_product_records_no_remote_collection"
+    assert products["count"] == 12
+    assert products["matched_count"] == 12
+    assert products["returned_count"] == 10
+    assert len(products["products"]) == 10
+    assert all(row["title"] != "其他卖家商品" for row in products["products"])
+
+
+def test_business_tool_results_share_safe_provenance_and_truncation_keeps_it(
+    tmp_path: Path,
+) -> None:
+    database, service, _rag, _hub = build_service(tmp_path)
+    conversation_id, _text_ids, _image_ids = create_customer_conversation(
+        database,
+        suffix="tool-provenance",
+        text_count=1,
+    )
+    arguments = {
+        "customer_summary": {},
+        "product_lookup": {},
+        "project_summary": {},
+        "finance_summary": {},
+        "business_analysis": {},
+        "customer_conversation_context": {"conversation_id": conversation_id},
+    }
+    expected_sources = {
+        "customer_summary": "business_customers",
+        "product_lookup": "owned_product_registry",
+        "project_summary": "business_projects",
+        "finance_summary": "canonical_ledger",
+        "business_analysis": "business_analysis_overview",
+        "customer_conversation_context": "bound_customer_conversation",
+    }
+
+    for name, tool_arguments in arguments.items():
+        result = service.tools.execute(name, tool_arguments).result
+        assert result["source"] == expected_sources[name]
+        assert datetime.fromisoformat(result["observed_at"])
+        assert result["read_only"] is True
+        assert result["sensitivity"] == (
+            "bound_customer_text"
+            if name == "customer_conversation_context"
+            else "business_summary"
+        )
+        if name in {"finance_summary", "business_analysis"}:
+            assert result["revision"] is not None
+        else:
+            assert result["revision"] is None
+
+        bounded = service.tools.bounded_result(result, 1)
+        assert bounded["truncated"] is True
+        assert bounded["source"] == expected_sources[name]
+        assert bounded["observed_at"] == result["observed_at"]
+        assert bounded["revision"] == result["revision"]
+        assert bounded["read_only"] is True
+        assert bounded["sensitivity"] == result["sensitivity"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_reads_persist_tool_results_in_fixed_plan_order(
+    tmp_path: Path,
+) -> None:
+    database, service, _rag, hub = build_service(tmp_path)
+    thread = service.create_thread(
+        AgentThreadCreate(
+            request_id="thread-graph-tool-order",
+            profile_id="profile-codex-default",
+            title="固定工具顺序",
+        )
+    )
+    subscription = hub.subscribe()
+    run = service.submit_message(
+        thread.id,
+        AgentMessageCreate(
+            request_id="message-graph-tool-order",
+            expected_revision=thread.revision,
+            content="分析客户、商品、项目、收入和整体经营，并给出下一步建议",
+        ),
+    )
+    assert (await wait_for_run(service, run.id)).status == "completed"
+    with database.session() as session:
+        calls = list(
+            session.scalars(
+                select(GlobalAgentToolCall)
+                .where(GlobalAgentToolCall.run_id == run.id)
+                .order_by(GlobalAgentToolCall.position.asc())
+            )
+        )
+    expected = [
+        "customer_summary",
+        "product_lookup",
+        "project_summary",
+        "finance_summary",
+        "business_analysis",
+    ]
+    assert [call.position for call in calls] == list(range(5))
+    assert [call.tool_name for call in calls] == expected
+    events = []
+    while not subscription.queue.empty():
+        events.append(subscription.queue.get_nowait())
+    assert [
+        event["name"]
+        for event in events
+        if event.get("type") == "global_agent_tool"
+        and event.get("status") == "running"
+    ] == expected
+    assert [
+        event["name"]
+        for event in events
+        if event.get("type") == "global_agent_tool"
+        and event.get("status") == "completed"
+    ] == expected
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_trace_persists_nine_steps_before_events_and_exposes_only_safe_views(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = CustomerContextProvider()
+    database, service, _rag, hub = build_service(tmp_path, provider=provider)
+    conversation_id, _text_ids, _image_ids = create_customer_conversation(
+        database,
+        suffix="trace-private",
+        text_count=2,
+        image_count=1,
+    )
+    thread = service.create_thread(
+        AgentThreadCreate(
+            request_id="thread-trace-private",
+            profile_id="profile-codex-default",
+            title="轨迹隐私",
+        )
+    )
+    thread = service.update_thread_context(
+        thread.id,
+        AgentThreadContextUpdate(
+            request_id="context-trace-private",
+            expected_revision=thread.revision,
+            context_scope="customer_conversation",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    original_publish = hub.publish_nowait
+    observed: list[dict] = []
+
+    def assert_persisted_before_publish(event: dict) -> None:
+        if event.get("type") == "global_agent_step":
+            with database.session() as session:
+                row = session.get(GlobalAgentRunStep, str(event["step_id"]))
+                assert row is not None and row.status == event["status"]
+        if event.get("type") == "global_agent_tool":
+            with database.session() as session:
+                row = session.get(GlobalAgentToolCall, str(event["tool_id"]))
+                assert row is not None and row.status == event["status"]
+        observed.append(dict(event))
+        original_publish(event)
+
+    monkeypatch.setattr(hub, "publish_nowait", assert_persisted_before_publish)
+    run = service.submit_message(
+        thread.id,
+        AgentMessageCreate(
+            request_id="message-trace-private",
+            expected_revision=thread.revision,
+            content="请分析这个客户的需求，客户原文不得出现在执行轨迹",
+        ),
+    )
+    assert (await wait_for_run(service, run.id)).status == "completed"
+    trace = service.run_trace(run.id)
+    assert [step.node_name for step in trace.steps] == list(
+        GLOBAL_AGENT_GRAPH_NODE_ORDER
+    )
+    assert [step.position for step in trace.steps] == list(range(9))
+    assert trace.completed_steps == 9
+    assert trace.total_steps == 9
+    assert trace.legacy is False
+    assert any(event.get("type") == "global_agent_step" for event in observed)
+    encoded = trace.model_dump_json()
+    for forbidden in (
+        "客户文字 0",
+        "secret-image-content",
+        "conversation_id",
+        "arguments_json",
+        "result_json",
+        "allowed_evidence_message_ids",
+        "untrusted_read_only_tool_results",
+        "system_prompt",
+    ):
+        assert forbidden not in encoded
+    assert trace.tools[0].summary in {
+        "完整核验 · 2 条文字",
+        "已读取最新客户文字总结",
+    }
+    assert trace.tools[0].source == "bound_customer_conversation"
+    assert trace.tools[0].observed_at is not None
+    assert trace.tools[0].revision is None
+    assert trace.tools[0].read_only is True
+    assert trace.tools[0].sensitivity == "bound_customer_text"
+
+    detail = service.thread(thread.id)
+    reference = detail.messages[-1].tool_references[0]
+    assert reference.source == "bound_customer_conversation"
+    assert reference.observed_at is not None
+    assert reference.read_only is True
+
+    # Old assistant JSON remains readable without rewriting the stored record.
+    with database.session() as session:
+        assistant = session.scalar(
+            select(GlobalAgentMessage).where(GlobalAgentMessage.run_id == run.id)
+        )
+        assert assistant is not None
+        legacy_references = json.loads(assistant.tool_refs_json)
+        for legacy_reference in legacy_references:
+            for key in (
+                "source", "observed_at", "revision", "read_only", "sensitivity"
+            ):
+                legacy_reference.pop(key, None)
+        assistant.tool_refs_json = json.dumps(legacy_references, ensure_ascii=False)
+        session.commit()
+    legacy_reference = service.thread(thread.id).messages[-1].tool_references[0]
+    assert legacy_reference.source == "bound_customer_conversation"
+    assert legacy_reference.observed_at is not None
+    assert legacy_reference.read_only is True
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_trace_retains_failed_cancelled_and_legacy_runs(tmp_path: Path) -> None:
+    class Inventing(EvidenceProvider):
+        async def generate_structured(self, prompt: str, *, result_type, **kwargs):
+            return result_type(
+                conclusion="错误引用",
+                facts=[AgentFact(text="虚构事实", evidence_refs=["tool:made-up"])],
+                causes=[],
+                knowledge_citation_ids=[],
+                limitations=[],
+                confidence="low",
+                observation_period="当前",
+                next_step="停止",
+                target_page="",
+            )
+
+    database, service, _rag, _hub = build_service(
+        tmp_path, provider=Inventing()
+    )
+    thread = service.create_thread(
+        AgentThreadCreate(
+            request_id="thread-trace-failure",
+            profile_id="profile-codex-default",
+            title="失败轨迹",
+        )
+    )
+    failed_run = service.submit_message(
+        thread.id,
+        AgentMessageCreate(
+            request_id="message-trace-failure",
+            expected_revision=thread.revision,
+            content="普通问题",
+        ),
+    )
+    assert (await wait_for_run(service, failed_run.id)).status == "failed"
+    failed_trace = service.run_trace(failed_run.id)
+    assert any(step.status == "failed" for step in failed_trace.steps)
+    assert any(step.status == "completed" for step in failed_trace.steps)
+
+    with database.session() as session:
+        session.execute(
+            delete(GlobalAgentRunStep).where(
+                GlobalAgentRunStep.run_id == failed_run.id
+            )
+        )
+        session.commit()
+    legacy_trace = service.run_trace(failed_run.id)
+    assert legacy_trace.legacy is True
+    assert legacy_trace.total_steps == 0
+    assert legacy_trace.decision_summary == "旧记录未保存节点决策摘要。"
+
+    blocking_database, blocking_service, _rag, _hub = build_service(
+        tmp_path / "cancel", provider=BlockingProvider()
+    )
+    blocking_thread = blocking_service.create_thread(
+        AgentThreadCreate(
+            request_id="thread-trace-cancel",
+            profile_id="profile-codex-default",
+            title="取消轨迹",
+        )
+    )
+    cancelled_run = blocking_service.submit_message(
+        blocking_thread.id,
+        AgentMessageCreate(
+            request_id="message-trace-cancel",
+            expected_revision=blocking_thread.revision,
+            content="等待取消",
+        ),
+    )
+    for _ in range(100):
+        if blocking_service.run(cancelled_run.id).status == "running":
+            break
+        await asyncio.sleep(0.01)
+    await blocking_service.cancel_run(cancelled_run.id, "trace-cancel-request")
+    cancelled_trace = blocking_service.run_trace(cancelled_run.id)
+    assert any(step.status == "cancelled" for step in cancelled_trace.steps)
+    with blocking_database.session() as session:
+        assert not session.scalar(
+            select(GlobalAgentRunStep.id).where(
+                GlobalAgentRunStep.run_id == cancelled_run.id,
+                GlobalAgentRunStep.status == "running",
+            )
+        )
+    await service.shutdown()
+    await blocking_service.shutdown()
+
+
+def test_0038_to_0039_trace_migration_startup_idempotency_and_partial_rejection(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "trace-migration.db"
+    upgrade(path, "20260827_0038")
+    upgrade(path, "20260828_0039")
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "20260828_0039",
+        )
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(global_agent_run_steps)")
+        }
+        assert {
+            "id", "run_id", "position", "node_name", "status", "summary",
+            "detail_json", "duration_ms", "started_at", "completed_at", "created_at",
+        } == columns
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert list(connection.execute("PRAGMA foreign_key_check")) == []
+
+    startup_path = tmp_path / "trace-startup.db"
+    upgrade(startup_path, "20260827_0038")
+    startup = Database(f"sqlite:///{startup_path}")
+    startup.create_all()
+    startup.create_all()
+    backups = list(
+        (tmp_path / "backups").glob(
+            "trace-startup-before-global-agent-trace-*.db"
+        )
+    )
+    assert len(backups) == 1
+    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+
+    partial_path = tmp_path / "trace-partial.db"
+    upgrade(partial_path, "20260827_0038")
+    with sqlite3.connect(partial_path) as connection:
+        connection.execute(
+            "CREATE TABLE global_agent_run_steps (id TEXT PRIMARY KEY)"
+        )
+    with pytest.raises(RuntimeError, match="run trace schema is incomplete"):
+        Database(f"sqlite:///{partial_path}").create_all()
 
 
 def test_0032_to_0034_and_startup_idempotency_with_private_backups(
@@ -636,7 +1141,9 @@ def test_customer_context_binding_requires_real_text_conversation_and_is_idempot
         image_count=1,
     )
     options = service.customer_context_options()
-    assert [option.conversation_id for option in options] == [conversation_id]
+    assert {option.conversation_id for option in options} == {conversation_id, image_only_id}
+    image_option = next(option for option in options if option.conversation_id == image_only_id)
+    assert image_option.text_message_count == 0 and image_option.image_message_count == 1
     serialized = json.dumps(
         [option.model_dump(mode="json") for option in options],
         ensure_ascii=False,
@@ -1160,7 +1667,23 @@ async def test_run_is_persisted_before_events_and_uses_selected_provider_only(
     assert detail.messages[-1].answer is not None
     assert detail.messages[-1].answer.requirement_analysis is None
     assert detail.messages[-1].answer.requirement_blueprint is None
+    assert detail.messages[-1].run_elapsed_ms is not None
+    assert detail.messages[-1].run_elapsed_ms >= 0
     assert detail.messages[-1].citations[0].relative_path == "20-Decisions/原则.md"
+    prompt = primary.prompts[-1]
+    assert "本次运行的只读工具结果是当前本地业务事实" in prompt[
+        "freshness_rules"
+    ]["current_run_tools"]
+    assert "不得作为当前经营指标" in prompt["freshness_rules"][
+        "conversation_history"
+    ]
+    business_result = next(
+        row["result"]
+        for row in prompt["untrusted_read_only_tool_results"]
+        if row["tool"] == "business_analysis"
+    )
+    assert business_result["scope"] == "current_local_business_overview"
+    assert business_result["ledger_revision"] == 7
     assert primary.calls == 1
     assert alternate.calls == 0
     with database.session() as session:
@@ -1279,6 +1802,94 @@ def test_requirement_blueprint_rejects_invalid_relationships_and_cycles() -> Non
                 )
             ],
         )
+
+
+def test_execution_plan_requires_unique_task_keys_valid_dependencies_and_no_cycles() -> None:
+    def stage(
+        stage_id: str,
+        task_key: str,
+        dependencies: list[str] | None = None,
+    ) -> AgentExecutionPlanStage:
+        return AgentExecutionPlanStage(
+            id=stage_id,
+            task_key=task_key,
+            workspace_key=f"customer-context/{stage_id}",
+            title=stage_id,
+            objective="完成本阶段范围并形成证据",
+            dependency_task_keys=dependencies or [],
+            allowed_changes=["只修改本阶段列明文件"],
+            process_tests=["运行本阶段定向测试"],
+            acceptance_criteria=["验收证据真实通过"],
+        )
+
+    base = {
+        "title": "客户需求执行计划",
+        "objective": "仅实现已确认范围",
+        "readiness": "ready",
+        "change_summary": "按阶段实施并逐阶段验收",
+        "allowed_changes": ["需求范围内代码"],
+        "must_not_change": ["客户关系与真实业务数据"],
+    }
+    with pytest.raises(ValidationError, match="task_key 必须唯一"):
+        AgentExecutionPlan(
+            **base,
+            stages=[stage("stage_one", "CTX-100"), stage("stage_two", "CTX-100")],
+        )
+    with pytest.raises(ValidationError, match="无效 task_key"):
+        AgentExecutionPlan(
+            **base,
+            stages=[stage("stage_one", "CTX-100", ["CTX-999"])],
+        )
+    with pytest.raises(ValidationError, match="循环依赖"):
+        AgentExecutionPlan(
+            **base,
+            stages=[
+                stage("stage_one", "CTX-100", ["CTX-200"]),
+                stage("stage_two", "CTX-200", ["CTX-100"]),
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_execution_plan_is_kept_only_for_an_explicit_plan_request(
+    tmp_path: Path,
+) -> None:
+    provider = ExecutionPlanProvider()
+    _database, service, _rag, _hub = build_service(tmp_path, provider=provider)
+    thread = service.create_thread(
+        AgentThreadCreate(
+            request_id="thread-execution-plan-filter",
+            profile_id="profile-codex-default",
+            title="执行计划过滤",
+        )
+    )
+    ordinary = service.submit_message(
+        thread.id,
+        AgentMessageCreate(
+            request_id="message-execution-plan-ordinary",
+            expected_revision=thread.revision,
+            content="当前客户最关心什么？",
+        ),
+    )
+    assert (await wait_for_run(service, ordinary.id)).status == "completed"
+    ordinary_answer = service.thread(thread.id).messages[-1].answer
+    assert ordinary_answer is not None
+    assert ordinary_answer.execution_plan is None
+
+    explicit = service.submit_message(
+        thread.id,
+        AgentMessageCreate(
+            request_id="message-execution-plan-explicit",
+            expected_revision=thread.revision,
+            content="请输出分阶段执行计划，并包含 task_key 和验收标准",
+        ),
+    )
+    assert (await wait_for_run(service, explicit.id)).status == "completed"
+    explicit_answer = service.thread(thread.id).messages[-1].answer
+    assert explicit_answer is not None
+    assert explicit_answer.execution_plan is not None
+    assert explicit_answer.execution_plan.stages[0].task_key == "CTX-100"
+    await service.shutdown()
 
 
 @pytest.mark.asyncio
@@ -1528,6 +2139,65 @@ async def test_revision_conflict_get_no_write_cancel_and_soft_delete(tmp_path: P
     assert service.run(run.id).status == "cancelled"
     with database.session() as session:
         assert session.get(GlobalAgentRun, run.id).status == "cancelled"
+        session.add(
+            GlobalAgentToolCall(
+                id="agent-tool-late-after-cancel",
+                run_id=run.id,
+                position=99,
+                tool_name="business_snapshot",
+                arguments_json="{}",
+                result_json="{}",
+                status="cancelled",
+                duration_ms=0,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+        cancelled_step = session.scalar(
+            select(GlobalAgentRunStep).where(
+                GlobalAgentRunStep.run_id == run.id,
+                GlobalAgentRunStep.status == "cancelled",
+            )
+        )
+        assert cancelled_step is not None
+        cancelled_node_name = cancelled_step.node_name
+
+    reference, persisted = service._finish_tool(
+        "agent-tool-late-after-cancel",
+        ToolExecution(
+            name="business_snapshot",
+            label="经营快照",
+            arguments={},
+            result={"amount": 999999},
+            duration_ms=12,
+        ),
+    )
+    service._finish_run_step(
+        run.id,
+        cancelled_node_name,
+        status="failed",
+        summary="晚到失败不得覆盖取消",
+    )
+    assert reference.status == "cancelled"
+    assert persisted == {}
+    with pytest.raises(asyncio.CancelledError):
+        service._start_tool(
+            run.id,
+            100,
+            name="business_snapshot",
+            arguments={},
+        )
+    with database.session() as session:
+        assert session.get(
+            GlobalAgentToolCall, "agent-tool-late-after-cancel"
+        ).status == "cancelled"
+        preserved_step = session.scalar(
+            select(GlobalAgentRunStep).where(
+                GlobalAgentRunStep.run_id == run.id,
+                GlobalAgentRunStep.node_name == cancelled_node_name,
+            )
+        )
+        assert preserved_step is not None and preserved_step.status == "cancelled"
     await service.shutdown()
 
 

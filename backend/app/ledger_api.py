@@ -329,6 +329,7 @@ async def update_ledger_snapshot(
         revision, snapshot = service_from(request).save(
             payload.snapshot,
             payload.expected_revision,
+            sync_customer_lifecycle=True,
         )
     except RevisionConflict as exc:
         raise HTTPException(

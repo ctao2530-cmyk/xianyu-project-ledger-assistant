@@ -1,0 +1,78 @@
+/* Existing pale-purple component language; layout and control consistency. */
+.retained-workspace-layout {
+  --control-gap:8px;
+  --section-gap:24px;
+}
+.retained-workspace-layout :is(.action-workbench nav,.project-list-toolbar,.project-simple-controls,.operating-record-actions,.product-command-actions,.analysis-command-actions>div) {
+  display:flex;align-items:center;flex-wrap:wrap;gap:var(--control-gap);
+}
+.retained-workspace-layout :is(.action-workbench button,.action-workbench a,.project-list-toolbar button,.project-list-toolbar select,.product-command-actions button,.operating-record-actions button,.analysis-command-actions button,.settings-panel-card button) {
+  min-height:44px;line-height:20px;padding:10px 14px;white-space:normal;
+}
+.retained-workspace-layout :is(.project-list-toolbar,.settings-panel-card) :is(input:not([type=checkbox]):not([type=radio]),select) {min-height:44px;}
+.retained-workspace-layout :is(.action-workbench,.project-list-toolbar,.product-command-actions,.operating-record-actions,.analysis-command-actions,.settings-panel-card) :is(button,a,input,select):focus-visible {outline:2px solid #7769de;outline-offset:3px;}
+.retained-workspace-layout button:disabled {cursor:not-allowed;}
+.retained-workspace-layout .action-workbench>header {align-items:center;gap:16px;}
+.retained-workspace-layout .action-workbench>nav {margin:20px 0 24px;gap:8px;}
+.retained-workspace-layout .action-workbench>nav button {padding:8px 12px;}
+.retained-workspace-layout .action-workbench>nav button span {min-width:20px;text-align:center;font-variant-numeric:tabular-nums;}
+.retained-workspace-layout .workbench-action-list article {display:grid;grid-template-columns:84px minmax(0,1fr) 128px auto;gap:20px;padding:18px 0;}
+.retained-workspace-layout .workbench-action-list article>time {text-align:right;font-variant-numeric:tabular-nums;}
+.retained-workspace-layout .workbench-action-list h2 {line-height:24px;}
+.retained-workspace-layout .workbench-action-list p {margin-top:4px;line-height:22px;}
+.retained-workspace-layout .workspace-master .messages-toolbar {border:0;box-shadow:none;border-radius:0;background:transparent;}
+.retained-workspace-layout .workspace-master .customer-hub-more summary {min-height:44px;display:flex;align-items:center;}
+.retained-workspace-layout .customer-list-title {padding-bottom:8px;}
+.retained-workspace-layout .project-list-toolbar {padding:16px;margin-bottom:20px;}
+.retained-workspace-layout .project-list-toolbar>label {flex:1;min-width:220px;}
+.retained-workspace-layout .project-list-toolbar input {width:100%;min-width:0;}
+.retained-workspace-layout .project-list-toolbar>button {margin-left:auto;}
+.retained-workspace-layout .project-hub-toolbar {display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:16px;margin-bottom:20px;}
+.retained-workspace-layout .project-hub-toolbar>label {flex:1;min-width:220px;}
+.retained-workspace-layout .project-hub-toolbar input {width:100%;min-width:0;min-height:44px;}
+.retained-workspace-layout .project-hub-toolbar select {min-height:44px;}
+.retained-workspace-layout .project-hub-status {display:flex;flex-wrap:wrap;gap:4px;}
+.retained-workspace-layout :is(.project-hub-status,.project-hub-actions) button {min-height:44px;padding:8px 12px;}
+.retained-workspace-layout .project-simple-section-tabs {gap:8px;flex-wrap:wrap;margin-bottom:24px;}
+.retained-workspace-layout .product-command-card {display:flex;flex-direction:column-reverse;gap:12px;min-height:0;padding:16px;margin-bottom:24px;}
+.retained-workspace-layout .product-collection-panel {display:flex;align-items:center;flex-wrap:wrap;gap:16px;min-height:0;}
+.retained-workspace-layout .product-collection-panel>div:first-child {flex:1;min-width:220px;}
+.retained-workspace-layout .product-command-copy {width:100%;}
+.retained-workspace-layout .product-command-copy>summary {min-height:44px;display:list-item;padding:12px 0;cursor:pointer;}
+.retained-workspace-layout .product-collection-panel .collection-result {margin:0;max-width:300px;}
+.retained-workspace-layout .product-command-actions {margin-left:auto;}
+.retained-workspace-layout .product-command-card>.product-collection-panel {padding:0;border:0;background:transparent;box-shadow:none;}
+.retained-workspace-layout .product-object-detail .product-detail-grid {grid-template-columns:minmax(0,1fr);}
+.retained-workspace-layout .product-object-detail .product-detail-head {display:flex;flex-wrap:wrap;gap:16px;}
+.retained-workspace-layout .product-object-detail .product-detail-head>div:first-child {flex:1;min-width:220px;}
+.retained-workspace-layout .product-object-detail .product-detail-head>div:last-child {display:flex;flex-wrap:wrap;gap:8px;}
+.retained-workspace-layout .product-object-detail .product-detail-head button {min-height:44px;white-space:nowrap;}
+.retained-workspace-layout .operating-record-actions {justify-content:flex-end;margin-bottom:16px;}
+.retained-workspace-layout .operating-summary-strip {margin-bottom:20px;gap:20px;padding:16px 20px;}
+.retained-workspace-layout .operating-track-card:has(.operating-track-optional:not([open])) {min-height:0;padding:0 16px;margin-bottom:16px;box-shadow:none;}
+.retained-workspace-layout .operating-track-optional>summary {min-height:44px;display:flex;align-items:center;cursor:pointer;}
+.retained-workspace-layout .record-actions {display:flex;flex-wrap:wrap;gap:8px;}
+.retained-workspace-layout .analysis-command-bar {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:24px;padding:20px;}
+.retained-workspace-layout .analysis-command-copy p {margin:12px 0 0;line-height:1.65;}
+.retained-workspace-layout .analysis-command-actions {display:flex;flex-direction:column;align-items:flex-end;gap:12px;}
+.retained-workspace-layout .analysis-command-actions>p {margin:0;}
+.retained-workspace-layout .analysis-queue-filters {display:flex;flex-wrap:wrap;gap:8px;}
+.retained-workspace-layout .settings-panel-card {padding:20px;}
+.retained-workspace-layout .settings-panel-card>header {margin-bottom:20px;}
+@media(max-width:800px) {
+  .retained-workspace-layout .analysis-command-bar {grid-template-columns:minmax(0,1fr);gap:16px;}
+  .retained-workspace-layout .analysis-command-actions {align-items:flex-start;}
+  .retained-workspace-layout .product-command-actions {margin-left:0;width:100%;}
+}
+@media(max-width:600px) {
+  .retained-workspace-layout .project-hub-toolbar>label {flex-basis:100%;min-width:0;}
+  .retained-workspace-layout .project-hub-toolbar>select {width:100%;}
+  .retained-workspace-layout .workbench-action-list article {grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;}
+  .retained-workspace-layout .workbench-action-list .workbench-category {grid-column:1/-1;}
+  .retained-workspace-layout .workbench-action-list article>div {grid-column:1/-1;}
+  .retained-workspace-layout .workbench-action-list article>time {text-align:left;}
+  .retained-workspace-layout .project-list-toolbar>label {flex-basis:100%;min-width:0;}
+  .retained-workspace-layout .project-list-toolbar>select {flex:1;min-width:0;}
+  .retained-workspace-layout .operating-summary-strip {gap:12px;padding:16px 12px;flex-wrap:wrap;}
+  .retained-workspace-layout .settings-panel-card {padding:16px;}
+}

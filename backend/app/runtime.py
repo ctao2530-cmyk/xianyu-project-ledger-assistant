@@ -10,6 +10,7 @@ from .ai import (
     CodexCliProvider,
     DeepSeekProvider,
     OpenAICompatibleProvider,
+    OpenAIResponsesClient,
     build_ai_provider,
 )
 from .agents.global_agent import (
@@ -47,6 +48,9 @@ from .services.conversation_history_import import ConversationHistoryImportServi
 from .services.customer_relationships import CustomerRelationshipService
 from .services.customer_intake import CustomerIntakeService
 from .services.customer_images import CustomerImageArchiveService
+from .services.customer_context_gateway import CustomerContextGateway
+from .services.customer_context_reader import CustomerContextReadService
+from .services.customer_auto_analysis import CustomerAutoAnalysisService
 from .services.event_hub import EventHub
 from .services.listener import ListenerService
 from .services.listener_state import ListenerStateTracker
@@ -60,6 +64,7 @@ from .services.project_product_attribution import ProjectProductAttributionServi
 from .services.requirements import RequirementAnalysisService
 from .services.requirement_exchange import RequirementExchangeService
 from .services.requirement_materials import RequirementMaterialsService
+from .services.project_task_drafts import ProjectTaskDraftService
 from .services.reply_strategy import ReplyStrategyService
 from .services.status import RuntimeStatus
 from .services.style_learning import StyleLearningService
@@ -110,12 +115,16 @@ class Runtime:
     connection_recovery: ConnectionRecoveryService
     conversation_history_import: ConversationHistoryImportService
     customer_images: CustomerImageArchiveService
+    customer_context_gateway: CustomerContextGateway
+    customer_context_reader: CustomerContextReadService
+    customer_auto_analysis: CustomerAutoAnalysisService
     codex_plans: CodexPlanService
     codex_sync: CodexSyncService
     codex_development: CodexDevelopmentService
     codex_verification: CodexVerificationService
     global_agent: GlobalAgentService
     phrase_library: PhraseLibraryService
+    project_task_drafts: ProjectTaskDraftService
 
 
 def build_runtime(settings: Settings) -> Runtime:
@@ -303,6 +312,19 @@ def build_runtime(settings: Settings) -> Runtime:
         database,
         settings.project_root,
     )
+    customer_context_gateway = CustomerContextGateway(database)
+    customer_auto_analysis = CustomerAutoAnalysisService(
+        database,
+        settings,
+        event_hub,
+        OpenAIResponsesClient(settings),
+    )
+    customer_context_reader = CustomerContextReadService(
+        database,
+        customer_context_gateway,
+        settings.project_root,
+        customer_auto_analysis,
+    )
     processor = MessageProcessor(
         database,
         adapter,
@@ -311,22 +333,8 @@ def build_runtime(settings: Settings) -> Runtime:
         history_limit=settings.xianyu_history_limit,
         context_hydration_timeout_seconds=settings.xianyu_context_hydration_timeout_seconds,
         item_cache_ttl_seconds=settings.xianyu_item_cache_ttl_seconds,
-        reply_burst_coalesce_seconds=settings.reply_burst_coalesce_seconds,
         reply_drafts_enabled=settings.customer_reply_drafts_enabled,
-        sales_analysis_enabled=(
-            settings.customer_quote_conversion_enabled
-            and settings.sales_agent_enabled
-            and settings.sales_agent_auto_analyze
-        ),
-        sales_agent=(
-            sales_agent
-            if (
-                settings.customer_quote_conversion_enabled
-                and settings.sales_agent_enabled
-                and settings.sales_agent_auto_analyze
-            )
-            else None
-        ),
+        customer_analysis=customer_auto_analysis,
         customer_images=customer_images,
         media_fetchers={
             "xianyu": adapter.fetch_media,
@@ -397,6 +405,7 @@ def build_runtime(settings: Settings) -> Runtime:
     global_agent.bootstrap_profiles()
     global_agent.recover_orphaned_runs()
     phrase_library = PhraseLibraryService(database)
+    project_task_drafts = ProjectTaskDraftService(database, ledger)
     return Runtime(
         settings=settings,
         database=database,
@@ -444,6 +453,10 @@ def build_runtime(settings: Settings) -> Runtime:
         connection_recovery=connection_recovery,
         conversation_history_import=conversation_history_import,
         customer_images=customer_images,
+        customer_context_gateway=customer_context_gateway,
+        customer_context_reader=customer_context_reader,
+        customer_auto_analysis=customer_auto_analysis,
         global_agent=global_agent,
         phrase_library=phrase_library,
+        project_task_drafts=project_task_drafts,
     )

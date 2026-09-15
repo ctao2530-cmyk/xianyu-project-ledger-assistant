@@ -77,6 +77,8 @@ class Message(Base):
     status: Mapped[str] = mapped_column(String(32), default="new", index=True)
     risk_flags_json: Mapped[str] = mapped_column(Text, default="[]")
     client_send_uuid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Snapshot only when supplied with this message; never backfill from current conversation.item_id.
+    source_item_external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     received_at: Mapped[datetime] = mapped_column(default=utcnow)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
@@ -446,10 +448,18 @@ class RequirementDocumentVersion(Base):
     case_id: Mapped[str | None] = mapped_column(
         ForeignKey("requirement_cases.id"), nullable=True, index=True
     )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("business_projects.id"), nullable=True, index=True
+    )
     schema_version: Mapped[str] = mapped_column(String(16), default="1.0")
     source_type: Mapped[str] = mapped_column(String(32), default="codex_cli")
     source_label: Mapped[str] = mapped_column(String(255), default="Codex 生成")
     imported_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    source_filename: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    source_sha256: Mapped[str] = mapped_column(
+        String(64), default="", server_default="", index=True
+    )
+    import_metadata_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     version: Mapped[int] = mapped_column()
     title: Mapped[str] = mapped_column(String(300))
     readiness: Mapped[str] = mapped_column(String(32))
@@ -466,6 +476,13 @@ class RequirementDocumentVersion(Base):
             "conversation_id", "version", name="uq_requirement_conversation_version"
         ),
         UniqueConstraint("case_id", "version", name="uq_requirement_case_version"),
+        Index(
+            "uq_requirement_project_version_partial",
+            "project_id",
+            "version",
+            unique=True,
+            sqlite_where=project_id.is_not(None),
+        ),
         Index(
             "idx_requirement_versions_conversation_created",
             "conversation_id",
@@ -760,6 +777,14 @@ class BusinessTask(Base):
     stage_payload_json: Mapped[str] = mapped_column(Text, default="{}")
     task_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     stage_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    workspace_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    dependency_task_keys_json: Mapped[str] = mapped_column(
+        Text, default="[]", server_default="[]"
+    )
+    deliverables_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    requirement_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("requirement_document_versions.id"), nullable=True, index=True
+    )
     codex_plan_id: Mapped[str | None] = mapped_column(
         ForeignKey("codex_development_plans.id"), nullable=True, index=True
     )
@@ -779,6 +804,51 @@ class BusinessTask(Base):
 
     __table_args__ = (
         UniqueConstraint("project_id", "task_key", name="uq_business_task_project_task_key"),
+    )
+
+
+class ProjectTaskDraftPreview(Base):
+    """Immutable task-diff preview tied to one blueprint and ledger revision."""
+
+    __tablename__ = "project_task_draft_previews"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("business_projects.id", ondelete="CASCADE"), index=True
+    )
+    requirement_version_id: Mapped[int] = mapped_column(
+        ForeignKey("requirement_document_versions.id", ondelete="CASCADE"), index=True
+    )
+    project_revision: Mapped[int] = mapped_column(Integer, index=True)
+    blueprint_hash: Mapped[str] = mapped_column(String(64))
+    preview_token_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="open", server_default="open", index=True)
+    summary_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class ProjectTaskDraftItem(Base):
+    __tablename__ = "project_task_draft_items"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    preview_id: Mapped[str] = mapped_column(
+        ForeignKey("project_task_draft_previews.id", ondelete="CASCADE"), index=True
+    )
+    task_key: Mapped[str] = mapped_column(String(128))
+    workspace_key: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    stage_key: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    classification: Mapped[str] = mapped_column(String(32), index=True)
+    current_payload_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
+    proposed_payload_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
+    protected_fields_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    conflict_reason: Mapped[str] = mapped_column(Text, default="", server_default="")
+    selected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    ordinal: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    __table_args__ = (
+        UniqueConstraint("preview_id", "task_key", name="uq_task_draft_preview_task_key"),
     )
 
 
@@ -2762,6 +2832,32 @@ class GlobalAgentRun(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
 
 
+class GlobalAgentRunStep(Base):
+    """Persisted, redacted observability for one fixed LangGraph node."""
+
+    __tablename__ = "global_agent_run_steps"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("global_agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    node_name: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    summary: Mapped[str] = mapped_column(String(500), default="")
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "position", name="uq_global_agent_run_step_position"
+        ),
+    )
+
+
 class GlobalAgentConversationSummary(Base):
     """Immutable versioned summary of one bound customer's text conversation."""
 
@@ -2801,6 +2897,419 @@ class GlobalAgentConversationSummary(Base):
             "version",
         ),
     )
+
+
+class CustomerContextGrant(Base):
+    """Short-lived operator authorization for one bound customer conversation."""
+
+    __tablename__ = "customer_context_grants"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("global_agent_threads.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="RESTRICT"), index=True
+    )
+    provider_scope: Mapped[str] = mapped_column(String(32), default="openai", index=True)
+    audience: Mapped[str] = mapped_column(String(32), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    allow_text: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_images: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_artifacts: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_new_messages: Mapped[bool] = mapped_column(Boolean, default=True)
+    consent_policy_version: Mapped[str] = mapped_column(String(32), default="1")
+    consent_text_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    authorization_note: Mapped[str] = mapped_column(Text, default="")
+    confirmed_at: Mapped[datetime] = mapped_column(index=True)
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        Index(
+            "idx_customer_context_grants_thread_status",
+            "thread_id",
+            "status",
+        ),
+    )
+
+
+class CustomerContextOAuthBinding(Base):
+    """Hashed OAuth access-token binding to one operator-approved grant."""
+
+    __tablename__ = "customer_context_oauth_bindings"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    grant_id: Mapped[str] = mapped_column(
+        ForeignKey("customer_context_grants.id", ondelete="CASCADE"), index=True
+    )
+    issuer: Mapped[str] = mapped_column(String(512))
+    audience: Mapped[str] = mapped_column(String(512))
+    subject_hash: Mapped[str] = mapped_column(String(64), index=True)
+    client_id_hash: Mapped[str] = mapped_column(String(64), index=True)
+    scopes_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    issued_at: Mapped[datetime] = mapped_column(index=True)
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    last_used_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+    __table_args__ = (
+        Index(
+            "idx_customer_context_oauth_binding_grant_expiry",
+            "grant_id",
+            "expires_at",
+        ),
+    )
+
+
+class CustomerContextTunnelBinding(Base):
+    """Current operator-approved grant exposed through one private tunnel slot."""
+
+    __tablename__ = "customer_context_tunnel_bindings"
+
+    slot: Mapped[str] = mapped_column(String(64), primary_key=True)
+    grant_id: Mapped[str] = mapped_column(
+        ForeignKey("customer_context_grants.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow, index=True)
+
+
+class CustomerContextThreadBinding(Base):
+    """Opaque per-ChatGPT-thread key bound to one approved customer grant."""
+
+    __tablename__ = "customer_context_thread_bindings"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    context_key_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True
+    )
+    context_key_hint: Mapped[str] = mapped_column(String(16), default="")
+    grant_id: Mapped[str] = mapped_column(
+        ForeignKey("customer_context_grants.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    auth_mode: Mapped[str] = mapped_column(String(32), index=True)
+    owner_issuer: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    owner_subject_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    owner_client_id_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        default=utcnow, onupdate=utcnow, index=True
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_customer_context_thread_binding_mode_status_expiry",
+            "auth_mode",
+            "status",
+            "expires_at",
+        ),
+    )
+
+
+class CustomerContextAccessAudit(Base):
+    """Sanitized receipt for one customer-context access attempt."""
+
+    __tablename__ = "customer_context_access_audits"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    grant_id: Mapped[str | None] = mapped_column(
+        ForeignKey("customer_context_grants.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    grant_revision: Mapped[int | None] = mapped_column(nullable=True)
+    thread_id: Mapped[str] = mapped_column(String(128), index=True)
+    conversation_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="openai", index=True)
+    audience: Mapped[str] = mapped_column(String(32), default="", index=True)
+    target_model: Mapped[str] = mapped_column(String(128), default="")
+    tool_name: Mapped[str] = mapped_column(String(64), index=True)
+    requested_scopes_json: Mapped[str] = mapped_column(Text, default="[]")
+    request_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    summary_version: Mapped[int | None] = mapped_column(nullable=True)
+    watermark_before: Mapped[int | None] = mapped_column(nullable=True)
+    watermark_after: Mapped[int | None] = mapped_column(nullable=True)
+    text_message_count: Mapped[int] = mapped_column(Integer, default=0)
+    image_count: Mapped[int] = mapped_column(Integer, default=0)
+    byte_count: Mapped[int] = mapped_column(Integer, default=0)
+    resource_hashes_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    error_code: Mapped[str] = mapped_column(String(64), default="", index=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_customer_context_access_thread_created",
+            "thread_id",
+            "created_at",
+        ),
+    )
+
+
+class CustomerContextMutationRequest(Base):
+    """Idempotency receipt for grant and revoke mutations only."""
+
+    __tablename__ = "customer_context_mutation_requests"
+
+    request_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(64), index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64), index=True)
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+
+class CustomerAnalysisThread(Base):
+    """Persistent OpenAI analysis subscription for one bound conversation."""
+
+    __tablename__ = "customer_analysis_threads"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("global_agent_threads.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="RESTRICT"),
+        unique=True,
+        index=True,
+    )
+    provider_scope: Mapped[str] = mapped_column(
+        String(32), default="openai", server_default="openai", index=True
+    )
+    model: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    external_conversation_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(32), default="active", server_default="active", index=True
+    )
+    analysis_state: Mapped[str] = mapped_column(
+        String(32), default="waiting", server_default="waiting", index=True
+    )
+    include_images: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
+    debounce_seconds: Mapped[int] = mapped_column(
+        Integer, default=30, server_default="30"
+    )
+    max_wait_seconds: Mapped[int] = mapped_column(
+        Integer, default=60, server_default="60"
+    )
+    last_enqueued_message_id: Mapped[int | None] = mapped_column(nullable=True)
+    last_analyzed_message_id: Mapped[int | None] = mapped_column(nullable=True)
+    latest_artifact_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    pending_since: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    last_started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_error_code: Mapped[str] = mapped_column(
+        String(64), default="", server_default="", index=True
+    )
+    last_error_message: Mapped[str] = mapped_column(
+        Text, default="", server_default=""
+    )
+    consent_policy_version: Mapped[str] = mapped_column(
+        String(32), default="2", server_default="2"
+    )
+    consent_text_hash: Mapped[str] = mapped_column(String(64), index=True)
+    authorization_note: Mapped[str] = mapped_column(
+        Text, default="", server_default=""
+    )
+    confirmed_at: Mapped[datetime] = mapped_column(index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    paused_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        Index(
+            "idx_customer_analysis_thread_due",
+            "status",
+            "analysis_state",
+            "next_run_at",
+        ),
+    )
+
+
+class CustomerAnalysisEvent(Base):
+    """Transactional outbox event created in the same commit as a message."""
+
+    __tablename__ = "customer_analysis_events"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    analysis_thread_id: Mapped[str] = mapped_column(
+        ForeignKey("customer_analysis_threads.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="RESTRICT"), index=True
+    )
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="RESTRICT"), index=True
+    )
+    event_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default="pending", server_default="pending", index=True
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("customer_analysis_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    processing_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_thread_id",
+            "message_id",
+            name="uq_customer_analysis_event_message",
+        ),
+        Index(
+            "idx_customer_analysis_event_pending",
+            "analysis_thread_id",
+            "status",
+            "message_id",
+        ),
+    )
+
+
+class CustomerAnalysisRun(Base):
+    """One idempotent incremental OpenAI analysis attempt."""
+
+    __tablename__ = "customer_analysis_runs"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    analysis_thread_id: Mapped[str] = mapped_column(
+        ForeignKey("customer_analysis_threads.id", ondelete="CASCADE"), index=True
+    )
+    subscription_revision: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1"
+    )
+    run_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default="pending", server_default="pending", index=True
+    )
+    watermark_before: Mapped[int | None] = mapped_column(nullable=True)
+    watermark_after: Mapped[int] = mapped_column(Integer, index=True)
+    source_hash: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    provider: Mapped[str] = mapped_column(
+        String(32), default="openai", server_default="openai", index=True
+    )
+    model: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    external_response_id: Mapped[str] = mapped_column(
+        String(255), default="", server_default="", index=True
+    )
+    artifact_version: Mapped[int | None] = mapped_column(nullable=True)
+    message_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    image_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error_code: Mapped[str] = mapped_column(
+        String(64), default="", server_default="", index=True
+    )
+    error_message: Mapped[str] = mapped_column(Text, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_customer_analysis_run_thread_created",
+            "analysis_thread_id",
+            "created_at",
+        ),
+    )
+
+
+class CustomerAnalysisArtifact(Base):
+    """Append-only requirement document and execution plan snapshot."""
+
+    __tablename__ = "customer_analysis_artifacts"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    analysis_thread_id: Mapped[str] = mapped_column(
+        ForeignKey("customer_analysis_threads.id", ondelete="RESTRICT"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    previous_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("customer_analysis_artifacts.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("customer_analysis_runs.id", ondelete="RESTRICT"),
+        unique=True,
+        index=True,
+    )
+    watermark_before: Mapped[int | None] = mapped_column(nullable=True)
+    watermark_after: Mapped[int] = mapped_column(Integer, index=True)
+    source_hash: Mapped[str] = mapped_column(String(64), index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    content_json: Mapped[str] = mapped_column(Text)
+    diff_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
+    evidence_message_ids_json: Mapped[str] = mapped_column(
+        Text, default="[]", server_default="[]"
+    )
+    evidence_image_ids_json: Mapped[str] = mapped_column(
+        Text, default="[]", server_default="[]"
+    )
+    model: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    external_response_id: Mapped[str] = mapped_column(
+        String(255), default="", server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_thread_id",
+            "version",
+            name="uq_customer_analysis_artifact_version",
+        ),
+        Index(
+            "idx_customer_analysis_artifact_latest",
+            "analysis_thread_id",
+            "version",
+        ),
+    )
+
+
+class CustomerAnalysisMutationRequest(Base):
+    """Idempotency receipt for persistent analysis subscription mutations."""
+
+    __tablename__ = "customer_analysis_mutation_requests"
+
+    request_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(64), index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64), index=True)
+    result_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
 
 
 class GlobalAgentToolCall(Base):
@@ -2931,3 +3440,8 @@ class PhraseLibraryMutationRequest(Base):
     payload_hash: Mapped[str] = mapped_column(String(64))
     result_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+
+# Register additive workflow models without duplicating the existing customer domain.
+from . import customer_media_models, customer_conversation_models  # noqa: E402,F401
+from . import customer_sync_models  # noqa: E402,F401

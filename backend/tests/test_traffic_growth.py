@@ -326,7 +326,7 @@ def test_0025_migration_upgrades_existing_schema_and_keeps_integrity(tmp_path: P
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert version == ("20260820_0036",)
+    assert version == ("20260907_0045",)
     assert GROWTH_TABLES.issubset(tables)
     assert integrity == ("ok",)
     assert violations == []
@@ -515,7 +515,7 @@ def test_plan_batch_creation_atomically_binds_the_experiment_cell(tmp_path: Path
         session.add_all([plan, slot])
         session.commit()
 
-    batch = product_service.create_traffic_batch(
+    batch = product_service.create_current_planned_traffic_batch_for_test(
         request_id="create-atomic-bind",
         item_external_ids=[hero.external_id, *companions],
         planned_at=cell.scheduled_for,
@@ -958,6 +958,7 @@ def test_scale_cohort_relaxes_only_the_hero_listing_cooldown(tmp_path: Path) -> 
             planned_at=NOW,
             recording_mode="scale_cohort",
             attribution_status="cohort_overlap",
+            observation_window_hours=48,
             actual_cost=5.9,
             created_at=NOW,
             updated_at=NOW,
@@ -1045,6 +1046,7 @@ def test_start_preview_allows_only_confirmed_cohort_hero_overlap_without_adapter
             baseline_prepared_at=NOW - timedelta(minutes=5),
             recording_mode="scale_cohort",
             attribution_status="cohort_overlap",
+            observation_window_hours=48,
             actual_cost=5.9,
             created_at=NOW,
             updated_at=NOW,

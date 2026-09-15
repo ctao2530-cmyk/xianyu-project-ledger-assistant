@@ -99,7 +99,6 @@ async def test_text_ingest_publishes_body_free_context_event_after_commit_withou
         MacOSNotifier(False),
         history_limit=20,
         reply_drafts_enabled=False,
-        sales_analysis_enabled=False,
         event_hub=hub,
     )
     event = ChannelMessage(
@@ -211,7 +210,6 @@ async def test_archive_failure_never_rolls_back_message_ingestion(tmp_path: Path
         MacOSNotifier(False),
         history_limit=20,
         reply_drafts_enabled=False,
-        sales_analysis_enabled=False,
         customer_images=service,
         media_fetchers={"wechat": fail},
     )
@@ -229,6 +227,8 @@ async def test_archive_failure_never_rolls_back_message_ingestion(tmp_path: Path
     )
 
     message_id = await processor.process(event, source="wecom_callback")
+    await service.drain_pending()
+    await processor.stop()
     with database.session() as session:
         message = session.get(Message, message_id)
         row = session.scalar(select(CustomerImageArchive))
@@ -259,7 +259,6 @@ async def test_inbound_processor_archives_original_bytes_without_running_ai(tmp_
         MacOSNotifier(False),
         history_limit=20,
         reply_drafts_enabled=False,
-        sales_analysis_enabled=False,
         customer_images=service,
         media_fetchers={"wechat": fetch},
     )
@@ -277,7 +276,8 @@ async def test_inbound_processor_archives_original_bytes_without_running_ai(tmp_
     )
 
     message_id = await processor.process(event, source="wecom_callback")
-
+    await service.drain_pending()
+    await processor.stop()
     with database.session() as session:
         message = session.get(Message, message_id)
         row = session.scalar(select(CustomerImageArchive))
@@ -363,7 +363,7 @@ async def test_api_never_exposes_storage_path_or_digest(tmp_path: Path) -> None:
     app.include_router(customer_image_router)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8877") as client:
         listing = await client.get("/api/customer-images")
         body = listing.json()
         assert listing.status_code == 200
@@ -424,24 +424,14 @@ def test_original_store_rejects_non_inbound_and_oversized_files(tmp_path: Path) 
         )
 
 
-def test_heic_bytes_are_preserved_and_traversal_name_is_sanitized(tmp_path: Path) -> None:
+def test_heic_header_only_is_never_accepted_as_a_complete_image(tmp_path: Path) -> None:
     _database, service, _conversation_id, message_id = build_service(tmp_path)
     payload = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00heicmif1"
 
-    view = service.store_original(
-        message_id,
-        0,
-        data=payload,
-        content_type="image/heic",
-        original_name="../../private\r\noriginal.heic",
-        capture_source="test",
-    )
-    path, mime, name = service.content_file(view["id"])
-
-    assert path.read_bytes() == payload
-    assert mime == "image/heic"
-    assert "/" not in name and "\\" not in name and "\n" not in name and "\r" not in name
-    assert path.parent.parent.parent == service.root
+    with pytest.raises(CustomerImageError) as error:
+        service.store_original(message_id, 0, data=payload, content_type="image/heic", original_name="../../private\r\noriginal.heic", capture_source="test")
+    assert error.value.code in {"image_corrupt", "image_decoder_unavailable"}
+    assert not list(service.root.rglob("*.heic"))
 
 
 @pytest.mark.asyncio

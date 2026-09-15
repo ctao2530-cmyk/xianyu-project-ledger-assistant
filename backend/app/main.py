@@ -11,6 +11,11 @@ from fastapi.staticfiles import StaticFiles
 from .api import router
 from .business_analysis_api import business_analysis_router
 from .customer_image_api import customer_image_router
+from .customer_analysis_api import customer_analysis_router
+from .customer_context_api import customer_context_router
+from .customer_conversation_api import customer_conversation_router
+from .customer_context_mcp import bridge as customer_context_mcp_bridge
+from .customer_context_mcp import customer_context_mcp_app
 from .config import get_settings
 from .codex_plan_api import codex_plan_router
 from .codex_sync_api import codex_sync_router
@@ -26,7 +31,14 @@ from .product_api import product_router
 from .prediction_api import prediction_router
 from .phrase_library_api import phrase_library_router
 from .project_product_api import project_product_router
+from .project_task_draft_api import project_task_draft_router
+from .requirement_proposal_api import requirement_proposal_router
 from .runtime import build_runtime
+from .services.customer_context_oauth import (
+    CustomerContextOAuthConfig,
+    CustomerContextOAuthVerifier,
+)
+from .services.customer_context_tunnel import CustomerContextTunnelConfig
 from .sales_api import sales_router
 from .traffic_growth_api import traffic_growth_router
 from .wechat_api import wechat_router
@@ -38,11 +50,13 @@ configure_logging(
     secrets=(
         settings.xianyu_cookie.get_secret_value(),
         settings.ai_api_key.get_secret_value(),
+        settings.openai_api_key.get_secret_value(),
         settings.deepseek_api_key.get_secret_value(),
         settings.wecom_corp_secret.get_secret_value(),
         settings.wecom_callback_token.get_secret_value(),
         settings.wecom_encoding_aes_key.get_secret_value(),
         settings.xunying_codex_event_secret.get_secret_value(),
+        settings.customer_context_tunnel_secret.get_secret_value(),
     ),
     file_path=settings.log_file,
     max_bytes=settings.log_max_bytes,
@@ -54,7 +68,25 @@ configure_logging(
 async def lifespan(app: FastAPI):
     runtime = build_runtime(settings)
     app.state.runtime = runtime
+    oauth_config = CustomerContextOAuthConfig.from_settings(settings)
+    oauth_verifier = CustomerContextOAuthVerifier(oauth_config)
+    tunnel_config = CustomerContextTunnelConfig.from_settings(settings)
+    app.state.customer_context_oauth_config = oauth_config
+    app.state.customer_context_tunnel_config = tunnel_config
+    customer_context_mcp_bridge.bind(
+        runtime.customer_context_reader,
+        runtime.customer_context_gateway,
+        oauth_config,
+        oauth_verifier,
+        tunnel_config,
+    )
+    mcp_lifespan = customer_context_mcp_app.router.lifespan_context(
+        customer_context_mcp_app
+    )
+    await mcp_lifespan.__aenter__()
     await runtime.ai_queue.start()
+    runtime.customer_images.start(runtime.processor.media_fetchers, runtime.event_hub)
+    await runtime.customer_auto_analysis.start()
     await runtime.requirements.start()
     await runtime.product_intelligence.start()
     await runtime.listener_supervisor.start()
@@ -76,19 +108,25 @@ async def lifespan(app: FastAPI):
             )
 
     health_task = asyncio.create_task(check_ai_environment())
-    yield
-    for task in (health_task, wecom_health_task):
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-    await runtime.listener_supervisor.shutdown()
-    await runtime.wecom.stop()
-    await runtime.requirements.stop()
-    await runtime.sales_agent.stop()
-    await runtime.ai_queue.stop()
-    await runtime.product_intelligence.stop()
-    await runtime.global_agent.shutdown()
-    await runtime.codex_development.close()
+    try:
+        yield
+    finally:
+        for task in (health_task, wecom_health_task):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        await runtime.listener_supervisor.shutdown()
+        await runtime.customer_images.stop()
+        await runtime.wecom.stop()
+        await runtime.requirements.stop()
+        await runtime.sales_agent.stop()
+        await runtime.ai_queue.stop()
+        await runtime.customer_auto_analysis.close()
+        await runtime.product_intelligence.stop()
+        await runtime.global_agent.shutdown()
+        await runtime.codex_development.close()
+        await oauth_verifier.close()
+        await mcp_lifespan.__aexit__(None, None, None)
 
 
 app = FastAPI(
@@ -109,6 +147,37 @@ app.add_middleware(
         "X-Xunying-Signature",
     ],
 )
+
+
+@app.get("/.well-known/oauth-protected-resource/mcp/customer-context")
+@app.get("/.well-known/oauth-protected-resource")
+async def customer_context_protected_resource_metadata(request: Request):
+    tunnel_config = getattr(request.app.state, "customer_context_tunnel_config", None)
+    if tunnel_config is None:
+        tunnel_config = CustomerContextTunnelConfig.from_settings(settings)
+    if tunnel_config.enabled:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "code": "oauth_discovery_disabled",
+                "message": "当前使用 Secure MCP Tunnel 本地绑定模式",
+            },
+        )
+    oauth_config = getattr(request.app.state, "customer_context_oauth_config", None)
+    if oauth_config is None:
+        oauth_config = CustomerContextOAuthConfig.from_settings(settings)
+    if not oauth_config.enabled:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "code": "oauth_not_configured",
+                "message": "循营客户上下文 OAuth 尚未配置",
+            },
+        )
+    return JSONResponse(
+        content=oauth_config.protected_resource_metadata(),
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 @app.middleware("http")
@@ -157,12 +226,22 @@ app.include_router(product_router)
 app.include_router(traffic_growth_router)
 app.include_router(prediction_router)
 app.include_router(project_product_router)
+app.include_router(project_task_draft_router)
+app.include_router(requirement_proposal_router)
 app.include_router(sales_router)
 app.include_router(event_router)
 app.include_router(wechat_router)
 app.include_router(customer_image_router)
+app.include_router(customer_analysis_router)
+app.include_router(customer_context_router)
+app.include_router(customer_conversation_router)
 app.include_router(global_agent_router)
 app.include_router(phrase_library_router)
+app.mount(
+    "/mcp/customer-context",
+    customer_context_mcp_app,
+    name="customer-context-mcp",
+)
 
 # Local production uses one 127.0.0.1 origin. Hash routing keeps all frontend
 # navigation in index.html, while API and callback routes above remain FastAPI.

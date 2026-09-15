@@ -661,7 +661,7 @@ def test_prediction_alembic_migration_creates_complete_integral_schema(
         }
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-    assert version == ("20260820_0036",)
+        assert version == ("20260907_0045",)
     assert {
         "prediction_runs",
         "prediction_results",

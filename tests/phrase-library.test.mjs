@@ -16,7 +16,7 @@ test("customer conversation header opens the approved global phrase drawer", asy
   const page = await readFile(pagePath, "utf8");
 
   assert.match(page, /import \{ PhraseLibraryDrawer \} from "\.\.\/components\/PhraseLibraryDrawer"/);
-  assert.match(page, /className="phrase-library-trigger"/);
+  assert.match(page, /<Button[^>]*className="phrase-library-trigger customer-appica-button"/);
   assert.match(page, /aria-haspopup="dialog"/);
   assert.match(page, /aria-expanded=\{phraseLibraryOpen\}/);
   assert.match(page, /<PhraseLibraryDrawer open=\{phraseLibraryOpen\}/);

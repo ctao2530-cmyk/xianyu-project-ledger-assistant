@@ -2511,7 +2511,7 @@ a {
 
 @media (max-width: 560px) {
   .dashboard-main { padding-inline: 9px; }
-  .menu-button { width: 40px; height: 40px; }
+  .menu-button { width: 44px; height: 44px; }
   .greeting h1 { font-size: 20px; letter-spacing: -.5px; }
   .page-context-tag { display: none; }
   .greeting p { display: none; }

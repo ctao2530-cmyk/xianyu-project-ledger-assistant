@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status, Depends
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from .services.customer_images import CustomerImageArchiveService, CustomerImageError
+from .customer_workflow_access import local_customer_workflow
 
 
-customer_image_router = APIRouter(prefix="/api/customer-images", tags=["customer-images"])
+customer_image_router = APIRouter(prefix="/api/customer-images", tags=["customer-images"], dependencies=[Depends(local_customer_workflow)])
 
 
 class HistoryRecoveryRequest(BaseModel):
@@ -37,15 +38,32 @@ async def list_customer_images(
     conversation_id: int | None = Query(default=None, ge=1),
     date_from: str | None = Query(default=None, max_length=10),
     date_to: str | None = Query(default=None, max_length=10),
+    start_date: str | None = Query(default=None, max_length=10),
+    end_date: str | None = Query(default=None, max_length=10),
+    search: str | None = Query(default=None, max_length=200),
+    q: str | None = Query(default=None, max_length=200),
+    item_id: int | None = Query(default=None, ge=1),
+    conversation_ids: str | None = Query(default=None, max_length=1000),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
     try:
+        ids = None
+        if conversation_ids is not None:
+            try:
+                ids = [int(value) for value in conversation_ids.split(",") if value.strip()]
+            except ValueError:
+                raise CustomerImageError("conversation_filter_invalid", "会话筛选无效") from None
+            if len(ids) > 50 or any(value < 1 for value in ids):
+                raise CustomerImageError("conversation_filter_invalid", "会话筛选范围无效")
         return _service(request).list_images(
             channel=channel,
             conversation_id=conversation_id,
-            date_from=date_from,
-            date_to=date_to,
+            date_from=start_date or date_from,
+            date_to=end_date or date_to,
+            search=search or q,
+            item_id=item_id,
+            conversation_ids=ids,
             limit=limit,
             offset=offset,
         )
@@ -93,6 +111,15 @@ async def recover_customer_image_history(
         )
     except CustomerImageError as exc:
         raise _http_error(exc) from exc
+
+
+@customer_image_router.get("/{archive_id}/preview")
+async def customer_image_preview(request: Request, archive_id: str):
+    try:
+        path, mime_type, _name = _service(request).preview_file(archive_id)
+    except CustomerImageError as exc:
+        raise _http_error(exc) from exc
+    return FileResponse(path, media_type=mime_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @customer_image_router.get("/{archive_id}/content")

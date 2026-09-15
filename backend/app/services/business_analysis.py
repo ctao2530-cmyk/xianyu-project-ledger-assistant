@@ -477,11 +477,13 @@ class BusinessAnalysisService:
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    def latest_or_overview(self) -> BusinessAnalysisOverview:
+    def latest_or_overview(
+        self, *, now: datetime | None = None
+    ) -> BusinessAnalysisOverview:
         latest = self.repository.latest()
         if latest is None:
-            return self.overview()
-        current = self.overview()
+            return self.overview(now=now)
+        current = self.overview(now=now)
         return latest.result.model_copy(
             update={"is_stale": latest.snapshot_hash != self.snapshot_hash(current)}
         )

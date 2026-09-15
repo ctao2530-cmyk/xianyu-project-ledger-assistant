@@ -156,7 +156,7 @@ def seed_invalid_actual_traffic_batch(
 ) -> str:
     """Create a historical missing-T0 row without using the live-T0 path."""
 
-    created = service.create_traffic_batch(
+    created = service.create_legacy_planned_traffic_batch_for_test(
         request_id=request_id,
         item_external_ids=external_ids,
         planned_at=started_at.astimezone(timezone.utc),
@@ -903,7 +903,7 @@ def test_multi_product_batch_tracks_one_cost_and_long_tail_checkpoints(
     service._now = lambda: fixed  # type: ignore[method-assign]
     planned_at = fixed.astimezone(timezone.utc) + timedelta(hours=2)
 
-    batch = service.create_traffic_batch(
+    batch = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-batch-0001",
         item_external_ids=["batch-item-a", "batch-item-b"],
         planned_at=planned_at,
@@ -911,7 +911,7 @@ def test_multi_product_batch_tracks_one_cost_and_long_tail_checkpoints(
         plan_slot_id=None,
         note="两件商品共用一次套餐",
     )
-    started = service.start_traffic_batch(batch.id)
+    started = service.start_legacy_traffic_batch_for_test(batch.id)
     with database.session() as session:
         stored_batch = session.get(ProductTrafficBatch, batch.id)
         assert stored_batch is not None
@@ -920,7 +920,7 @@ def test_multi_product_batch_tracks_one_cost_and_long_tail_checkpoints(
             batch_item.baseline_captured_at = fixed.astimezone(timezone.utc)
             batch_item.baseline_source = "manual"
         session.commit()
-    completed = service.complete_traffic_batch(
+    completed = service.complete_legacy_traffic_batch_for_test(
         batch.id,
         completed_at=fixed.astimezone(timezone.utc) + timedelta(hours=1),
         actual_cost=6,
@@ -945,7 +945,7 @@ def test_multi_product_batch_tracks_one_cost_and_long_tail_checkpoints(
     ]
     h1_recorded_at = fixed.astimezone(timezone.utc) + timedelta(hours=1)
     service._now = lambda: fixed + timedelta(hours=1)  # type: ignore[method-assign]
-    service.record_traffic_checkpoint(
+    service.record_legacy_traffic_checkpoint_for_test(
         batch.id,
         checkpoint="h1",
         recorded_at=h1_recorded_at,
@@ -955,7 +955,7 @@ def test_multi_product_batch_tracks_one_cost_and_long_tail_checkpoints(
     values[0]["inquiry_count"] += 1
     h24_recorded_at = fixed.astimezone(timezone.utc) + timedelta(hours=24)
     service._now = lambda: fixed + timedelta(hours=24)  # type: ignore[method-assign]
-    service.record_traffic_checkpoint(
+    service.record_legacy_traffic_checkpoint_for_test(
         batch.id,
         checkpoint="h24",
         recorded_at=h24_recorded_at,
@@ -964,7 +964,7 @@ def test_multi_product_batch_tracks_one_cost_and_long_tail_checkpoints(
     )
     h72_recorded_at = fixed.astimezone(timezone.utc) + timedelta(hours=72)
     service._now = lambda: fixed + timedelta(hours=72)  # type: ignore[method-assign]
-    closed = service.record_traffic_checkpoint(
+    closed = service.record_legacy_traffic_checkpoint_for_test(
         batch.id,
         checkpoint="h72",
         recorded_at=h72_recorded_at,
@@ -1007,7 +1007,7 @@ def test_checkpoint_rejects_early_and_future_timestamp(tmp_path: Path) -> None:
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 16, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = service.create_current_planned_traffic_batch_for_test(
         request_id="request-checkpoint-clock",
         item_external_ids=["checkpoint-clock-item"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -1015,7 +1015,7 @@ def test_checkpoint_rejects_early_and_future_timestamp(tmp_path: Path) -> None:
         plan_slot_id=None,
         note="时间门槛",
     )
-    started = service.start_traffic_batch(batch.id)
+    started = service.start_legacy_traffic_batch_for_test(batch.id)
     with database.session() as session:
         stored = session.get(ProductTrafficBatch, batch.id)
         assert stored is not None
@@ -1054,7 +1054,7 @@ def test_stale_t0_is_terminally_invalidated_without_deleting_facts(tmp_path: Pat
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 10, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = service.create_current_planned_traffic_batch_for_test(
         request_id="request-stale-t0",
         item_external_ids=["stale-t0-item"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -1062,7 +1062,7 @@ def test_stale_t0_is_terminally_invalidated_without_deleting_facts(tmp_path: Pat
         plan_slot_id=None,
         note="旧基线",
     )
-    started = service.start_traffic_batch(batch.id)
+    started = service.start_legacy_traffic_batch_for_test(batch.id)
     with database.session() as session:
         stored = session.get(ProductTrafficBatch, batch.id)
         assert stored is not None
@@ -1241,6 +1241,7 @@ async def test_invalid_baselines_cover_missing_legacy_and_broken_time_without_re
                 started_at=fixed.astimezone(timezone.utc),
                 actual_cost=6,
                 note="保留真实事实",
+                observation_window_hours=48,
             )
             session.add(batch)
             session.flush()
@@ -1288,7 +1289,7 @@ def test_expired_planned_t0_can_be_prepared_again_and_is_not_invalidated(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 13, 16, 20, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = service.create_legacy_planned_traffic_batch_for_test(
         request_id="planned-expired-create",
         item_external_ids=["planned-expired-t0"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -1321,7 +1322,7 @@ def test_reliable_manual_overlap_baseline_keeps_factual_observation_open(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 13, 16, 20, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    first = service.create_traffic_batch(
+    first = service.create_legacy_planned_traffic_batch_for_test(
         request_id="manual-overlap-source",
         item_external_ids=["manual-overlap-stays-open"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -1329,9 +1330,9 @@ def test_reliable_manual_overlap_baseline_keeps_factual_observation_open(
         plan_slot_id=None,
         note="来源",
     )
-    service.start_traffic_batch(first.id)
+    service.start_legacy_traffic_batch_for_test(first.id)
     service._now = lambda: fixed + timedelta(hours=2)  # type: ignore[method-assign]
-    second = service.create_traffic_batch(
+    second = service.create_current_planned_traffic_batch_for_test(
         request_id="manual-overlap-target",
         item_external_ids=["manual-overlap-stays-open"],
         planned_at=(fixed + timedelta(hours=2)).astimezone(timezone.utc),
@@ -1371,7 +1372,7 @@ def test_invalidated_batch_preserves_raw_checkpoints_but_never_derives_lift(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 13, 16, 20, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = service.create_legacy_planned_traffic_batch_for_test(
         request_id="invalidated-no-delta-create",
         item_external_ids=["invalidated-no-delta"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -1379,7 +1380,7 @@ def test_invalidated_batch_preserves_raw_checkpoints_but_never_derives_lift(
         plan_slot_id=None,
         note="历史事实",
     )
-    started = service.start_traffic_batch(batch.id)
+    started = service.start_legacy_traffic_batch_for_test(batch.id)
     product = started.products[0]
     with database.session() as session:
         stored = session.get(ProductTrafficBatch, batch.id)
@@ -1827,7 +1828,7 @@ def test_executed_traffic_freezes_today_while_future_slots_respect_cooldown(
     initial_traffic = next(
         slot for slot in initial.slots if slot.action_type == "traffic"
     )
-    batch = service.create_traffic_batch(
+    batch = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-observation-guard",
         item_external_ids=[
             f"observation-guard-{index}" for index in range(5)
@@ -1837,7 +1838,7 @@ def test_executed_traffic_freezes_today_while_future_slots_respect_cooldown(
         plan_slot_id=initial_traffic.id,
         note="验证 72 小时防重叠",
     )
-    started = service.start_traffic_batch(batch.id)
+    started = service.start_legacy_traffic_batch_for_test(batch.id)
     with database.session() as session:
         stored = session.get(ProductTrafficBatch, batch.id)
         assert stored is not None
@@ -1874,7 +1875,7 @@ def test_planned_batch_cannot_start_with_listing_inside_another_72h_window(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 10, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    observing = service.create_traffic_batch(
+    observing = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-start-guard-observing",
         item_external_ids=["start-guard-shared"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -1882,15 +1883,15 @@ def test_planned_batch_cannot_start_with_listing_inside_another_72h_window(
         plan_slot_id=None,
         note="正在观察",
     )
-    observing_started = service.start_traffic_batch(observing.id)
-    service.complete_traffic_batch(
+    observing_started = service.start_legacy_traffic_batch_for_test(observing.id)
+    service.complete_legacy_traffic_batch_for_test(
         observing.id,
         completed_at=(fixed + timedelta(hours=1)).astimezone(timezone.utc),
         actual_cost=5.9,
         total_exposure=900,
         note="套餐已完成，归因仍继续",
     )
-    planned = service.create_traffic_batch(
+    planned = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-start-guard-planned",
         item_external_ids=["start-guard-shared", "start-guard-other"],
         planned_at=(fixed + timedelta(hours=2)).astimezone(timezone.utc),
@@ -1912,7 +1913,7 @@ def test_planned_batch_cannot_start_with_listing_inside_another_72h_window(
     ).astimezone(timezone.utc)
     assert "1 件商品与其他批次重叠" in (blocked_view.start_blocked_reason or "")
     with pytest.raises(ProductTrafficConflict, match="1 件商品与其他批次重叠"):
-        service.start_traffic_batch(planned.id)
+        service.start_legacy_traffic_batch_for_test(planned.id)
     with database.session() as session:
         stored = session.get(ProductTrafficBatch, planned.id)
         assert stored is not None
@@ -1925,7 +1926,7 @@ def test_planned_batch_cannot_start_with_listing_inside_another_72h_window(
     ]
 
     service._now = lambda: fixed + timedelta(hours=72)  # type: ignore[method-assign]
-    service.record_traffic_checkpoint(
+    service.record_legacy_traffic_checkpoint_for_test(
         observing.id,
         checkpoint="h72",
         recorded_at=(fixed + timedelta(hours=72)).astimezone(timezone.utc),
@@ -1939,7 +1940,7 @@ def test_planned_batch_cannot_start_with_listing_inside_another_72h_window(
         note="完成 72h 观察后解除保护",
     )
     service._now = lambda: fixed + timedelta(hours=72, minutes=1)  # type: ignore[method-assign]
-    started = service.start_traffic_batch(planned.id)
+    started = service.start_legacy_traffic_batch_for_test(planned.id)
     assert started.status == "running"
     assert started.start_blocked is False
 
@@ -1954,7 +1955,7 @@ def test_non_overlapping_batch_can_start_while_another_batch_is_observing(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 10, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    first = service.create_traffic_batch(
+    first = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-cooldown-first",
         item_external_ids=["cooldown-a"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -1962,8 +1963,8 @@ def test_non_overlapping_batch_can_start_while_another_batch_is_observing(
         plan_slot_id=None,
         note="第一批",
     )
-    service.start_traffic_batch(first.id)
-    second = service.create_traffic_batch(
+    service.start_legacy_traffic_batch_for_test(first.id)
+    second = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-cooldown-second",
         item_external_ids=["cooldown-b"],
         planned_at=(fixed + timedelta(minutes=5)).astimezone(timezone.utc),
@@ -1976,7 +1977,7 @@ def test_non_overlapping_batch_can_start_while_another_batch_is_observing(
     assert preview.overlap_items == []
     assert preview.can_record_actual is False
     assert preview.batch.start_blocked is False
-    started = service.start_traffic_batch(second.id)
+    started = service.start_legacy_traffic_batch_for_test(second.id)
     assert started.status == "running"
 
 
@@ -1995,7 +1996,7 @@ def test_operating_plan_can_schedule_disjoint_rotation_before_source_h72(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 10, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    source = service.create_traffic_batch(
+    source = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-disjoint-plan-source",
         item_external_ids=ids[:5],
         planned_at=fixed.astimezone(timezone.utc),
@@ -2003,7 +2004,7 @@ def test_operating_plan_can_schedule_disjoint_rotation_before_source_h72(
         plan_slot_id=None,
         note="A 组继续观察",
     )
-    service.start_traffic_batch(source.id)
+    service.start_legacy_traffic_batch_for_test(source.id)
 
     plan = service.refresh_operating_plan()
     assert plan.slots[0].action_type == "traffic"
@@ -2032,7 +2033,7 @@ def test_actual_overlap_record_without_t0_is_idempotent_and_excluded(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 10, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    first = service.create_traffic_batch(
+    first = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-actual-overlap-first",
         item_external_ids=["actual-overlap-shared"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -2040,9 +2041,9 @@ def test_actual_overlap_record_without_t0_is_idempotent_and_excluded(
         plan_slot_id=None,
         note="第一批",
     )
-    service.start_traffic_batch(first.id)
+    service.start_legacy_traffic_batch_for_test(first.id)
     service._now = lambda: fixed + timedelta(hours=2)  # type: ignore[method-assign]
-    second = service.create_traffic_batch(
+    second = service.create_current_planned_traffic_batch_for_test(
         request_id="request-actual-overlap-second",
         item_external_ids=["actual-overlap-shared"],
         planned_at=(fixed + timedelta(hours=1)).astimezone(timezone.utc),
@@ -2100,7 +2101,7 @@ def test_actual_overlap_record_with_manual_t0_and_guards(tmp_path: Path) -> None
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 10, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    first = service.create_traffic_batch(
+    first = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-actual-manual-first",
         item_external_ids=["actual-overlap-manual"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -2108,9 +2109,9 @@ def test_actual_overlap_record_with_manual_t0_and_guards(tmp_path: Path) -> None
         plan_slot_id=None,
         note="第一批",
     )
-    service.start_traffic_batch(first.id)
+    service.start_legacy_traffic_batch_for_test(first.id)
     service._now = lambda: fixed + timedelta(hours=3)  # type: ignore[method-assign]
-    second = service.create_traffic_batch(
+    second = service.create_current_planned_traffic_batch_for_test(
         request_id="request-actual-manual-second",
         item_external_ids=["actual-overlap-manual"],
         planned_at=(fixed + timedelta(hours=2)).astimezone(timezone.utc),
@@ -2186,6 +2187,7 @@ async def test_recorded_batch_collects_live_t0_and_is_idempotent(
         for item in recorded.products
     )
     assert recorded.observation_window_hours == 48
+    service.require_current_traffic_protocol(recorded.id)
     assert recorded.terminal_checkpoint == "h48"
     assert recorded.checkpoint_sequence == ["h1", "h6", "h24", "h48"]
     assert recorded.is_legacy_protocol is False
@@ -2207,7 +2209,7 @@ async def test_recorded_batch_collects_live_t0_and_is_idempotent(
 
 
 @pytest.mark.asyncio
-async def test_recorded_batch_access_verification_creates_no_batch_or_expense(
+async def test_recorded_batch_access_verification_preserves_fact_and_expense(
     tmp_path: Path,
 ) -> None:
     raw = {"title": "T0 熔断", "browseCnt": 20, "itemStatusStr": "在售"}
@@ -2222,23 +2224,35 @@ async def test_recorded_batch_access_verification_creates_no_batch_or_expense(
         raise AdapterAccessVerificationError("private platform verification body")
 
     adapter.fetch_item = fail_with_verification  # type: ignore[method-assign]
-    with pytest.raises(
-        ProductCollectionUnavailable,
-        match="未创建曝光批次或费用",
-    ):
-        await service.record_traffic_batch_now(
-            request_id="record-now-fuse-request",
-            item_external_ids=external_ids,
-            actual_cost=5.9,
-            plan_slot_id=None,
-            note="触发访问验证",
-            confirmed_already_purchased=True,
-        )
+    payload = {
+        "request_id": "record-now-fuse-request",
+        "item_external_ids": external_ids,
+        "actual_cost": 5.9,
+        "plan_slot_id": None,
+        "note": "触发访问验证",
+        "confirmed_already_purchased": True,
+    }
+    recorded = await service.record_traffic_batch_now(**payload)
+    replay = await service.record_traffic_batch_now(**payload)
 
     assert adapter.calls == [external_ids[0]]
+    assert replay.id == recorded.id
+    assert recorded.status == "invalidated"
+    assert recorded.invalidation_reason == "missing_baseline"
+    assert recorded.analysis_tier == "fact_only"
+    assert recorded.analysis_eligible is False
+    assert recorded.due_checkpoint is None
+    assert all(item.baseline_source == "missing" for item in recorded.products)
     with database.session() as session:
-        assert session.query(ProductTrafficBatch).count() == 0
-        assert session.query(BusinessExpense).count() == 0
+        assert session.query(ProductTrafficBatch).count() == 1
+        assert session.query(BusinessExpense).count() == 1
+        assert session.get(BusinessExpense, f"expense-traffic-{recorded.id}") is not None
+        assert session.query(ProductTrafficCheckpointJob).filter_by(
+            batch_id=recorded.id
+        ).count() == 0
+        assert session.query(ProductTrafficBatchEvent).filter_by(
+            batch_id=recorded.id
+        ).count() == 2
         monitors = session.scalars(
             select(ProductMonitor)
             .join(Item, Item.id == ProductMonitor.item_id)
@@ -2348,7 +2362,7 @@ async def test_actual_48h_batch_respects_legacy_72h_overlap_window(
     seed_item(database, raw, external_id="mixed-window-item")
     service.bootstrap_cached_state()
     legacy_started = datetime(2026, 8, 10, 8, 0, tzinfo=service.timezone)
-    legacy = service.create_traffic_batch(
+    legacy = service.create_legacy_planned_traffic_batch_for_test(
         request_id="mixed-window-legacy-create",
         item_external_ids=["mixed-window-item"],
         planned_at=legacy_started.astimezone(timezone.utc),
@@ -2364,6 +2378,8 @@ async def test_actual_48h_batch_respects_legacy_72h_overlap_window(
         row.started_at = legacy_started.astimezone(timezone.utc)
         row.observation_window_hours = 72
         session.commit()
+    with pytest.raises(ProductTrafficConflict, match="历史 72h 曝光批次为只读记录"):
+        service.require_current_traffic_protocol(legacy.id)
     service._now = lambda: actual_started  # type: ignore[method-assign]
 
     recorded = await service.record_traffic_batch_now(
@@ -2391,7 +2407,7 @@ def test_historical_start_correction_updates_expense_and_invalidates_late_t0(
         2026, 8, 13, 16, 14, 45, 845536, tzinfo=service.timezone
     )
     started_local = datetime(2026, 8, 13, 18, 6, tzinfo=service.timezone)
-    batch = service.create_traffic_batch(
+    batch = service.create_current_planned_traffic_batch_for_test(
         request_id="historical-start-repair-create",
         item_external_ids=["historical-start-repair"],
         planned_at=created_local.astimezone(timezone.utc),
@@ -2610,7 +2626,7 @@ def test_actual_overlap_record_rejects_future_clean_stale_and_unowned_cases(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 10, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    source = service.create_traffic_batch(
+    source = service.create_legacy_planned_traffic_batch_for_test(
         request_id="actual-boundary-source",
         item_external_ids=["actual-boundary-shared"],
         planned_at=fixed.astimezone(timezone.utc),
@@ -2618,9 +2634,9 @@ def test_actual_overlap_record_rejects_future_clean_stale_and_unowned_cases(
         plan_slot_id=None,
         note="来源批次",
     )
-    service.start_traffic_batch(source.id)
+    service.start_legacy_traffic_batch_for_test(source.id)
     service._now = lambda: fixed + timedelta(hours=2)  # type: ignore[method-assign]
-    overlapping = service.create_traffic_batch(
+    overlapping = service.create_current_planned_traffic_batch_for_test(
         request_id="actual-boundary-overlap",
         item_external_ids=["actual-boundary-shared"],
         planned_at=(fixed + timedelta(hours=1)).astimezone(timezone.utc),
@@ -2628,7 +2644,7 @@ def test_actual_overlap_record_rejects_future_clean_stale_and_unowned_cases(
         plan_slot_id=None,
         note="真实补录边界",
     )
-    clean = service.create_traffic_batch(
+    clean = service.create_current_planned_traffic_batch_for_test(
         request_id="actual-boundary-clean",
         item_external_ids=["actual-boundary-clean"],
         planned_at=(fixed + timedelta(hours=1)).astimezone(timezone.utc),
@@ -2691,7 +2707,7 @@ def test_planned_batch_without_prepared_t0_is_not_reported_as_reliable(
     _database, _adapter, service = build_service(tmp_path, raw)
     seed_item(_database, raw, external_id="pending-baseline")
     service.bootstrap_cached_state()
-    planned = service.create_traffic_batch(
+    planned = service.create_legacy_planned_traffic_batch_for_test(
         request_id="pending-baseline-create",
         item_external_ids=["pending-baseline"],
         planned_at=datetime.now(timezone.utc),
@@ -2743,7 +2759,7 @@ def test_semantic_change_creates_exactly_one_new_plan_version_with_factors(
     prepare_service(service)
     first = service.refresh_operating_plan()
     traffic_slot = next(slot for slot in first.slots if slot.action_type == "traffic")
-    batch = service.create_traffic_batch(
+    batch = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-plan-change",
         item_external_ids=[f"plan-change-{index}" for index in range(5)],
         planned_at=fixed.astimezone(timezone.utc),
@@ -2751,7 +2767,7 @@ def test_semantic_change_creates_exactly_one_new_plan_version_with_factors(
         plan_slot_id=traffic_slot.id,
         note="真实写入改变经营安排",
     )
-    service.start_traffic_batch(batch.id)
+    service.start_legacy_traffic_batch_for_test(batch.id)
     with database.session() as session:
         plans = session.query(ProductOperatingPlan).order_by(ProductOperatingPlan.version).all()
         assert len(plans) == 2
@@ -2777,7 +2793,7 @@ def test_traffic_batch_cost_enters_ledger_once_and_updates_in_place(
     service.bootstrap_cached_state()
     assert service.ledger is not None
 
-    batch = service.create_traffic_batch(
+    batch = service.create_legacy_planned_traffic_batch_for_test(
         request_id="request-ledger-traffic",
         item_external_ids=["ledger-traffic-item"],
         planned_at=datetime.now(timezone.utc),
@@ -2790,7 +2806,7 @@ def test_traffic_batch_cost_enters_ledger_once_and_updates_in_place(
     assert snapshot["expenses"] == []
 
     subscription = service.event_hub.subscribe()
-    service.start_traffic_batch(batch.id)
+    service.start_legacy_traffic_batch_for_test(batch.id)
     revision, snapshot = service.ledger.get()
     assert revision == 1
     assert len(snapshot["expenses"]) == 1
@@ -2800,12 +2816,12 @@ def test_traffic_batch_cost_enters_ledger_once_and_updates_in_place(
     event_types = [subscription.queue.get_nowait()["type"] for _ in range(2)]
     assert event_types == ["product_traffic_batch_updated", "ledger_updated"]
 
-    service.start_traffic_batch(batch.id)
+    service.start_legacy_traffic_batch_for_test(batch.id)
     repeated_revision, repeated_snapshot = service.ledger.get()
     assert repeated_revision == revision
     assert len(repeated_snapshot["expenses"]) == 1
 
-    service.complete_traffic_batch(
+    service.complete_legacy_traffic_batch_for_test(
         batch.id,
         completed_at=datetime.now(timezone.utc),
         actual_cost=6,
@@ -2855,7 +2871,7 @@ def test_exposure_analytics_uses_long_tail_and_beijing_time_windows(
         h24_collect,
     ) in enumerate(scenarios):
         service._now = lambda started_local=started_local: started_local  # type: ignore[method-assign]
-        batch = service.create_traffic_batch(
+        batch = service.create_legacy_planned_traffic_batch_for_test(
             request_id=f"request-analytics-{index}",
             item_external_ids=[external_id],
             planned_at=started_local.astimezone(timezone.utc),
@@ -2863,7 +2879,7 @@ def test_exposure_analytics_uses_long_tail_and_beijing_time_windows(
             plan_slot_id=None,
             note="时段对比",
         )
-        started = service.start_traffic_batch(batch.id)
+        started = service.start_legacy_traffic_batch_for_test(batch.id)
         with database.session() as session:
             stored_batch = session.get(ProductTrafficBatch, batch.id)
             assert stored_batch is not None
@@ -2873,7 +2889,7 @@ def test_exposure_analytics_uses_long_tail_and_beijing_time_windows(
             ):
                 batch_item.baseline_source = "manual"
             session.commit()
-        service.complete_traffic_batch(
+        service.complete_legacy_traffic_batch_for_test(
             batch.id,
             completed_at=started_local.astimezone(timezone.utc) + timedelta(hours=1),
             actual_cost=6,
@@ -2882,7 +2898,7 @@ def test_exposure_analytics_uses_long_tail_and_beijing_time_windows(
         )
         baseline = started.products[0]
         service._now = lambda started_local=started_local: started_local + timedelta(hours=1)  # type: ignore[method-assign]
-        service.record_traffic_checkpoint(
+        service.record_legacy_traffic_checkpoint_for_test(
             batch.id,
             checkpoint="h1",
             recorded_at=started_local.astimezone(timezone.utc) + timedelta(hours=1),
@@ -2896,7 +2912,7 @@ def test_exposure_analytics_uses_long_tail_and_beijing_time_windows(
             note="只记录早期变化",
         )
         service._now = lambda started_local=started_local: started_local + timedelta(hours=24)  # type: ignore[method-assign]
-        service.record_traffic_checkpoint(
+        service.record_legacy_traffic_checkpoint_for_test(
             batch.id,
             checkpoint="h24",
             recorded_at=started_local.astimezone(timezone.utc) + timedelta(hours=24),
@@ -2910,7 +2926,7 @@ def test_exposure_analytics_uses_long_tail_and_beijing_time_windows(
             note="成熟效果",
         )
         service._now = lambda started_local=started_local: started_local + timedelta(hours=72)  # type: ignore[method-assign]
-        service.record_traffic_checkpoint(
+        service.record_legacy_traffic_checkpoint_for_test(
             batch.id,
             checkpoint="h72",
             recorded_at=started_local.astimezone(timezone.utc) + timedelta(hours=72),
@@ -2962,7 +2978,7 @@ def test_overlapping_mature_batches_are_excluded_from_time_recommendations(
     ]
     for index, started_local in enumerate(started_times):
         service._now = lambda current=started_local: current  # type: ignore[method-assign]
-        batch = service.create_traffic_batch(
+        batch = service.create_legacy_planned_traffic_batch_for_test(
             request_id=f"request-overlap-{index}",
             item_external_ids=["overlap-item"],
             planned_at=started_local.astimezone(timezone.utc),
@@ -2971,7 +2987,7 @@ def test_overlapping_mature_batches_are_excluded_from_time_recommendations(
             note="重叠归因测试",
         )
         if index == 0:
-            started = service.start_traffic_batch(batch.id)
+            started = service.start_legacy_traffic_batch_for_test(batch.id)
         else:
             # Preserve coverage for legacy/imported overlapping rows. New
             # public starts reject this state before it can be created.
@@ -2999,7 +3015,7 @@ def test_overlapping_mature_batches_are_excluded_from_time_recommendations(
             session.commit()
         baseline = started.products[0]
         service._now = lambda current=started_local: current + timedelta(hours=24)  # type: ignore[method-assign]
-        service.record_traffic_checkpoint(
+        service.record_legacy_traffic_checkpoint_for_test(
             batch.id,
             checkpoint="h24",
             recorded_at=started_local.astimezone(timezone.utc) + timedelta(hours=24),
@@ -3062,7 +3078,7 @@ async def test_v24_manual_t0_uses_actual_start_time_and_is_idempotent(
     planned = datetime(2026, 8, 12, 16, 0, tzinfo=service.timezone)
     actual = planned + timedelta(minutes=12)
     service._now = lambda: actual  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = service.create_current_planned_traffic_batch_for_test(
         request_id="v24-create-actual-time",
         item_external_ids=[external_id],
         planned_at=planned.astimezone(timezone.utc),
@@ -3120,7 +3136,7 @@ async def test_confirmation_at_1620_anchors_every_checkpoint_to_actual_minute(
     planned = datetime(2026, 8, 13, 16, 0, tzinfo=service.timezone)
     clicked = planned.replace(minute=20, second=47, microsecond=321000)
     service._now = lambda: clicked  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = service.create_current_planned_traffic_batch_for_test(
         request_id="actual-minute-create",
         item_external_ids=[external_id],
         planned_at=planned.astimezone(timezone.utc),
@@ -3156,7 +3172,7 @@ async def test_confirmation_at_1620_anchors_every_checkpoint_to_actual_minute(
         "h1": actual + timedelta(hours=1),
         "h6": actual + timedelta(hours=6),
         "h24": actual + timedelta(hours=24),
-        "h72": actual + timedelta(hours=72),
+        "h48": actual + timedelta(hours=48),
     }
     values = [{
         "external_id": external_id,
@@ -3166,7 +3182,7 @@ async def test_confirmation_at_1620_anchors_every_checkpoint_to_actual_minute(
         "inquiry_count": latest.inquiry_count,
     }]
     assert service._local(current.due_at) == due_times["h1"]
-    for checkpoint in ("h1", "h6", "h24", "h72"):
+    for checkpoint in ("h1", "h6", "h24", "h48"):
         service._now = lambda checkpoint=checkpoint: due_times[checkpoint]  # type: ignore[method-assign]
         current = service.record_traffic_checkpoint(
             batch.id,
@@ -3175,13 +3191,13 @@ async def test_confirmation_at_1620_anchors_every_checkpoint_to_actual_minute(
             items=values,
             note=f"记录 {checkpoint}",
         )
-        remaining = [value for value in ("h1", "h6", "h24", "h72") if value not in current.completed_checkpoints]
+        remaining = [value for value in ("h1", "h6", "h24", "h48") if value not in current.completed_checkpoints]
         if remaining:
             assert service._local(current.due_at) == due_times[remaining[0]]
         else:
             assert current.due_at is None
     assert current.status == "closed"
-    assert current.completed_checkpoints == ["h1", "h6", "h24", "h72"]
+    assert current.completed_checkpoints == ["h1", "h6", "h24", "h48"]
 
     assert service._traffic_datetime_label(datetime(2026, 8, 13, 1, 5, tzinfo=timezone.utc)) == "8月13日9时05分"
     assert service._traffic_datetime_label(datetime(2026, 8, 31, 16, 5, tzinfo=timezone.utc)) == "9月1日0时05分"
@@ -3211,41 +3227,22 @@ async def test_automatic_checkpoint_jobs_use_actual_start_and_collect_once(
     service.bootstrap_cached_state()
     started_local = datetime(2026, 8, 14, 16, 20, tzinfo=service.timezone)
     service._now = lambda: started_local  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = await service.record_traffic_batch_now(
         request_id="auto-checkpoint-create",
         item_external_ids=[external_id],
-        planned_at=(started_local - timedelta(minutes=20)).astimezone(timezone.utc),
         actual_cost=5.9,
         plan_slot_id=None,
         note="自动采集",
         checkpoint_collection_mode="auto",
+        confirmed_already_purchased=True,
     )
-    latest = service.product(external_id)
-    prepared = await service.prepare_traffic_baseline(
-        batch.id,
-        request_id="auto-checkpoint-baseline",
-        expected_updated_at=batch.updated_at,
-        mode="manual",
-        items=[{
-            "external_id": external_id,
-            "browse_count": latest.browse_count,
-            "collect_count": latest.collect_count,
-            "want_count": latest.want_count,
-            "inquiry_count": latest.inquiry_count,
-        }],
-    )
-    started = service.start_traffic_batch(
-        batch.id,
-        request_id="auto-checkpoint-start",
-        expected_updated_at=prepared.updated_at,
-        expected_baseline_captured_at=prepared.baseline_prepared_at,
-    )
-    assert started.checkpoint_collection_mode == "auto"
-    assert [service._local(job.scheduled_for) for job in started.checkpoint_jobs] == [
+    adapter.calls.clear()
+    assert batch.checkpoint_collection_mode == "auto"
+    assert [service._local(job.scheduled_for) for job in batch.checkpoint_jobs] == [
         started_local + timedelta(hours=1),
         started_local + timedelta(hours=6),
         started_local + timedelta(hours=24),
-        started_local + timedelta(hours=72),
+        started_local + timedelta(hours=48),
     ]
 
     adapter.raw["browseCnt"] = 38
@@ -3286,36 +3283,13 @@ async def test_automatic_checkpoint_access_verification_keeps_partial_results(
     service.bootstrap_cached_state()
     started_local = datetime(2026, 8, 14, 10, 0, tzinfo=service.timezone)
     service._now = lambda: started_local  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = await service.record_traffic_batch_now(
         request_id="checkpoint-fuse-create",
         item_external_ids=ids,
-        planned_at=started_local.astimezone(timezone.utc),
         actual_cost=5.9,
         plan_slot_id=None,
         note="熔断",
-    )
-    values = []
-    for external_id in ids:
-        product = service.product(external_id)
-        values.append({
-            "external_id": external_id,
-            "browse_count": product.browse_count,
-            "collect_count": product.collect_count,
-            "want_count": product.want_count,
-            "inquiry_count": product.inquiry_count,
-        })
-    prepared = await service.prepare_traffic_baseline(
-        batch.id,
-        request_id="checkpoint-fuse-baseline",
-        expected_updated_at=batch.updated_at,
-        mode="manual",
-        items=values,
-    )
-    service.start_traffic_batch(
-        batch.id,
-        request_id="checkpoint-fuse-start",
-        expected_updated_at=prepared.updated_at,
-        expected_baseline_captured_at=prepared.baseline_prepared_at,
+        confirmed_already_purchased=True,
     )
 
     class PartialVerificationAdapter(FakeProductAdapter):
@@ -3368,35 +3342,16 @@ async def test_manual_checkpoint_mode_only_marks_due_job_waiting_manual(
     service.bootstrap_cached_state()
     started_local = datetime(2026, 8, 14, 8, 0, tzinfo=service.timezone)
     service._now = lambda: started_local  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = await service.record_traffic_batch_now(
         request_id="manual-checkpoint-create",
         item_external_ids=[external_id],
-        planned_at=started_local.astimezone(timezone.utc),
         actual_cost=5.9,
         plan_slot_id=None,
         note="人工提醒",
         checkpoint_collection_mode="manual",
+        confirmed_already_purchased=True,
     )
-    latest = service.product(external_id)
-    prepared = await service.prepare_traffic_baseline(
-        batch.id,
-        request_id="manual-checkpoint-baseline",
-        expected_updated_at=batch.updated_at,
-        mode="manual",
-        items=[{
-            "external_id": external_id,
-            "browse_count": latest.browse_count,
-            "collect_count": latest.collect_count,
-            "want_count": latest.want_count,
-            "inquiry_count": latest.inquiry_count,
-        }],
-    )
-    service.start_traffic_batch(
-        batch.id,
-        request_id="manual-checkpoint-start",
-        expected_updated_at=prepared.updated_at,
-        expected_baseline_captured_at=prepared.baseline_prepared_at,
-    )
+    adapter.calls.clear()
     service._now = lambda: started_local + timedelta(hours=1)  # type: ignore[method-assign]
     await service._dispatch_due_traffic_checkpoint_jobs()
     assert adapter.calls == []
@@ -3411,6 +3366,123 @@ async def test_manual_checkpoint_mode_only_marks_due_job_waiting_manual(
 
 
 @pytest.mark.asyncio
+async def test_legacy_72h_background_and_domain_paths_are_read_only(
+    tmp_path: Path,
+) -> None:
+    raw = {"title": "72h 历史只读", "browseCnt": 20, "itemStatusStr": "在售"}
+    database, adapter, service = build_service(tmp_path, raw)
+    external_id = "legacy-read-only-item"
+    seed_item(database, raw, external_id=external_id)
+    service.bootstrap_cached_state()
+    fixed = datetime(2026, 8, 14, 8, 0, tzinfo=service.timezone)
+    service._now = lambda: fixed + timedelta(hours=2)  # type: ignore[method-assign]
+    batch = service.create_legacy_planned_traffic_batch_for_test(
+        request_id="legacy-read-only-create",
+        item_external_ids=[external_id],
+        planned_at=fixed.astimezone(timezone.utc),
+        actual_cost=5.9,
+        plan_slot_id=None,
+        note="历史事实",
+        checkpoint_collection_mode="auto",
+    )
+    with database.session() as session:
+        stored = session.get(ProductTrafficBatch, batch.id)
+        batch_item = session.scalar(
+            select(ProductTrafficBatchItem).where(
+                ProductTrafficBatchItem.batch_id == batch.id
+            )
+        )
+        assert stored is not None and batch_item is not None
+        started_at = fixed.astimezone(timezone.utc)
+        stored.status = "observing"
+        stored.started_at = started_at
+        stored.baseline_prepared_at = started_at
+        stored.updated_at = started_at
+        batch_item.baseline_browse_count = 20
+        batch_item.baseline_captured_at = started_at
+        batch_item.baseline_source = "manual"
+        job = ProductTrafficCheckpointJob(
+            id="legacy-read-only-h1-job",
+            batch_id=batch.id,
+            checkpoint="h1",
+            scheduled_for=started_at + timedelta(hours=1),
+            status="scheduled",
+            total_count=1,
+            created_at=started_at,
+            updated_at=started_at,
+        )
+        session.add(job)
+        session.flush()
+        session.add(
+            ProductTrafficCheckpointJobItem(
+                job_id=job.id,
+                item_id=batch_item.item_id,
+                status="pending",
+                created_at=started_at,
+                updated_at=started_at,
+            )
+        )
+        session.add(
+            BusinessExpense(
+                id=f"expense-traffic-{batch.id}",
+                name="72h 历史费用",
+                category="traffic",
+                amount=5.9,
+                paid_at=fixed.isoformat(),
+                notes="历史事实",
+            )
+        )
+        session.commit()
+
+    def stored_state() -> tuple:
+        with database.session() as session:
+            stored = session.get(ProductTrafficBatch, batch.id)
+            job = session.get(ProductTrafficCheckpointJob, "legacy-read-only-h1-job")
+            row = session.scalar(
+                select(ProductTrafficCheckpointJobItem).where(
+                    ProductTrafficCheckpointJobItem.job_id == job.id
+                )
+            )
+            assert stored is not None and job is not None and row is not None
+            return (
+                stored.status,
+                stored.updated_at,
+                stored.invalidated_at,
+                stored.invalidation_reason,
+                job.status,
+                job.attempt_count,
+                job.updated_at,
+                row.status,
+                session.query(ProductTrafficCheckpoint).filter_by(
+                    batch_id=batch.id
+                ).count(),
+                session.query(ProductTrafficBatchEvent).filter_by(
+                    batch_id=batch.id
+                ).count(),
+                session.get(BusinessExpense, f"expense-traffic-{batch.id}").amount,
+            )
+
+    before = stored_state()
+    adapter.calls.clear()
+    service._restore_traffic_checkpoint_jobs()
+    assert service._invalidate_unusable_traffic_baselines() == []
+    await service._dispatch_due_traffic_checkpoint_jobs()
+    with pytest.raises(ProductTrafficConflict, match="历史 72h"):
+        await service._run_traffic_checkpoint_job("legacy-read-only-h1-job")
+    with pytest.raises(ProductTrafficConflict, match="历史 72h"):
+        service._finalize_checkpoint_job("legacy-read-only-h1-job")
+    with pytest.raises(ProductTrafficConflict, match="历史 72h"):
+        await service.retry_traffic_checkpoint_collection(
+            batch.id,
+            "h1",
+            request_id="legacy-read-only-retry",
+            expected_updated_at=started_at,
+        )
+    assert adapter.calls == []
+    assert stored_state() == before
+
+
+@pytest.mark.asyncio
 async def test_v24_manual_t0_rejects_partial_stale_and_conflicting_requests(
     tmp_path: Path,
 ) -> None:
@@ -3422,7 +3494,7 @@ async def test_v24_manual_t0_rejects_partial_stale_and_conflicting_requests(
     service.bootstrap_cached_state()
     fixed = datetime(2026, 8, 12, 18, 0, tzinfo=service.timezone)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    batch = service.create_traffic_batch(
+    batch = service.create_current_planned_traffic_batch_for_test(
         request_id="v24-create-t0",
         item_external_ids=ids,
         planned_at=fixed.astimezone(timezone.utc),
@@ -3498,7 +3570,7 @@ async def test_v24_remote_t0_access_verification_opens_batch_fuse(
 
     adapter = VerifyingAdapter(raw)
     service.adapter = adapter
-    batch = service.create_traffic_batch(
+    batch = service.create_current_planned_traffic_batch_for_test(
         request_id="v24-create-fuse",
         item_external_ids=ids,
         planned_at=datetime.now(timezone.utc),
@@ -3559,7 +3631,7 @@ def test_v24_replan_preview_is_read_only_and_commit_preserves_batch_identity(
         hour=9, minute=0, second=0, microsecond=0
     ) - timedelta(hours=72)
     service._now = lambda: fixed  # type: ignore[method-assign]
-    source = service.create_traffic_batch(
+    source = service.create_legacy_planned_traffic_batch_for_test(
         request_id="v24-source-create",
         item_external_ids=ids[:5],
         planned_at=fixed.astimezone(timezone.utc),
@@ -3567,9 +3639,9 @@ def test_v24_replan_preview_is_read_only_and_commit_preserves_batch_identity(
         plan_slot_id=None,
         note="旧 T0 来源批次",
     )
-    started = service.start_traffic_batch(source.id)
+    started = service.start_legacy_traffic_batch_for_test(source.id)
     service._now = lambda: fixed + timedelta(hours=72)  # type: ignore[method-assign]
-    service.record_traffic_checkpoint(
+    service.record_legacy_traffic_checkpoint_for_test(
         source.id,
         checkpoint="h72",
         recorded_at=(fixed + timedelta(hours=72)).astimezone(timezone.utc),
@@ -3582,7 +3654,7 @@ def test_v24_replan_preview_is_read_only_and_commit_preserves_batch_identity(
         } for index, value in enumerate(started.products)],
         note="旧基线批次即使有咨询也不能保留",
     )
-    planned = service.create_traffic_batch(
+    planned = service.create_current_planned_traffic_batch_for_test(
         request_id="v24-planned-create",
         item_external_ids=ids[:5],
         planned_at=(fixed + timedelta(hours=73)).astimezone(timezone.utc),
@@ -3626,7 +3698,7 @@ def test_v24_traffic_batch_cursor_page_is_stable(tmp_path: Path) -> None:
     seed_item(database, raw, external_id="v24-page-item")
     service.bootstrap_cached_state()
     for index in range(3):
-        service.create_traffic_batch(
+        service.create_legacy_planned_traffic_batch_for_test(
             request_id=f"v24-page-create-{index}",
             item_external_ids=["v24-page-item"],
             planned_at=datetime.now(timezone.utc) + timedelta(hours=index),

@@ -1,0 +1,5 @@
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { cashMoney } from './CashflowOverview';
+export function CashflowTrend({points}:{points:Array<{date:string;income:number;expenses:number}>}) {
+  return <div className="reference-cashflow-chart" role="img" aria-label="本月每日已记录确认收入与支出"><ResponsiveContainer width="100%" height="100%"><AreaChart data={points} margin={{top:14,right:4,bottom:0,left:-20}}><CartesianGrid vertical={false} stroke="#edf2f8"/><XAxis dataKey="date" tick={{fontSize:11,fill:'#8394ae'}} tickFormatter={value=>value.slice(5).replace('-','/')} minTickGap={50} axisLine={false} tickLine={false}/><YAxis tick={{fontSize:11,fill:'#8394ae'}} axisLine={false} tickLine={false}/><Tooltip formatter={value=>cashMoney.format(Number(value))}/><Area type="linear" dataKey="income" name="收入" stroke="#08b780" fill="#dcf8ed" strokeWidth={2} isAnimationActive={false}/><Area type="linear" dataKey="expenses" name="支出" stroke="#ff5872" fill="#fff0f3" strokeWidth={2} isAnimationActive={false}/></AreaChart></ResponsiveContainer></div>;
+}

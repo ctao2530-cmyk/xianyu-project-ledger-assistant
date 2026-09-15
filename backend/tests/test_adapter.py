@@ -576,3 +576,82 @@ def test_recent_conversation_fallback_extracts_latest_message() -> None:
         assert int(messages[0].received_at.timestamp() * 1000) == 1_750_000_000_000
 
     asyncio.run(scenario())
+
+
+def test_full_conversation_history_follows_cursor_until_complete() -> None:
+    async def scenario() -> None:
+        adapter = XianyuAdapter(
+            Settings(
+                _env_file=None,
+                xianyu_cookie=SecretStr("unb=seller; _m_h5_tk=token_suffix"),
+            )
+        )
+        calls: list[list] = []
+
+        def model(message_id: str, created_at: int) -> dict:
+            payload = base64.b64encode(
+                json.dumps({"contentType": 1, "text": {"text": message_id}}).encode()
+            ).decode()
+            return {
+                "message": {
+                    "cid": "conversation-full@goofish",
+                    "createAt": created_at,
+                    "content": {"custom": {"data": payload}},
+                    "extension": {
+                        "senderUserId": "buyer-full",
+                        "reminderTitle": "分页客户",
+                        "extJson": json.dumps({"messageId": message_id}),
+                    },
+                }
+            }
+
+        pages = [
+            {"userMessageModels": [model("message-3", 3000), model("message-2", 2000)], "hasMore": 1, "nextCursor": 2000},
+            {"userMessageModels": [model("message-2", 2000), model("message-1", 1000)], "hasMore": 0},
+        ]
+
+        async def fake_request(lwp: str, body: list, timeout: float = 15) -> dict:
+            assert lwp == "/r/MessageManager/listUserMessages"
+            calls.append(body)
+            return {"body": pages[len(calls) - 1]}
+
+        adapter._request = fake_request  # type: ignore[method-assign]
+        try:
+            messages = await adapter.fetch_all_messages(
+                "conversation-full",
+                page_size=100,
+                max_messages=500,
+            )
+        finally:
+            await adapter.close()
+
+        assert [body[2] for body in calls] == [9007199254740991, 2000]
+        assert [message.external_id for message in messages] == [
+            "message-1",
+            "message-2",
+            "message-3",
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_full_conversation_history_rejects_repeated_cursor() -> None:
+    async def scenario() -> None:
+        adapter = XianyuAdapter(
+            Settings(
+                _env_file=None,
+                xianyu_cookie=SecretStr("unb=seller; _m_h5_tk=token_suffix"),
+            )
+        )
+
+        async def fake_request(_lwp: str, _body: list, timeout: float = 15) -> dict:
+            return {"body": {"userMessageModels": [], "hasMore": 1, "nextCursor": "same"}}
+
+        adapter._request = fake_request  # type: ignore[method-assign]
+        try:
+            with pytest.raises(AdapterError, match="分页游标异常"):
+                await adapter.fetch_all_messages("conversation-full")
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())

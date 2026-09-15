@@ -47,6 +47,13 @@ class Database:
 
     def create_all(self) -> None:
         from . import models  # noqa: F401
+        from .customer_workflow_schema import validate_customer_workflow_schema, migrate_customer_workflow_schema
+        from .customer_sync_schema import validate_customer_sync_schema, migrate_customer_sync_schema
+
+        # Reject partial 0045 before any older startup migration can write.
+        with self.engine.connect() as connection:
+            validate_customer_sync_schema(connection)
+            validate_customer_workflow_schema(connection)
 
         if self.engine.dialect.name == "sqlite":
             self._backup_before_requirement_upgrade()
@@ -79,8 +86,14 @@ class Database:
             self._backup_before_project_outcome_freeze_upgrade()
             self._backup_before_global_agent_upgrade()
             self._backup_before_agent_customer_context_upgrade()
+            self._backup_before_global_agent_trace_upgrade()
+            self._backup_before_customer_auto_analysis_upgrade()
+            self._backup_before_customer_context_oauth_upgrade()
+            self._backup_before_customer_context_tunnel_upgrade()
+            self._backup_before_customer_context_thread_binding_upgrade()
             self._backup_before_phrase_library_upgrade()
             self._backup_before_customer_intake_upgrade()
+            self._backup_before_project_task_draft_upgrade()
             self._migrate_channel_columns()
             # Existing analysis tables must gain the additive feedback columns
             # before SQLAlchemy creates indexes declared by the current model.
@@ -99,10 +112,31 @@ class Database:
             self._migrate_project_outcome_freeze_schema()
             self._migrate_global_agent_schema()
             self._migrate_agent_customer_context_schema()
+            self._migrate_global_agent_trace_schema()
+            self._migrate_customer_context_gateway_schema()
+            self._migrate_customer_context_oauth_schema()
+            self._migrate_customer_context_tunnel_schema()
+            self._migrate_customer_context_thread_binding_schema()
+            self._migrate_customer_auto_analysis_schema()
             self._migrate_phrase_library_schema()
             self._migrate_customer_intake_schema()
+            self._migrate_project_requirement_handoff_schema()
+            self._migrate_project_task_draft_schema()
+        with self.engine.begin() as connection:
+            migrate_customer_workflow_schema(connection)
+            migrate_customer_sync_schema(connection)
         Base.metadata.create_all(self.engine)
+        with self.engine.connect() as connection:
+            validate_customer_workflow_schema(connection)
         if self.engine.dialect.name == "sqlite":
+            # The analysis domain depends on global-agent and conversation
+            # tables that may themselves be created by Base.metadata above.
+            # Re-run the idempotent verifier to install safety triggers on a
+            # brand-new database and to reject structural drift.
+            self._migrate_customer_auto_analysis_schema()
+            self._migrate_customer_context_oauth_schema()
+            self._migrate_customer_context_tunnel_schema()
+            self._migrate_customer_context_thread_binding_schema()
             self._seed_codex_verification_data()
             self._migrate_personal_project_schema()
             self._migrate_requirement_blueprint_schema()
@@ -179,6 +213,33 @@ class Database:
         with self.engine.begin() as connection:
             migrate_estimate_calibration_schema(connection)
 
+    def _migrate_project_requirement_handoff_schema(self) -> None:
+        from .schema_migrations import migrate_project_requirement_handoff_schema
+
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.commit()
+            try:
+                with connection.begin():
+                    migrate_project_requirement_handoff_schema(connection)
+            finally:
+                if connection.in_transaction():
+                    connection.rollback()
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                connection.commit()
+            violations = list(connection.exec_driver_sql("PRAGMA foreign_key_check"))
+            if violations:
+                raise RuntimeError(
+                    "project requirement handoff migration left foreign-key violations: "
+                    f"{violations[:3]}"
+                )
+
+    def _migrate_project_task_draft_schema(self) -> None:
+        from .schema_migrations import migrate_project_task_draft_schema
+
+        with self.engine.begin() as connection:
+            migrate_project_task_draft_schema(connection)
+
     def _migrate_project_outcome_freeze_schema(self) -> None:
         from .schema_migrations import migrate_project_outcome_freeze_schema
 
@@ -196,6 +257,42 @@ class Database:
 
         with self.engine.begin() as connection:
             migrate_agent_customer_context_schema(connection)
+
+    def _migrate_global_agent_trace_schema(self) -> None:
+        from .schema_migrations import migrate_global_agent_trace_schema
+
+        with self.engine.begin() as connection:
+            migrate_global_agent_trace_schema(connection)
+
+    def _migrate_customer_context_gateway_schema(self) -> None:
+        from .schema_migrations import migrate_customer_context_gateway_schema
+
+        with self.engine.begin() as connection:
+            migrate_customer_context_gateway_schema(connection)
+
+    def _migrate_customer_context_oauth_schema(self) -> None:
+        from .schema_migrations import migrate_customer_context_oauth_schema
+
+        with self.engine.begin() as connection:
+            migrate_customer_context_oauth_schema(connection)
+
+    def _migrate_customer_context_tunnel_schema(self) -> None:
+        from .schema_migrations import migrate_customer_context_tunnel_schema
+
+        with self.engine.begin() as connection:
+            migrate_customer_context_tunnel_schema(connection)
+
+    def _migrate_customer_context_thread_binding_schema(self) -> None:
+        from .schema_migrations import migrate_customer_context_thread_binding_schema
+
+        with self.engine.begin() as connection:
+            migrate_customer_context_thread_binding_schema(connection)
+
+    def _migrate_customer_auto_analysis_schema(self) -> None:
+        from .schema_migrations import migrate_customer_auto_analysis_schema
+
+        with self.engine.begin() as connection:
+            migrate_customer_auto_analysis_schema(connection)
 
     def _migrate_phrase_library_schema(self) -> None:
         from .schema_migrations import migrate_phrase_library_schema
@@ -311,6 +408,223 @@ class Database:
         target.chmod(0o600)
         if len(hashlib.sha256(target.read_bytes()).hexdigest()) != 64:
             raise RuntimeError("phrase library backup failed SHA-256 verification")
+
+    def _backup_before_customer_auto_analysis_upgrade(self) -> None:
+        """Create a private WAL-safe backup before the additive phase 0041 schema."""
+
+        database_path = self.engine.url.database
+        if not database_path or database_path == ":memory:":
+            return
+        path = Path(database_path)
+        if not path.is_file():
+            return
+        expected = {
+            "customer_analysis_threads",
+            "customer_analysis_runs",
+            "customer_analysis_events",
+            "customer_analysis_artifacts",
+            "customer_analysis_mutation_requests",
+        }
+        with self.engine.connect() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            present = expected.intersection(tables)
+            if present == expected:
+                from .schema_migrations import validate_customer_auto_analysis_schema
+
+                try:
+                    if validate_customer_auto_analysis_schema(connection):
+                        return
+                except RuntimeError:
+                    # Back up the malformed structure before startup migration
+                    # rejects it below.
+                    pass
+        if "ledger_state" not in tables:
+            return
+        backup_dir = path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.chmod(0o700)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / (
+            f"{path.stem}-before-customer-auto-analysis-{stamp}{path.suffix}"
+        )
+        with sqlite3.connect(path) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+            result = destination.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError(
+                    "customer auto analysis backup failed SQLite integrity check"
+                )
+            violations = list(destination.execute("PRAGMA foreign_key_check"))
+            if violations:
+                raise RuntimeError(
+                    "customer auto analysis backup has foreign-key violations: "
+                    f"{violations[:3]}"
+                )
+        target.chmod(0o600)
+        if len(hashlib.sha256(target.read_bytes()).hexdigest()) != 64:
+            raise RuntimeError("customer auto analysis backup failed SHA-256 verification")
+
+    def _backup_before_customer_context_oauth_upgrade(self) -> None:
+        """Create a private WAL-safe backup before the additive phase 0042 table."""
+
+        database_path = self.engine.url.database
+        if not database_path or database_path == ":memory:":
+            return
+        path = Path(database_path)
+        if not path.is_file():
+            return
+        table = "customer_context_oauth_bindings"
+        with self.engine.connect() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if table in tables:
+                from .schema_migrations import validate_customer_context_oauth_schema
+
+                try:
+                    if validate_customer_context_oauth_schema(connection):
+                        return
+                except RuntimeError:
+                    pass
+        if "ledger_state" not in tables:
+            return
+        backup_dir = path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.chmod(0o700)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / (
+            f"{path.stem}-before-customer-context-oauth-{stamp}{path.suffix}"
+        )
+        with sqlite3.connect(path) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+            result = destination.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError(
+                    "customer context OAuth backup failed SQLite integrity check"
+                )
+            violations = list(destination.execute("PRAGMA foreign_key_check"))
+            if violations:
+                raise RuntimeError(
+                    "customer context OAuth backup has foreign-key violations: "
+                    f"{violations[:3]}"
+                )
+        target.chmod(0o600)
+        if len(hashlib.sha256(target.read_bytes()).hexdigest()) != 64:
+            raise RuntimeError("customer context OAuth backup failed SHA-256 verification")
+
+    def _backup_before_customer_context_tunnel_upgrade(self) -> None:
+        """Create a private WAL-safe backup before the additive phase 0043 table."""
+
+        database_path = self.engine.url.database
+        if not database_path or database_path == ":memory:":
+            return
+        path = Path(database_path)
+        if not path.is_file():
+            return
+        table = "customer_context_tunnel_bindings"
+        with self.engine.connect() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if table in tables:
+                from .schema_migrations import validate_customer_context_tunnel_schema
+
+                try:
+                    if validate_customer_context_tunnel_schema(connection):
+                        return
+                except RuntimeError:
+                    pass
+        if "ledger_state" not in tables:
+            return
+        backup_dir = path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.chmod(0o700)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / (
+            f"{path.stem}-before-customer-context-tunnel-{stamp}{path.suffix}"
+        )
+        with sqlite3.connect(path) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+            result = destination.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError(
+                    "customer context tunnel backup failed SQLite integrity check"
+                )
+            violations = list(destination.execute("PRAGMA foreign_key_check"))
+            if violations:
+                raise RuntimeError(
+                    "customer context tunnel backup has foreign-key violations: "
+                    f"{violations[:3]}"
+                )
+        target.chmod(0o600)
+        if len(hashlib.sha256(target.read_bytes()).hexdigest()) != 64:
+            raise RuntimeError("customer context tunnel backup failed SHA-256 verification")
+
+    def _backup_before_customer_context_thread_binding_upgrade(self) -> None:
+        """Create a private WAL-safe backup before the additive phase 0044 table."""
+
+        database_path = self.engine.url.database
+        if not database_path or database_path == ":memory:":
+            return
+        path = Path(database_path)
+        if not path.is_file():
+            return
+        table = "customer_context_thread_bindings"
+        with self.engine.connect() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if table in tables:
+                from .schema_migrations import (
+                    validate_customer_context_thread_binding_schema,
+                )
+
+                try:
+                    if validate_customer_context_thread_binding_schema(connection):
+                        return
+                except RuntimeError:
+                    pass
+        if "ledger_state" not in tables:
+            return
+        backup_dir = path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.chmod(0o700)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / (
+            f"{path.stem}-before-customer-context-thread-binding-{stamp}{path.suffix}"
+        )
+        with sqlite3.connect(path) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+            result = destination.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError(
+                    "customer context thread binding backup failed SQLite integrity check"
+                )
+            violations = list(destination.execute("PRAGMA foreign_key_check"))
+            if violations:
+                raise RuntimeError(
+                    "customer context thread binding backup has foreign-key violations: "
+                    f"{violations[:3]}"
+                )
+        target.chmod(0o600)
+        if len(hashlib.sha256(target.read_bytes()).hexdigest()) != 64:
+            raise RuntimeError(
+                "customer context thread binding backup failed SHA-256 verification"
+            )
 
     def _backup_before_agent_customer_context_upgrade(self) -> None:
         """Create a WAL-safe private backup before the additive phase 0034 schema."""
@@ -461,6 +775,80 @@ class Database:
         target.chmod(0o600)
         if len(hashlib.sha256(target.read_bytes()).hexdigest()) != 64:
             raise RuntimeError("global Agent backup failed SHA-256 verification")
+
+    def _backup_before_global_agent_trace_upgrade(self) -> None:
+        """Create one private backup before the additive phase 0039 table."""
+
+        database_path = self.engine.url.database
+        if not database_path or database_path == ":memory:":
+            return
+        path = Path(database_path)
+        if not path.is_file():
+            return
+        required = {
+            "id",
+            "run_id",
+            "position",
+            "node_name",
+            "status",
+            "summary",
+            "detail_json",
+            "duration_ms",
+            "started_at",
+            "completed_at",
+            "created_at",
+        }
+        with self.engine.connect() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "global_agent_runs" not in tables:
+                return
+            columns = (
+                {
+                    str(row[1])
+                    for row in connection.exec_driver_sql(
+                        "PRAGMA table_info(global_agent_run_steps)"
+                    )
+                }
+                if "global_agent_run_steps" in tables
+                else set()
+            )
+        if columns == required:
+            return
+        if columns:
+            raise RuntimeError(
+                "global Agent run trace schema is incomplete: "
+                + ", ".join(sorted(required - columns))
+            )
+        backup_dir = path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.chmod(0o700)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / (
+            f"{path.stem}-before-global-agent-trace-{stamp}{path.suffix}"
+        )
+        with sqlite3.connect(path) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+            result = destination.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError(
+                    "global Agent run trace backup failed SQLite integrity check"
+                )
+            violations = list(destination.execute("PRAGMA foreign_key_check"))
+            if violations:
+                raise RuntimeError(
+                    "global Agent run trace backup has foreign-key violations: "
+                    f"{violations[:3]}"
+                )
+        target.chmod(0o600)
+        if len(hashlib.sha256(target.read_bytes()).hexdigest()) != 64:
+            raise RuntimeError(
+                "global Agent run trace backup failed SHA-256 verification"
+            )
 
     def _seed_codex_verification_data(self) -> None:
         from .schema_migrations import seed_codex_verification_data
@@ -1027,6 +1415,67 @@ class Database:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         target = backup_dir / f"{path.stem}-before-requirement-blueprints-{stamp}{path.suffix}"
         shutil.copy2(path, target)
+
+    def _backup_before_project_task_draft_upgrade(self) -> None:
+        """Create one private WAL-safe backup before the 0037/0038 rebuild."""
+
+        database_path = self.engine.url.database
+        if not database_path or database_path == ":memory:":
+            return
+        path = Path(database_path)
+        if not path.is_file():
+            return
+        with self.engine.connect() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "requirement_document_versions" not in tables or "business_tasks" not in tables:
+                return
+            requirement_rows = list(
+                connection.exec_driver_sql("PRAGMA table_info(requirement_document_versions)")
+            )
+            requirement_columns = {str(row[1]) for row in requirement_rows}
+            conversation_nullable = not bool(
+                next((row[3] for row in requirement_rows if str(row[1]) == "conversation_id"), 0)
+            )
+            task_columns = {
+                str(row[1])
+                for row in connection.exec_driver_sql("PRAGMA table_info(business_tasks)")
+            }
+        requirement_complete = {
+            "project_id", "source_filename", "source_sha256", "import_metadata_json"
+        }.issubset(requirement_columns) and conversation_nullable
+        task_complete = {
+            "workspace_key", "dependency_task_keys_json", "deliverables_json",
+            "requirement_version_id",
+        }.issubset(task_columns)
+        draft_complete = {
+            "project_task_draft_previews", "project_task_draft_items"
+        }.issubset(tables)
+        if requirement_complete and task_complete and draft_complete:
+            return
+        backup_dir = path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.chmod(0o700)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = backup_dir / f"{path.stem}-before-project-task-drafts-{stamp}{path.suffix}"
+        with sqlite3.connect(path) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+            result = destination.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError("project task draft backup failed integrity check")
+            violations = list(destination.execute("PRAGMA foreign_key_check"))
+            if violations:
+                raise RuntimeError(
+                    "project task draft backup has foreign-key violations: "
+                    f"{violations[:3]}"
+                )
+        target.chmod(0o600)
+        if len(hashlib.sha256(target.read_bytes()).hexdigest()) != 64:
+            raise RuntimeError("project task draft backup failed SHA-256 verification")
 
     def _backup_before_conversation_history_import_upgrade(self) -> None:
         """Create one WAL-safe backup before adding history-import audit state."""

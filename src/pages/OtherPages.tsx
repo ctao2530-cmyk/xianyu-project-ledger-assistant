@@ -1,3 +1,4 @@
+import { Tabs } from '../components/workspace/Tabs';
 import {
   ArrowClockwise,
   Bell,
@@ -75,7 +76,7 @@ import {
   type ProjectPageRoute,
   type ProjectRouteMode,
 } from "./BusinessAssistantPages";
-import { EnhancedIncomeRecordsPage } from "./IncomeRecordsPage";
+import { OperatingRecordsPage } from "./OperatingRecordsPage";
 import { ProjectWorkspacePage } from "./ProjectWorkspacePage";
 import "./other-pages.css";
 import { CustomerMessagesPage } from "./CustomerMessagesPage";
@@ -84,12 +85,14 @@ import { CustomerRequirementBlueprintPage } from "./CustomerRequirementBlueprint
 import { BusinessAnalysisPage } from "./BusinessAnalysisPage";
 import { ConnectionRecoveryDrawer } from "./ConnectionRecoveryDrawer";
 import { GlobalAgentSettingsCard } from "../components/GlobalAgentSettingsCard";
+import { ChatGPTConversationAccessCard } from "../components/ChatGPTConversationAccessCard";
 import { CustomerCreateDialog } from "../components/CustomerCreateDialog";
 
 export type OtherPageName =
   | "客户消息"
   | "商品经营"
   | "项目管理"
+  | "经营记录"
   | "收入记录"
   | "支出记录"
   | "客户管理"
@@ -630,6 +633,16 @@ function deriveProductGrowth(data: ProductIntelligenceView, period: GrowthPeriod
   };
 }
 
+function OperatingAnalysisHub({snapshot,onNavigate}:{snapshot:LedgerSnapshot;onNavigate:(page:string)=>void}) {
+  const read = () => {
+    const part = decodeURIComponent(window.location.hash).split('/')[1];
+    return part==='statistics'||part==='judgment'?part:'insights';
+  };
+  const [view,setView]=useState(read);
+  useEffect(()=>{const sync=()=>setView(read());window.addEventListener('hashchange',sync);window.addEventListener('popstate',sync);return()=>{window.removeEventListener('hashchange',sync);window.removeEventListener('popstate',sync);};},[]);
+  return <section><nav className="project-detail-sections" aria-label="经营分析视图">{[['insights','问题与建议'],['statistics','数据统计'],['judgment','今日判断']].map(([key,label])=><button type="button" key={key} aria-current={view===key?'page':undefined} onClick={()=>{setView(key);window.location.hash=encodeURIComponent(`经营分析中心/${key}`);}}>{label}</button>)}</nav>{view==='statistics'?<DataStatisticsHub snapshot={snapshot}/>:view==='judgment'?<AIWorkspacePage snapshot={snapshot} onNavigate={onNavigate}/>:<BusinessAnalysisPage onNavigate={onNavigate}/>}</section>;
+}
+
 function DataStatisticsHub({ snapshot }: { snapshot: LedgerSnapshot }) {
   const [period, setPeriod] = useState<GrowthPeriod>(7);
   const [data, setData] = useState<ProductIntelligenceView | null>(null);
@@ -825,7 +838,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
     提醒通知: "决定哪些经营事项会进入顶部提醒和待办列表。",
     渠道连接: "查看闲鱼监听与微信客服的本机连接状态。",
     商品采集: "查看每日一次的只读采集计划、数据新鲜度和安全边界。",
-    AI与回复: "查看 DeepSeek 快速回复、Codex 深度生成、线索分析与 GPT 人工导入状态。",
+    AI与回复: "查看 DeepSeek 快速回复、Codex 深度生成与线索分析状态。",
     报价参数: "设置目标时薪与风险缓冲，报价金额始终由规则计算。",
     数据迁移: "把当前浏览器中的旧记账数据预览、去重后导入统一 SQLite。",
     数据与同步: "查看统一 SQLite 保存状态，并导出完整经营数据备份。",
@@ -837,6 +850,9 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
   const deepseekBaseUrl = deepseekProvider?.base_url || "https://api.deepseek.com";
   const deepseekReplyModel = deepseekProvider?.model || "deepseek-v4-flash";
   const deepseekLeadModel = deepseekProvider?.lead_model || deepseekReplyModel;
+  const deepseekConfigLabel = deepseekProvider?.config_file
+    ? deepseekProvider.config_file.split("/").filter(Boolean).pop() || ".env"
+    : ".env";
   const deepseekStatusLabel = !deepseekProvider?.configured
     ? "待配置"
     : deepseekProvider.status === "connected"
@@ -918,7 +934,6 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
       <span key="deepseek"><Sparkle size={19} weight="duotone" /><b>DeepSeek 快速</b><small>{deepseekProvider?.configured ? `${deepseekReplyModel} · ${deepseekProvider.last_latency_seconds ? `最近 ${deepseekProvider.last_latency_seconds}s` : "等待首次调用"}` : "未配置 API Key"}</small><em className={deepseekProvider?.configured ? "ok" : "muted"}>{deepseekProvider?.configured ? "可用" : "待配置"}</em></span>,
       <span key="codex"><CheckCircle size={19} weight="fill" /><b>Codex 深度</b><small>{platformStatus?.codex_logged_in ? `${providerStatuses.find((item) => item.provider === "codex_cli")?.model || "当前账号模型"}` : "需要本机登录"}</small><em className={platformStatus?.codex_logged_in ? "ok" : "muted"}>{platformStatus?.codex_logged_in ? "已就绪" : "需检查"}</em></span>,
       <span key="lead"><Funnel size={19} weight="duotone" /><b>线索分析</b><small>DeepSeek 只给建议，确认后才写入</small><em className={deepseekProvider?.configured ? "ok" : "muted"}>人工确认</em></span>,
-      <span key="gpt"><FileText size={19} weight="duotone" /><b>GPT 需求导入</b><small>脱敏导出 + 严格 JSON + 蓝图预览</small><em className="ok">可使用</em></span>,
     ]}</div>
     <section className="deepseek-connection-card" aria-label="DeepSeek 连接路径">
       <header>
@@ -933,7 +948,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
           <li><i>3</i><span><b>验证成功后生效</b><small>原子更新本机 .env，无需盲目重启或更换端口。</small></span></li>
         </ol>
         <dl className="deepseek-path-list">
-          <div><dt>配置文件</dt><dd><code>{deepseekProvider?.config_file || "项目根目录/.env"}</code></dd></div>
+          <div><dt>配置文件</dt><dd><code>{deepseekConfigLabel}</code></dd></div>
           <div><dt>API Base</dt><dd><code>{deepseekBaseUrl}</code></dd></div>
           <div><dt>对话请求</dt><dd><span className="request-method">POST</span><code>{deepseekProvider?.chat_endpoint || `${deepseekBaseUrl}/chat/completions`}</code></dd></div>
           <div><dt>健康检测</dt><dd><span className="request-method get">GET</span><code>{deepseekProvider?.models_endpoint || `${deepseekBaseUrl}/models`}</code></dd></div>
@@ -949,6 +964,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
         </div>
       </footer>
     </section>
+    <ChatGPTConversationAccessCard onToast={onToast} />
     <SettingRow icon={CheckCircle} title="Codex 本机登录" description={codexProvider?.detail || "Codex 登录由本机 CLI 管理，不在网页输入 ChatGPT 密码"} control={<button type="button" className="outline-action" onClick={() => setRecoveryTarget("codex_cli")}><ArrowClockwise size={15} />登录与检测</button>} tone="purple" />
     <SettingRow icon={Sparkle} title="Codex 回复速度档位" description="仅在手动选择 Codex 深度草稿时使用" control={<select aria-label="回复速度档位" className="setting-control" value={settings.replySpeedMode || "balanced"} onChange={(event) => update({ replySpeedMode: event.target.value as LedgerSnapshot["settings"]["replySpeedMode"] })}><option value="fast">极速</option><option value="balanced">平衡</option><option value="quality">高质量</option><option value="custom">自定义</option></select>} tone="blue" />
     <SettingRow icon={ShieldCheck} title="真实发送" description="无论 DeepSeek 或 Codex，价格与交付等风险始终由本地规则复查" control={<span className="setting-control">默认人工确认</span>} tone="green" />
@@ -1025,7 +1041,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
 
   return <>
     <div className="other-page settings-page"><div className="settings-layout settings-focused-layout">
-      <SectionCard className="settings-nav">{sections.map(([label, Icon]) => <button type="button" aria-current={section === label ? "page" : undefined} className={section === label ? "active" : ""} onClick={() => go(label)} key={label}><Icon size={18} />{label}</button>)}</SectionCard>
+      <Tabs label="设置分类" vertical items={sections.map(([label,Icon])=>({key:label,label,icon:<Icon size={18}/>}))} value={section} onChange={go}/>
       <main className="settings-main settings-focused-main" key={section}>{activePanel}</main>
     </div></div>
     {recoveryTarget && <ConnectionRecoveryDrawer target={recoveryTarget} current={recoveryCurrent} onClose={() => setRecoveryTarget(null)} onRecovered={handleConnectionRecovered} onToast={onToast} />}
@@ -1035,6 +1051,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
 export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, onCreateChangeOrder, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onPersistedSnapshot, onNavigate, globalSearch, initialSettingsSection, projectRoute, onProjectRouteChange, customerRoute, onCustomerRouteChange }: OtherPagesProps) {
   const [modal, setModal] = useState<CrudActionKind | null>(null);
   const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
+  const [intakeConversation, setIntakeConversation] = useState<number | undefined>();
   const [createProjectKind, setCreateProjectKind] = useState<ProjectKind>("client");
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
@@ -1063,20 +1080,19 @@ export function OtherPages({ page, snapshot, onQuickAdd, onCreatePaymentPlan, on
     window.setTimeout(() => setToast(""), 2200);
   };
   const content = useMemo(() => {
-    if (page === "客户消息") return <CustomerMessagesPage customers={snapshot.customers} onOpenRequirement={(customerId, caseId) => onCustomerRouteChange({ customerId, caseId }, "push")} onProjectCreated={(projectId) => { window.location.hash = encodeURIComponent(`项目管理/${projectId}/immersive`); window.location.reload(); }} />;
+    if (page === "客户消息") return <CustomerMessagesPage customers={snapshot.customers} snapshot={snapshot} onSnapshotChange={onSnapshotChange} onCreateCustomer={id=>{setIntakeConversation(id);setCustomerCreateOpen(true);}} onOpenRequirement={(customerId, caseId) => onCustomerRouteChange({ customerId, caseId }, "push")} onProjectCreated={(projectId) => { window.location.hash = encodeURIComponent(`项目管理/${projectId}/overview`); }} />;
     if (page === "商品经营") return <ProductIntelligencePage globalSearch={globalSearch} />;
     if (page === "项目管理") return <ProjectWorkspacePage snapshot={snapshot} onCreateProject={(projectKind = "client") => { setCreateProjectKind(projectKind); setModal("project"); }} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} onNavigate={onNavigate} globalSearch={globalSearch} projectRoute={projectRoute} onProjectRouteChange={onProjectRouteChange} />;
-    if (page === "收入记录") return <EnhancedIncomeRecordsPage snapshot={snapshot} onQuickAdd={onQuickAdd} onCreatePaymentPlan={onCreatePaymentPlan} onCreateChangeOrder={onCreateChangeOrder} onConfirmPayment={onConfirmPayment} onRecordSettlementIssue={onRecordSettlementIssue} onSnapshotChange={onSnapshotChange} onNavigate={onNavigate} globalSearch={globalSearch} />;
-    if (page === "支出记录") return <CleanExpenseRecordsPage snapshot={snapshot} onAction={setModal} extraRows={[]} globalSearch={globalSearch} onViewExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense) { setToast(`${expense.name} · ¥${expense.amount.toLocaleString()} · ${expense.notes || "无备注"}`); window.setTimeout(() => setToast(""), 3200); } }} onEditExpense={(id) => { setEditingExpenseId(id); setModal("expense"); }} onDeleteExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense && window.confirm(`确认删除支出“${expense.name}”？此操作无法撤销。`)) { onSnapshotChange({ ...snapshot, expenses: snapshot.expenses.filter((item) => item.id !== id) }); setToast(`${expense.name} 已删除`); window.setTimeout(() => setToast(""), 2200); } }} />;
+    if (page === "经营记录" || page === "收入记录" || page === "支出记录") return <OperatingRecordsPage snapshot={snapshot} globalSearch={globalSearch} onRecordExpense={() => setModal("expense")} onConfirmPayment={onConfirmPayment} onCreatePaymentPlan={onCreatePaymentPlan} onNavigateProject={id => id ? onProjectRouteChange({projectId:id,tab:"overview"},"push") : onNavigate("项目管理")} onEditExpense={(id) => { setEditingExpenseId(id); setModal("expense"); }} onDeleteExpense={(id) => { const expense = snapshot.expenses.find((item) => item.id === id); if (expense && window.confirm(`确认删除支出“${expense.name}”？此操作无法撤销。`)) { onSnapshotChange({ ...snapshot, expenses: snapshot.expenses.filter((item) => item.id !== id) }); setToast(`${expense.name} 已删除`); window.setTimeout(() => setToast(""), 2200); } }} />;
     if (page === "客户管理") {
       const customer = customerRoute ? snapshot.customers.find((item) => item.id === customerRoute.customerId) : null;
       if (customerRoute && customer) return <CustomerRequirementBlueprintPage customer={customer} route={customerRoute} onRouteChange={onCustomerRouteChange} onSnapshotChange={onSnapshotChange} />;
-      return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => setCustomerCreateOpen(true)} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} onNavigate={onNavigate} globalSearch={globalSearch} onOpenRequirements={(customerId) => onCustomerRouteChange({ customerId, caseId: null }, "push")} />;
+      return <EnhancedCustomerManagementPage snapshot={snapshot} onCreateCustomer={() => { setIntakeConversation(undefined); setCustomerCreateOpen(true); }} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} onNavigate={onNavigate} globalSearch={globalSearch} onOpenRequirements={(customerId) => onCustomerRouteChange({ customerId, caseId: null }, "push")} />;
     }
     if (page === "数据统计") return <DataStatisticsHub snapshot={snapshot} />;
-    if (page === "经营分析中心") return <BusinessAnalysisPage onNavigate={onNavigate} />;
+    if (page === "经营分析中心") return <OperatingAnalysisHub snapshot={snapshot} onNavigate={onNavigate} />;
     if (page === "AI经营助手") return <AIWorkspacePage snapshot={snapshot} onNavigate={onNavigate} />;
     return <FunctionalSettingsCenterPage snapshot={snapshot} onSnapshotChange={onSnapshotChange} initialSection={initialSettingsSection} onToast={(message) => { setToast(message); window.setTimeout(() => setToast(""), 2200); }} />;
   }, [customerRoute, globalSearch, initialSettingsSection, onConfirmPayment, onCreateChangeOrder, onCreatePaymentPlan, onCustomerRouteChange, onNavigate, onPersistedSnapshot, onProjectRouteChange, onQuickAdd, onRecordSettlementIssue, onSnapshotChange, page, projectRoute, snapshot]);
-  return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} initialProjectKind={createProjectKind} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{customerCreateOpen && <CustomerCreateDialog onClose={() => setCustomerCreateOpen(false)} onCreated={(next, customerName) => { onPersistedSnapshot(next); setCustomerCreateOpen(false); setToast(`${customerName} 已加入客户列表`); window.setTimeout(() => setToast(""), 2200); }} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
+  return <>{content}{modal && <CrudModal kind={modal} snapshot={snapshot} editingExpenseId={editingExpenseId} initialProjectKind={createProjectKind} onClose={() => { setModal(null); setEditingExpenseId(null); }} onCreated={created} />}{customerCreateOpen && <CustomerCreateDialog initialConversationId={intakeConversation} onClose={() => setCustomerCreateOpen(false)} onCreated={(next, customerName) => { onPersistedSnapshot(next); setCustomerCreateOpen(false); window.dispatchEvent(new Event("xunying:customer-created")); setToast(`${customerName} 已加入客户列表`); window.setTimeout(() => setToast(""), 2200); }} />}{toast && <div className="page-toast" role="status"><CheckCircle size={18} weight="fill" />{toast}</div>}</>;
 }

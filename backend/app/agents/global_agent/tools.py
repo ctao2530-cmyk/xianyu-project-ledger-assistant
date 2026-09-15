@@ -19,6 +19,8 @@ from ...models import (
     GlobalAgentConversationSummary,
     Item,
     Message,
+    ProductMonitor,
+    utcnow,
 )
 from ...services.business_analysis import BusinessAnalysisService
 
@@ -70,6 +72,22 @@ class GlobalAgentBusinessTools:
         "finance_summary": "财务摘要",
         "business_analysis": "经营分析快照",
         "customer_conversation_context": "已绑定客户会话",
+    }
+    SOURCES = {
+        "customer_summary": "business_customers",
+        "product_lookup": "owned_product_registry",
+        "project_summary": "business_projects",
+        "finance_summary": "canonical_ledger",
+        "business_analysis": "business_analysis_overview",
+        "customer_conversation_context": "bound_customer_conversation",
+    }
+    SENSITIVITY = {
+        "customer_summary": "business_summary",
+        "product_lookup": "business_summary",
+        "project_summary": "business_summary",
+        "finance_summary": "business_summary",
+        "business_analysis": "business_summary",
+        "customer_conversation_context": "bound_customer_text",
     }
 
     def __init__(
@@ -147,9 +165,12 @@ class GlobalAgentBusinessTools:
                 "force_full": force_full,
             }
             started = time.perf_counter()
-            result = self.customer_conversation_context(
-                conversation_id,
-                force_full=force_full,
+            result = self.with_evidence_metadata(
+                name,
+                self.customer_conversation_context(
+                    conversation_id,
+                    force_full=force_full,
+                ),
             )
             duration = max(0, round((time.perf_counter() - started) * 1000))
             return ToolExecution(
@@ -165,7 +186,7 @@ class GlobalAgentBusinessTools:
         query = str(arguments.get("query") or "").strip()[:100]
         safe_arguments = {"query": query} if query else {}
         started = time.perf_counter()
-        result = handler(query)
+        result = self.with_evidence_metadata(name, handler(query))
         duration = max(0, round((time.perf_counter() - started) * 1000))
         return ToolExecution(
             name=name,
@@ -174,6 +195,56 @@ class GlobalAgentBusinessTools:
             result=result,
             duration_ms=duration,
         )
+
+    def evidence_metadata(
+        self,
+        name: str,
+        result: dict[str, Any],
+        *,
+        fallback_observed_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Build the allowlisted provenance contract used by storage and UI.
+
+        Tool payloads are never trusted to choose their own source or
+        sensitivity label.  This also lets old stored results receive safe
+        defaults when they are rendered without rewriting historical JSON.
+        """
+
+        revision_value = result.get("revision", result.get("ledger_revision"))
+        revision = (
+            int(revision_value)
+            if isinstance(revision_value, int) and not isinstance(revision_value, bool)
+            else None
+        )
+        observed_at = str(
+            result.get("observed_at")
+            or fallback_observed_at
+            or utcnow().isoformat()
+        )
+        return {
+            "source": self.SOURCES.get(name, "local_business_data"),
+            "observed_at": observed_at,
+            "revision": revision,
+            "read_only": True,
+            "sensitivity": self.SENSITIVITY.get(name, "business_summary"),
+        }
+
+    def with_evidence_metadata(
+        self,
+        name: str,
+        result: dict[str, Any],
+        *,
+        fallback_observed_at: str | None = None,
+    ) -> dict[str, Any]:
+        enriched = dict(result)
+        enriched.update(
+            self.evidence_metadata(
+                name,
+                enriched,
+                fallback_observed_at=fallback_observed_at,
+            )
+        )
+        return enriched
 
     def customer_conversation_context(
         self,
@@ -329,8 +400,12 @@ class GlobalAgentBusinessTools:
             statement = select(BusinessCustomer).order_by(
                 BusinessCustomer.updated_at.desc(), BusinessCustomer.name.asc()
             )
+            count_statement = select(func.count()).select_from(BusinessCustomer)
             if query:
-                statement = statement.where(BusinessCustomer.name.ilike(f"%{query}%"))
+                condition = BusinessCustomer.name.ilike(f"%{query}%")
+                statement = statement.where(condition)
+                count_statement = count_statement.where(condition)
+            matched_count = int(session.scalar(count_statement) or 0)
             customers = list(session.scalars(statement.limit(10)))
             rows: list[dict[str, Any]] = []
             for customer in customers:
@@ -354,22 +429,41 @@ class GlobalAgentBusinessTools:
         return {
             "scope": "business_customers_without_messages_or_images",
             "query": query,
-            "count": len(rows),
+            "count": matched_count,
+            "matched_count": matched_count,
+            "returned_count": len(rows),
+            "observed_at": utcnow().isoformat(),
             "customers": rows,
         }
 
     def product_lookup(self, query: str) -> dict[str, Any]:
         with self.database.session() as session:
-            statement = select(Item).order_by(Item.updated_at.desc(), Item.id.desc())
+            conditions = [ProductMonitor.ownership_status == "owned"]
             if query:
-                statement = statement.where(
+                conditions.append(
                     or_(Item.title.ilike(f"%{query}%"), Item.external_id == query)
                 )
+            statement = (
+                select(Item)
+                .join(ProductMonitor, ProductMonitor.item_id == Item.id)
+                .where(*conditions)
+                .order_by(Item.updated_at.desc(), Item.id.desc())
+            )
+            count_statement = (
+                select(func.count())
+                .select_from(ProductMonitor)
+                .join(Item, Item.id == ProductMonitor.item_id)
+                .where(*conditions)
+            )
+            matched_count = int(session.scalar(count_statement) or 0)
             products = list(session.scalars(statement.limit(10)))
         return {
-            "scope": "local_product_records_no_remote_collection",
+            "scope": "verified_owned_local_product_records_no_remote_collection",
             "query": query,
-            "count": len(products),
+            "count": matched_count,
+            "matched_count": matched_count,
+            "returned_count": len(products),
+            "observed_at": utcnow().isoformat(),
             "products": [
                 {
                     "id": product.id,
@@ -388,13 +482,15 @@ class GlobalAgentBusinessTools:
             statement = select(BusinessProject).order_by(
                 BusinessProject.updated_at.desc(), BusinessProject.name.asc()
             )
+            count_statement = select(func.count()).select_from(BusinessProject)
             if query:
-                statement = statement.where(
-                    or_(
-                        BusinessProject.name.ilike(f"%{query}%"),
-                        BusinessProject.id == query,
-                    )
+                condition = or_(
+                    BusinessProject.name.ilike(f"%{query}%"),
+                    BusinessProject.id == query,
                 )
+                statement = statement.where(condition)
+                count_statement = count_statement.where(condition)
+            matched_count = int(session.scalar(count_statement) or 0)
             projects = list(session.scalars(statement.limit(10)))
             rows: list[dict[str, Any]] = []
             for project in projects:
@@ -435,7 +531,10 @@ class GlobalAgentBusinessTools:
         return {
             "scope": "local_projects_implemented_is_not_verified",
             "query": query,
-            "count": len(rows),
+            "count": matched_count,
+            "matched_count": matched_count,
+            "returned_count": len(rows),
+            "observed_at": utcnow().isoformat(),
             "projects": rows,
         }
 
@@ -458,6 +557,7 @@ class GlobalAgentBusinessTools:
         return {
             "scope": "canonical_ledger_snapshot",
             "ledger_revision": revision,
+            "observed_at": utcnow().isoformat(),
             "confirmed_receipts": round(confirmed, 2),
             "pending_receipts": round(pending, 2),
             "expenses": round(expenses, 2),
@@ -469,19 +569,84 @@ class GlobalAgentBusinessTools:
         }
 
     def business_analysis(self, _query: str) -> dict[str, Any]:
-        overview = self.business_analysis_service.latest_or_overview()
+        # The global Agent answers a question in the present tense. Historical
+        # saved analyses remain available in the analysis center, but they must
+        # never replace the current SQLite-derived overview for a new answer.
+        overview = self.business_analysis_service.overview()
         data = overview.model_dump(mode="json")
         return {
-            "scope": "existing_read_only_business_analysis",
+            "scope": "current_local_business_overview",
             "summary": data.get("summary", ""),
             "metrics": data.get("metrics", {}),
             "insights": (data.get("insights") or [])[:8],
             "recommendations": (data.get("recommendations") or [])[:6],
+            "data_sources": data.get("data_sources", []),
             "data_gaps": (data.get("data_gaps") or [])[:12],
             "period": data.get("period", {}),
+            "ledger_revision": data.get("ledger_revision"),
             "generated_at": data.get("generated_at"),
-            "is_stale": data.get("is_stale", False),
+            "snapshot_time": data.get("snapshot_time"),
+            "is_stale": False,
         }
+
+    def public_summary(
+        self,
+        name: str,
+        result: dict[str, Any],
+        *,
+        status: str,
+    ) -> str:
+        """Return a small allowlisted trace summary, never a raw tool payload."""
+
+        if status == "running":
+            return f"正在读取{self.LABELS.get(name, '本地数据')}"
+        if status != "completed":
+            return "读取失败，未产生可用结果"
+        if name == "customer_conversation_context":
+            mode = str(result.get("context_mode") or "cached")
+            count = int(result.get("new_message_count") or 0)
+            total = int(result.get("text_message_count") or 0)
+            if mode == "incremental":
+                return f"增量上下文 · {count} 条新增文字"
+            if mode in {"full_initial", "full_recheck"}:
+                return f"完整核验 · {min(total, 200)} 条文字"
+            return "已读取最新客户文字总结"
+        if name == "customer_summary":
+            matched = int(result.get("matched_count", result.get("count")) or 0)
+            returned = int(result.get("returned_count") or 0)
+            suffix = f"，展示 {returned} 位" if returned < matched else ""
+            return f"匹配 {matched} 位客户{suffix}，不含消息与图片"
+        if name == "product_lookup":
+            matched = int(result.get("matched_count", result.get("count")) or 0)
+            returned = int(result.get("returned_count") or 0)
+            suffix = f"，展示 {returned} 个" if returned < matched else ""
+            return f"匹配 {matched} 个当前卖家商品{suffix}"
+        if name == "project_summary":
+            projects = result.get("projects")
+            task_count = sum(
+                len(row.get("tasks") or [])
+                for row in projects
+                if isinstance(row, dict)
+            ) if isinstance(projects, list) else 0
+            matched = int(result.get("matched_count", result.get("count")) or 0)
+            returned = int(result.get("returned_count") or 0)
+            suffix = f"，展示 {returned} 个" if returned < matched else ""
+            return f"匹配 {matched} 个项目{suffix}、{task_count} 个任务"
+        if name == "finance_summary":
+            revision = result.get("ledger_revision")
+            return (
+                f"统一账本 revision {revision} 已读取"
+                if revision is not None
+                else "统一账本已读取"
+            )
+        if name == "business_analysis":
+            revision = result.get("ledger_revision")
+            return (
+                f"已读取当前本地经营概览 · 账本 revision {revision}"
+                if revision is not None
+                else "已读取当前本地经营概览"
+            )
+        return f"{self.LABELS.get(name, name)}已完成"
 
     @staticmethod
     def bounded_result(result: dict[str, Any], maximum_chars: int) -> dict[str, Any]:
@@ -489,6 +654,11 @@ class GlobalAgentBusinessTools:
         if len(encoded) <= maximum_chars:
             return result
         return {
+            "source": result.get("source", "local_business_data"),
+            "observed_at": result.get("observed_at"),
+            "revision": result.get("revision"),
+            "read_only": result.get("read_only", True),
+            "sensitivity": result.get("sensitivity", "business_summary"),
             "truncated": True,
             "summary": encoded[:maximum_chars],
             "original_chars": len(encoded),

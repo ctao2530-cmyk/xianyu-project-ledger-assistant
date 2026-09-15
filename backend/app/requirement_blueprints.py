@@ -12,7 +12,10 @@ class StrictBlueprintModel(BaseModel):
 
 class EvidenceReference(StrictBlueprintModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
-    message_number: int = Field(ge=1, le=10_000)
+    message_number: int | None = Field(default=None, ge=1, le=10_000)
+    message_id: int | None = Field(default=None, ge=1)
+    archive_id: str | None = Field(default=None, max_length=128)
+    conversation_id: int | None = Field(default=None, ge=1)
     quote: str = Field(min_length=1, max_length=500)
 
 
@@ -34,6 +37,14 @@ class CapabilityNode(StrictBlueprintModel):
 
 class StageNode(StrictBlueprintModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+    task_key: str | None = Field(
+        default=None,
+        pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$",
+    )
+    workspace_key: str | None = Field(
+        default=None,
+        pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$",
+    )
     title: str = Field(min_length=2, max_length=120)
     objective: str = Field(min_length=2, max_length=600)
     implementation: str = Field(min_length=2, max_length=1600)
@@ -42,6 +53,9 @@ class StageNode(StrictBlueprintModel):
     dependency_ids: list[str] = Field(default_factory=list, max_length=20)
     work_items: list[str] = Field(min_length=1, max_length=30)
     deliverables: list[str] = Field(min_length=1, max_length=20)
+    process_tests: list[str] = Field(default_factory=list, max_length=40)
+    allowed_changes: list[str] = Field(default_factory=list, max_length=40)
+    stop_conditions: list[str] = Field(default_factory=list, max_length=20)
     evidence_refs: list[str] = Field(default_factory=list, max_length=20)
 
 
@@ -100,6 +114,9 @@ class RequirementBlueprintV2(StrictBlueprintModel):
         objective_ids = set(groups["目标"])
         capability_ids = set(groups["功能"])
         stage_ids = set(groups["阶段"])
+        task_keys = [node.task_key for node in self.stages if node.task_key]
+        if len(task_keys) != len(set(task_keys)):
+            raise ValueError("阶段存在重复 task_key")
         evidence_ids = set(groups["证据"])
         for node in self.capabilities:
             self._require_refs(node.objective_ids, objective_ids, f"功能 {node.id} 的目标")

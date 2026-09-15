@@ -78,7 +78,7 @@ export function PredictionSummaryStrip({
       <button type="button" onClick={() => onNavigate?.("项目管理")}>
         <i className="tone-orange"><Briefcase size={18} weight="duotone" /></i><span><small>最高延期风险分</small><b>{topProject ? `${score(topProject)} / 100` : "暂无"}</b><em>{topProject?.entity_label || "当前没有纳入项目"}</em></span>
       </button>
-      <button type="button" onClick={() => onNavigate?.("收入记录")}>
+      <button type="button" onClick={() => onNavigate?.("经营记录")}>
         <i className="tone-blue"><CurrencyCircleDollar size={18} weight="duotone" /></i><span><small>未来 30 天已知净现金流</small><b>¥{Math.round(cashflow?.prediction_value ?? 0)}</b><em>{cashflow?.data_sufficiency === "low" ? "历史不足 · 仅已知项" : `确定流入 ¥${Math.round(knownInflow)}`}</em></span>
       </button>
       <button type="button" onClick={() => onNavigate?.("客户管理")}>

@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
+from cryptography.fernet import InvalidToken
+
 from sqlalchemy import func, select
 
 from ..adapters import (
@@ -31,6 +34,7 @@ from .ai_queue import AIJobQueue
 from .customer_images import CustomerImageArchiveService
 from .event_hub import EventHub
 from .risk import detect_risks
+from .customer_names import stable_customer_name
 
 
 class ConversationHistoryImportError(RuntimeError):
@@ -52,6 +56,8 @@ class HistoryPreviewRecord:
     existing_platform_ids: frozenset[str]
     fingerprint: str
     expires_at: datetime
+    has_more: bool = False
+    next_continuation_token: str | None = None
 
 
 @dataclass(slots=True)
@@ -64,11 +70,13 @@ class ConversationHistoryImportService:
     draft_generation_enabled: bool = True
     token_ttl_seconds: int = 600
     history_timeout_seconds: float = 20
-    item_timeout_seconds: float = 22
+    full_history_timeout_seconds: float = 90
+    item_timeout_seconds: float = 22  # Legacy constructor compatibility; no remote item reads.
     _previews: dict[str, HistoryPreviewRecord] = field(default_factory=dict)
 
     SEARCH_LIMIT = 200
     MESSAGE_LIMIT = 200
+    FULL_MESSAGE_LIMIT = 5000
 
     @staticmethod
     def _platform_id(message: IncomingMessage) -> str:
@@ -86,6 +94,7 @@ class ConversationHistoryImportService:
                 "content": message.content,
                 "received_at": message.received_at.astimezone(timezone.utc).isoformat(),
                 "item_id": message.item_id,
+                "media": [{"index": media.media_index, "kind": media.locator_type, "reference_hash": hashlib.sha256(media.locator.encode()).hexdigest()} for media in message.media],
             }
             for message in messages
         ]
@@ -111,6 +120,12 @@ class ConversationHistoryImportService:
 
     @staticmethod
     def _history_read_error(exc: Exception) -> ConversationHistoryImportError:
+        if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+            return ConversationHistoryImportError(
+                "xianyu_history_timeout",
+                "闲鱼消息读取超时，本次未写入消息，请稍后手动重试",
+                status_code=504,
+            )
         if isinstance(exc, LoginExpiredError):
             return ConversationHistoryImportError(
                 "xianyu_login_required",
@@ -128,6 +143,12 @@ class ConversationHistoryImportService:
                 "xianyu_listener_unavailable",
                 "闲鱼监听正在重新连接，请稍后再读取历史会话",
                 status_code=409,
+            )
+        if isinstance(exc, (OSError, httpx.RequestError)):
+            return ConversationHistoryImportError(
+                "xianyu_history_network_error",
+                "闲鱼消息网络连接失败，本次未写入消息，请检查网络后手动重试",
+                status_code=503,
             )
         return ConversationHistoryImportError(
             "xianyu_history_unavailable",
@@ -147,15 +168,26 @@ class ConversationHistoryImportService:
                 "闲鱼历史会话读取超时，监听仍会继续运行，请稍后重试",
                 status_code=504,
             ) from exc
-        except AdapterError as exc:
+        except (AdapterError, OSError, httpx.RequestError) as exc:
             raise self._history_read_error(exc) from exc
 
     async def _fetch_conversation_messages(
         self,
         conversation_external_id: str,
         limit: int,
+        *,
+        full_history: bool = False,
     ) -> list[IncomingMessage]:
         try:
+            if full_history:
+                return await asyncio.wait_for(
+                    self.adapter.fetch_all_messages(
+                        conversation_external_id,
+                        page_size=100,
+                        max_messages=self.FULL_MESSAGE_LIMIT,
+                    ),
+                    timeout=max(0.01, self.full_history_timeout_seconds),
+                )
             return await asyncio.wait_for(
                 self.adapter.fetch_recent_messages(conversation_external_id, limit),
                 timeout=max(0.01, self.history_timeout_seconds),
@@ -163,30 +195,32 @@ class ConversationHistoryImportService:
         except TimeoutError as exc:
             raise ConversationHistoryImportError(
                 "xianyu_history_timeout",
-                "该闲鱼会话读取超时，未写入任何历史消息，请稍后重试",
+                "该闲鱼会话读取超时，未生成可导入预览且未写入任何消息，请稍后重试",
                 status_code=504,
             ) from exc
-        except AdapterError as exc:
+        except (AdapterError, OSError, httpx.RequestError) as exc:
             raise self._history_read_error(exc) from exc
 
-    async def _fetch_optional_item(
+    def _local_item_info(
         self,
         item_external_id: str | None,
-    ) -> tuple[ItemInfo | None, str | None]:
+    ) -> ItemInfo | None:
+        """Message sync must not depend on or refresh the product API."""
         if not item_external_id:
-            return None, None
-        try:
-            return (
-                await asyncio.wait_for(
-                    self.adapter.fetch_item(item_external_id),
-                    timeout=max(0.01, self.item_timeout_seconds),
-                ),
-                None,
+            return None
+        with self.database.session() as session:
+            item = session.scalar(
+                select(Item).where(Item.external_id == item_external_id)
             )
-        except TimeoutError:
-            return None, "商品信息读取超时，但不影响核对和导入本次会话"
-        except (AdapterError, OSError):
-            return None, "商品信息暂时不可用，但不影响核对和导入本次会话"
+            if item is None:
+                return None
+            return ItemInfo(
+                external_id=item.external_id,
+                title=item.title,
+                price=item.price,
+                description=item.description,
+                raw={},
+            )
 
     @staticmethod
     def _customer_identity(
@@ -198,7 +232,11 @@ class ConversationHistoryImportService:
             None,
         )
         if inbound:
-            return inbound.sender_id, inbound.sender_name or "闲鱼客户"
+            name = existing.customer_name if existing else None
+            for message in sorted(messages, key=lambda message: message.received_at):
+                if message.direction == "inbound" and message.sender_id == inbound.sender_id:
+                    name = stable_customer_name(name, message.sender_name)
+            return inbound.sender_id, name or "闲鱼客户"
         if existing:
             return existing.customer_id, existing.customer_name
         return "unknown-xianyu-customer", "闲鱼历史会话"
@@ -293,6 +331,9 @@ class ConversationHistoryImportService:
         *,
         external_conversation_id: str,
         message_limit: int = 100,
+        full_history: bool = False,
+        paged: bool = False,
+        continuation_token: str | None = None,
     ) -> dict[str, Any]:
         self._cleanup_previews()
         conversation_external_id = external_conversation_id.strip()
@@ -301,10 +342,28 @@ class ConversationHistoryImportService:
                 "invalid_conversation", "请选择有效的闲鱼历史会话"
             )
         bounded_limit = min(max(1, message_limit), self.MESSAGE_LIMIT)
-        messages = await self._fetch_conversation_messages(
-            conversation_external_id,
-            bounded_limit,
-        )
+        next_continuation_token = None
+        has_more = False
+        if paged:
+            if not self.customer_images or self.customer_images._cipher is None or not hasattr(self.adapter, "fetch_messages_page"):
+                raise ConversationHistoryImportError("history_pagination_unavailable", "当前渠道暂不支持可恢复分页同步")
+            cursor = None
+            if continuation_token:
+                try:
+                    continuation = json.loads(self.customer_images._cipher.decrypt(continuation_token.encode()))
+                    if continuation["conversation"] != conversation_external_id or continuation["page_size"] != bounded_limit or continuation["kind"] != "history_page_v1":
+                        raise ValueError()
+                    cursor = continuation["cursor"]
+                except (InvalidToken, ValueError, KeyError, TypeError):
+                    raise ConversationHistoryImportError("history_cursor_invalid", "同步断点与当前会话或范围不一致", status_code=409) from None
+            try:
+                messages, next_cursor, has_more = await asyncio.wait_for(self.adapter.fetch_messages_page(conversation_external_id, page_size=bounded_limit, cursor=cursor), timeout=self.history_timeout_seconds)
+            except (AdapterError, OSError, httpx.RequestError) as exc:
+                raise self._history_read_error(exc) from exc
+            if has_more:
+                next_continuation_token = self.customer_images._cipher.encrypt(json.dumps({"kind": "history_page_v1", "conversation": conversation_external_id, "page_size": bounded_limit, "cursor": next_cursor}).encode()).decode()
+        else:
+            messages = await self._fetch_conversation_messages(conversation_external_id, bounded_limit, full_history=full_history)
         messages = sorted(
             [
                 message
@@ -324,7 +383,7 @@ class ConversationHistoryImportService:
             (message.item_id for message in reversed(messages) if message.item_id),
             None,
         )
-        item_info, item_warning = await self._fetch_optional_item(item_external_id)
+        item_info = self._local_item_info(item_external_id)
         platform_ids = {self._platform_id(message) for message in messages}
         with self.database.session() as session:
             existing_conversation = session.scalar(
@@ -375,6 +434,8 @@ class ConversationHistoryImportService:
             existing_platform_ids=existing_platform_ids,
             fingerprint=fingerprint,
             expires_at=expires_at,
+            has_more=has_more,
+            next_continuation_token=next_continuation_token,
         )
         self._previews[token] = preview
         message_views = []
@@ -419,12 +480,18 @@ class ConversationHistoryImportService:
                 if item_info
                 else None
             ),
-            "item_warning": item_warning,
+            "item_warning": None,
             "messages": message_views,
             "platform_message_count": len(messages),
             "existing_count": existing_count,
             "new_count": len(messages) - existing_count,
             "unsupported_count": unsupported_count,
+            "history_scope": "page" if paged else "full" if full_history else "recent",
+            "has_more": has_more,
+            "next_continuation_token": next_continuation_token,
+            "image_candidate_count": sum(max(1, len(message.media)) for message in messages if message.direction == "inbound" and (message.media or message.message_type == "image")),
+            "history_complete": not has_more if paged else None,
+            "history_limit": self.FULL_MESSAGE_LIMIT if full_history else bounded_limit,
         }
 
     @staticmethod
@@ -440,20 +507,12 @@ class ConversationHistoryImportService:
         return fallback
 
     @staticmethod
-    def _upsert_item(session, item_info: ItemInfo | None) -> Item | None:
+    def _existing_item(session, item_info: ItemInfo | None) -> Item | None:
         if not item_info:
             return None
-        item = session.scalar(select(Item).where(Item.external_id == item_info.external_id))
-        if item is None:
-            item = Item(external_id=item_info.external_id)
-            session.add(item)
-        item.title = item_info.title
-        item.price = item_info.price
-        item.description = item_info.description
-        # The import needs only user-facing item fields. Do not persist the raw
-        # platform response as part of this read-only history workflow.
-        session.flush()
-        return item
+        # Preview metadata is display-only; never write an older cached title,
+        # price or description back over a concurrent product update.
+        return session.scalar(select(Item).where(Item.external_id == item_info.external_id))
 
     async def _ensure_optional_draft(
         self,
@@ -518,6 +577,7 @@ class ConversationHistoryImportService:
                     message_ids_by_platform[self._platform_id(message)],
                     fetcher,
                     capture_source="history_import",
+                    already_enqueued=True,
                 )
                 stored += int(result.get("stored", 0))
                 failed += int(result.get("failed", 0))
@@ -591,7 +651,7 @@ class ConversationHistoryImportService:
                     channel="xianyu",
                     external_id=preview.conversation_external_id,
                     customer_id=preview.customer_id,
-                    customer_name=preview.customer_name,
+                    customer_name=stable_customer_name(None, preview.customer_name),
                     unread_count=0,
                     last_message_at=preview.messages[-1].received_at,
                 )
@@ -599,9 +659,9 @@ class ConversationHistoryImportService:
                 session.flush()
             else:
                 conversation.customer_id = preview.customer_id
-                conversation.customer_name = preview.customer_name
+                conversation.customer_name = stable_customer_name(conversation.customer_name, preview.customer_name)
 
-            item = self._upsert_item(session, preview.item_info)
+            item = self._existing_item(session, preview.item_info)
             if item:
                 conversation.item = item
 
@@ -665,6 +725,7 @@ class ConversationHistoryImportService:
                         ensure_ascii=False,
                     ),
                     received_at=history_message.received_at,
+                    source_item_external_id=history_message.item_id,
                 )
                 session.add(message)
                 session.flush()
@@ -675,6 +736,11 @@ class ConversationHistoryImportService:
                 platform_id: message.id
                 for platform_id, message in imported_by_platform.items()
             }
+            if self.customer_images:
+                for history_message in preview.messages:
+                    stored_message = imported_by_platform.get(self._platform_id(history_message))
+                    if stored_message is not None:
+                        self.customer_images.persist_message_jobs(session, stored_message, history_message, capture_source="history_import")
 
             latest_message_at = max(message.received_at for message in preview.messages)
             stored_last_message_at = conversation.last_message_at
@@ -708,6 +774,8 @@ class ConversationHistoryImportService:
                 "image_stored_count": 0,
                 "image_failed_count": 0,
                 "idempotent": False,
+                "has_more": preview.has_more,
+                "next_continuation_token": preview.next_continuation_token,
             }
             session.add(
                 ConversationHistoryImportRequest(

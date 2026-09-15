@@ -15,9 +15,10 @@ test("customer messages exposes a stable conversation and image-library route", 
   const app = await readFile(appPath, "utf8");
 
   assert.match(page, /type CustomerMessagesPrimaryView = "conversations" \| "images"/);
-  assert.match(page, /kind === "images" \? "images" : "conversations"/);
-  assert.match(app, /\{ key: "conversations", label: "会话", route: "客户消息" \}/);
-  assert.match(app, /\{ key: "images", label: "图片库", route: "客户消息\/images" \}/);
+  assert.match(page, /kind\?\.split\("\?"\)\[0\] === "images"/);
+  assert.match(app, /label: "客户消息", displayLabel: "客户"/);
+  assert.match(page, /customerImagesHash\(null\)/);
+  assert.match(page, /scoped initialConversationId=\{detail.id\}/);
   assert.doesNotMatch(page, /CustomerMessagesPrimaryTabs/);
   assert.match(page, /客户消息\/conversation\/\$\{conversationId\}/);
   assert.match(page, /<CustomerImageLibrary onOpenConversation=/);
@@ -25,18 +26,16 @@ test("customer messages exposes a stable conversation and image-library route", 
 
 test("image library uses only real archive APIs and keeps recovery user-triggered", async () => {
   const library = await readFile(libraryPath, "utf8");
-  const service = await readFile(servicePath, "utf8");
+  const service = await readFile(servicePath, "utf8") + await readFile(new URL("../src/data/customerImageClient.ts", import.meta.url), "utf8");
 
   assert.match(library, /localPlatformService\.customerImages/);
-  assert.match(library, /历史图片自动恢复/);
-  assert.match(library, /自动恢复 \$\{preview\.candidate_count\} 张/);
-  assert.match(library, /不会读取无本地占位的其他会话，不发送消息、不调用 AI/);
-  assert.match(library, /先恢复闲鱼连接/);
+  assert.match(library, /同步历史/);
+  assert.match(library, /onSyncHistory\(\)/);
+  assert.doesNotMatch(library, /recoverCustomerImageHistory\(/);
   assert.doesNotMatch(library, /选择原图|type="file"|uploadCustomerImageOriginal/);
   assert.match(library, /确认删除这张原图的本地副本/);
-  assert.match(library, /当前浏览器无法直接预览，请下载原图查看/);
-  assert.match(library, /正在串行检查/);
-  assert.match(library, /conversation_history_imported/);
+  assert.match(library, /preview_url \|\| image.content_url/);
+  assert.match(await readFile(new URL("../src/data/customerEvents.ts", import.meta.url), "utf8"), /customer_image_updated/);
   assert.doesNotMatch(library, /聊天正文|message\.content|conversation\.messages/);
   assert.match(service, /\/api\/customer-images\/history-recover/);
   assert.doesNotMatch(service, /\/api\/customer-images\/messages\/\$\{messageId\}\/upload/);
@@ -68,7 +67,7 @@ test("backend stores immutable originals outside the requirement attachment pipe
   assert.match(backend, /CustomerImageHistoryRecoveryRun/);
   assert.match(backend, /event\.platform_message_id in allowed_keys/);
   assert.match(backend, /except AdapterAccessVerificationError/);
-  assert.match(backend, /"pending_count": len\(pending_messages\)/);
+  assert.match(backend, /"pending_count": pending_count/);
   assert.match(backend, /"capture_interrupted"/);
   assert.doesNotMatch(backend, /OCR|DeepSeek|Codex|GPT/);
   assert.match(gitignore, /^data\/customer-images\/$/m);

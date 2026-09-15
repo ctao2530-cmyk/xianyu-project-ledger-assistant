@@ -1,0 +1,327 @@
+/* August 24, a39f2ae: original styles.css remains the visual source.
+   These adapters style newer components without restoring historical business code. */
+.app-shell.august-workspace {--text-main:#171b31;--text-secondary:#717990;--reference-blue:#6544f4;--reference-ink:#171b31;--reference-muted:#717990;background:radial-gradient(circle at 69% 8%,#cbc1ff33,transparent 31%),radial-gradient(circle at 98% 2%,#edd6ff4d,transparent 22%),linear-gradient(135deg,#fbfcff 0%,#f5f7ff 46%,#f7f4ff 100%);color:#171b31;}
+.app-shell.august-workspace .dashboard-main {margin-left:270px;width:calc(100% - 270px);padding:0 18px 34px;background:transparent;}
+.app-shell.august-workspace .workspace-sidebar {width:270px;padding:22px 24px 18px;background:#fffffff0;border-right:1px solid #e2e5f2e6;box-shadow:8px 0 32px #4c468709;}
+.app-shell.august-workspace .workspace-sidebar .brand {min-height:65px;margin-bottom:20px;gap:10px;}
+.app-shell.august-workspace .workspace-sidebar .brand img {width:56px;height:56px;}
+.reference-brand-copy {display:flex;flex-direction:column;gap:2px;}
+.app-shell.august-workspace .workspace-sidebar .brand strong {font-size:24px;color:#171b31;margin-bottom:4px;}
+.reference-brand-copy small {font-size:11px;color:#68728a;}
+.app-shell.august-workspace .workspace-sidebar nav {flex:0;gap:5px;}
+.app-shell.august-workspace .workspace-sidebar nav button {min-height:52px;height:auto;padding:12px 20px;gap:16px;border-radius:18px;font-size:16px;color:#303a59;background:transparent;}
+.app-shell.august-workspace .workspace-sidebar nav button:hover {background:#f6f4ff;color:#4e31df;}
+.app-shell.august-workspace .workspace-sidebar nav button.active {color:#fff;background:linear-gradient(105deg,#5145f6 0%,#7260fa 61%,#a69aff 100%);box-shadow:0 11px 24px #5b47f240;}
+.app-shell.august-workspace .workspace-sidebar nav button.active svg {color:inherit;}
+.app-shell.august-workspace .workspace-settings-nav {margin-top:0;border:0;padding:0;}
+.app-shell.august-workspace .sidebar-subnav button {font-size:13px;min-height:44px;padding:8px 14px;}
+.app-shell.august-workspace .sidebar-spacer {flex:1;min-height:28px;}
+.app-shell.august-workspace .compact-topbar {height:auto;min-height:106px;padding:12px 4px 8px 18px;margin:0;gap:18px;background:transparent;border:0;box-shadow:none;}
+.app-shell.august-workspace .compact-topbar .greeting {min-width:0;flex:1;}
+.app-shell.august-workspace .compact-topbar .greeting h1 {display:block;font-size:clamp(26px,2.15vw,34px);line-height:1.15;margin:0 0 8px;}
+.app-shell.august-workspace .compact-topbar .greeting p {font-size:14px;line-height:1.6;margin:0;color:#596580;}
+.app-shell.august-workspace .header-planet {width:150px;height:78px;flex:none;margin:0;}
+.app-shell.august-workspace .header-planet img {width:100%;height:100%;object-fit:contain;}
+.app-shell.august-workspace .compact-topbar .compact-global-search {width:min(25vw,330px);flex:none;min-width:0;}
+.app-shell.august-workspace .compact-global-search .workspace-search-toggle {display:flex;width:100%;min-height:54px;justify-content:flex-start;padding:12px 18px;border:1px solid #ffffffc7;background:#ffffffd6;border-radius:24px;box-shadow:0 12px 32px #4c438b0b;color:#717990;}
+.workspace-search-toggle kbd {margin-left:auto;font-family:inherit;font-size:11px;color:#8990a5;}
+.app-shell.august-workspace .compact-global-search.is-open .search-box {display:flex;visibility:visible;pointer-events:auto;position:absolute;left:auto;right:0;top:62px;width:min(540px,calc(100vw - 32px));max-width:none;z-index:120;background:#fff;border:1px solid #ded7fb;border-radius:16px;box-shadow:var(--shadow);}
+.app-shell.august-workspace .compact-global-search.is-open .workspace-search-results {top:114px;border-radius:16px;border-color:#e9e5f5;box-shadow:var(--shadow);}
+.app-shell.august-workspace .workspace-search-results small {color:#6544f4;}
+.app-shell.august-workspace .page-route-view {padding:0;margin:0;min-height:calc(100dvh - 106px);background:transparent;}
+.app-shell.august-workspace .card {border-radius:24px;border:1px solid #e9ebf5;background:#ffffffed;box-shadow:var(--shadow);}
+.app-shell.august-workspace .metrics-grid {grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;}
+.app-shell.august-workspace .metric-card {min-height:210px;}
+.app-shell.august-workspace .metric-artwork img {object-fit:contain;mix-blend-mode:normal;}
+.app-shell.august-workspace .metric-value {font-size:clamp(23px,1.8vw,32px);font-variant-numeric:tabular-nums;}
+.app-shell.august-workspace .main-grid {margin-top:14px;}
+.app-shell.august-workspace .bottom-grid {margin-top:14px;}
+/* New action and cashflow surfaces keep their existing controls and calculations. */
+.august-current-actions {margin-top:22px;}
+.august-current-actions .reference-welcome,.august-current-actions .reference-home-metrics {display:none;}
+.app-shell.august-workspace .reference-workbench-grid {display:grid;grid-template-columns:minmax(0,2.5fr) minmax(270px,1fr);gap:18px;align-items:start;}
+.app-shell.august-workspace .action-workbench {max-width:none;margin:0;padding:24px;border-radius:24px;border:1px solid #e9ebf5;background:#fff;box-shadow:var(--shadow);}
+.app-shell.august-workspace .action-workbench>header h2 {font-size:20px;margin:0;}
+.workbench-header-actions {display:flex;align-items:center;gap:8px;}
+.workbench-header-actions select {max-width:140px;min-height:44px;border:1px solid #e9e5f5;border-radius:12px;padding:8px;background:#fff;color:#596580;}
+.workbench-column-head {display:grid;grid-template-columns:minmax(140px,1fr) minmax(170px,1.4fr) 98px 76px;gap:14px;padding:14px 8px;background:#f7f6fc;border-radius:12px;font-size:12px;color:#717990;}
+.app-shell.august-workspace .workbench-action-list article {display:grid;grid-template-columns:minmax(140px,1fr) minmax(170px,1.4fr) 98px 76px;gap:14px;padding:16px 8px;}
+.workbench-object-cell {display:flex;align-items:center;gap:10px;min-width:0;}
+.app-shell.august-workspace .workbench-category {display:grid;place-items:center;width:36px;height:36px;min-width:36px;border-radius:12px;color:#6544f4;background:#f0ebff;}
+.workbench-action-object {font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;}
+.app-shell.august-workspace .workbench-action-list h2 {font-size:14px;}
+.app-shell.august-workspace .workbench-action-list :is(p,time) {font-size:12px;color:#717990;}
+.app-shell.august-workspace .workbench-action-list article>a,.app-shell.august-workspace .workbench-action-list article>button {padding:8px 12px;background:#6544f4;color:#fff;border-radius:12px;}
+.workbench-context {display:grid;gap:18px;min-width:0;}
+.workbench-context>section,.reference-cashflow,.reference-analysis-link {background:#fff;padding:20px;border:1px solid #e9ebf5;border-radius:24px;box-shadow:var(--shadow);}
+.workbench-context h2,.reference-cashflow h3 {font-size:18px;margin:0 0 12px;}
+.reference-my-tasks>button {display:flex;width:100%;align-items:center;gap:10px;min-height:44px;margin-top:8px;border:0;border-radius:12px;padding:10px;color:#6544f4;background:#f7f5ff;}
+.reference-my-tasks>button b {margin-left:auto;}.reference-my-tasks>button span{color:#303a59;}
+.reference-cashflow header,.reference-cashflow-legend {display:flex;justify-content:space-between;gap:12px;font-size:12px;color:#717990;}
+.reference-cashflow-values {display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.reference-cashflow-values span {font-size:12px;color:#717990;}
+.reference-cashflow-values strong {display:block;font-size:21px;margin-top:8px;color:#12be72;white-space:nowrap;}
+.reference-cashflow-values>span+span strong {color:#ff4d52;}
+.reference-cashflow-chart {height:160px;margin-top:14px;}
+.reference-cashflow-ratio {display:flex;height:8px;border-radius:8px;overflow:hidden;margin:20px 0 12px;background:#f2effa;}
+.reference-cashflow-ratio i:first-child {width:var(--income-share);background:#12be72;}.reference-cashflow-ratio i+i{flex:1;background:#ff4d52;}.reference-cashflow-ratio[data-empty=true] i{background:transparent;}
+.reference-analysis-link {display:flex;gap:12px;align-items:center;text-decoration:none;color:#6544f4;}
+.reference-analysis-link span {flex:1;}.reference-analysis-link b{display:block;font-size:16px;color:#171b31;}.reference-analysis-link small{display:block;margin-top:6px;color:#717990;}
+/* August project panel and existing seven-column data table. */
+.app-shell.august-workspace .project-hub-page {display:block;}
+.app-shell.august-workspace .project-hub-shell {padding:20px;border-radius:24px;background:#ffffffed;border:1px solid #e9ebf5;box-shadow:var(--shadow);}
+.app-shell.august-workspace .project-hub-head {display:flex;align-items:center;justify-content:space-between;gap:16px;}
+.app-shell.august-workspace .project-hub-head h2 {font-size:24px;}
+.app-shell.august-workspace .project-hub-toolbar {padding:10px;margin:0 0 14px;background:#fff;border:1px solid #e9ebf5;border-radius:18px;gap:10px;}
+.app-shell.august-workspace .project-hub-list>header,.app-shell.august-workspace .project-hub-list>article {grid-template-columns:minmax(145px,1.3fr) minmax(80px,.8fr) minmax(95px,1fr) 76px 95px 105px 130px;}
+.reference-project-context {display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px;}
+.reference-project-context>section {padding:20px;border:1px solid #e9ebf5;border-radius:24px;background:#fff;box-shadow:var(--shadow);}
+/* Preserve current customer reading, resizing, media and authorization behavior. */
+.app-shell.august-workspace .customer-focus {--customer-workspace-height:calc(100dvh - 140px);--customer-ink:#242633;--customer-muted:#888a98;--customer-line:#ececf4;--customer-blue:#6544f4;}
+.app-shell.august-workspace .customer-focus .messages-workbench {height:var(--customer-workspace-height);min-height:480px;border:1px solid #e9e5f5;border-radius:22px;background:#fff;align-items:stretch;overflow:hidden;}
+.app-shell.august-workspace .customer-focus .workspace-master {height:100%;max-height:none;border-right:1px solid #ececf4;overflow:auto;background:#fcfbff;}
+.app-shell.august-workspace .customer-focus .message-thread {display:flex;flex-direction:column;min-height:0;height:100%;padding:0;overflow:hidden;}
+.app-shell.august-workspace .customer-focus .thread-header {flex:none;min-height:80px;padding:14px 18px;}
+.app-shell.august-workspace .customer-focus .thread-messages {flex:1;height:auto;min-height:0;overflow:auto;padding:20px;background:#faf9fe;}
+.app-shell.august-workspace .customer-focus .workspace-master-rows>button.active {background:#efebff;box-shadow:none;}
+.app-shell.august-workspace .customer-focus .conversation-history-trigger {background:#6544f4;border-color:#6544f4;color:#fff;}
+.app-shell.august-workspace .customer-focus .workspace-master>nav button[aria-pressed=true] {background:#efeaff;color:#6544f4;box-shadow:none;}
+.app-shell.august-workspace .customer-focus .customer-hub-tabs button.active {color:#6544f4;border-color:#6544f4;}
+.app-shell.august-workspace .customer-focus .workspace-context {height:100%;overflow:auto;border:0;border-left:1px solid #ececf4;background:#fff;}
+.app-shell.august-workspace .customer-focus .thread-messages .reference-message-sender {display:flex;align-items:center;gap:8px;font-size:12px;color:#888a98;background:none;padding:0;min-height:22px;}
+.reference-message-sender svg {width:24px;height:24px;color:#967cec;}.reference-message-sender time{font-size:11px;}
+/* New analysis wrappers use August cards, retaining model controls and evidence. */
+.reference-analysis-art {display:none;}
+.reference-judgment-icon {width:48px;height:48px;display:grid;place-items:center;background:#ebe6ff;color:#6544f4;border-radius:16px;}
+.reference-judgment-heading {display:flex;align-items:center;gap:12px;flex-wrap:wrap;}.reference-judgment-heading small,.reference-judgment-note{font-size:12px;color:#717990;line-height:1.7;}
+.reference-analysis-benefits {list-style:none;display:grid;gap:8px;padding:0;margin:0;font-size:12px;color:#717990;}.reference-analysis-benefits li{display:flex;align-items:center;gap:8px;}
+.reference-analysis-data,.reference-execution-progress {padding:20px;border:1px solid #e9ebf5;border-radius:24px;background:#fff;box-shadow:var(--shadow);}
+.reference-analysis-data>h2,.reference-execution-progress>h2 {font-size:19px;margin:0 0 18px;}
+.reference-metric-icon {display:grid;place-items:center;width:40px;height:40px;background:#f0ebff;color:#6544f4;border-radius:12px;}
+.app-shell.august-workspace .reference-records-context>section,.app-shell.august-workspace .operating-record-actions {border-radius:22px;border:1px solid #e9ebf5;background:#fff;padding:20px;box-shadow:var(--shadow);}
+.operating-record-actions>h3 {grid-column:1/-1;}
+@media(max-width:1400px){.app-shell.august-workspace .header-planet{display:none;}.app-shell.august-workspace .reference-workbench-grid{grid-template-columns:minmax(0,1fr);}.workbench-context{grid-template-columns:1fr 1fr;}.reference-analysis-link{grid-column:1/-1;}}
+@media(max-width:1100px){.app-shell.august-workspace .dashboard-main{margin-left:0;width:100%;padding:0 16px 24px;}.app-shell.august-workspace .workspace-sidebar{width:270px;}.app-shell.august-workspace .compact-topbar{min-height:92px;padding:12px 0;}.app-shell.august-workspace .metrics-grid{grid-template-columns:repeat(3,minmax(0,1fr));}.app-shell.august-workspace .customer-focus{--customer-workspace-height:calc(100dvh - 116px);}}
+@media(max-width:700px){
+ .app-shell.august-workspace .dashboard-main{padding:0 10px 20px;}.app-shell.august-workspace .compact-topbar{min-height:78px;gap:8px;}.app-shell.august-workspace .compact-topbar .greeting h1{font-size:20px;line-height:26px;margin:0;letter-spacing:-.5px;}.app-shell.august-workspace .compact-topbar .greeting p{display:none;}.app-shell.august-workspace .compact-topbar .compact-global-search{width:44px;}.app-shell.august-workspace .compact-global-search .workspace-search-toggle{min-height:44px;padding:0;justify-content:center;border-radius:14px;}.workspace-search-toggle span,.workspace-search-toggle kbd{display:none;}
+ .app-shell.august-workspace .compact-global-search.is-open .search-box,.app-shell.august-workspace .compact-global-search.is-open .workspace-search-results{position:fixed;left:12px;right:12px;width:auto;max-width:none;}.app-shell.august-workspace .compact-global-search.is-open .search-box{top:76px;}.app-shell.august-workspace .compact-global-search.is-open .workspace-search-results{top:130px;}
+ .app-shell.august-workspace .metrics-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}.app-shell.august-workspace .metric-card{min-height:170px;}.app-shell.august-workspace .metric-value{font-size:23px;}.app-shell.august-workspace .metric-card:last-child{grid-column:1/-1;min-height:160px;}
+ .app-shell.august-workspace .project-hub-shell{padding:14px;border-radius:20px;}.app-shell.august-workspace .project-hub-head{flex-wrap:wrap;}.app-shell.august-workspace .project-hub-list>header{display:none;}.app-shell.august-workspace .project-hub-list>article{grid-template-columns:repeat(2,minmax(0,1fr));}.reference-project-context{grid-template-columns:1fr;}.app-shell.august-workspace .project-hub-toolbar>label{min-width:0;flex-basis:100%;}.app-shell.august-workspace .project-hub-toolbar select{min-width:0;max-width:100%;}
+ .app-shell.august-workspace .customer-focus{--customer-workspace-height:calc(100dvh - 138px);}.app-shell.august-workspace .customer-focus .messages-workbench{min-height:400px;border-radius:16px;}.app-shell.august-workspace .customer-focus .thread-header{padding:12px;}.app-shell.august-workspace .customer-focus .thread-messages{padding:16px 12px;}
+ .app-shell.august-workspace .action-workbench{padding:16px;}.workbench-column-head{display:none;}.app-shell.august-workspace .workbench-action-list article{grid-template-columns:minmax(0,1fr) 76px;gap:8px;}.app-shell.august-workspace .workbench-action-list article>div{grid-column:1/-1;grid-row:2;}.app-shell.august-workspace .workbench-action-list article>time{grid-column:1;grid-row:3;text-align:left;}.app-shell.august-workspace .workbench-action-list article>a,.app-shell.august-workspace .workbench-action-list article>button{grid-column:2;grid-row:1;}.workbench-context{grid-template-columns:1fr;}
+}
+@media(prefers-reduced-motion:reduce){.app-shell.august-workspace .workspace-sidebar nav button{transition:none;transform:none;}}
+
+/* Functional controls introduced after August; retain their layout. */
+.project-list-pagination {display:flex;justify-content:space-between;align-items:center;gap:16px;padding-top:20px;font-size:13px;color:#7c899f;}
+.project-list-pagination nav {display:flex;align-items:center;gap:8px;}
+.project-list-pagination :is(button,select) {min-height:44px;padding:8px 10px;border:1px solid #e9e5f5;border-radius:6px;background:#fff;color:#596580;font-size:13px;}
+.project-list-pagination button:disabled {opacity:.4;}
+@media(max-width:700px) {.project-list-pagination {flex-wrap:wrap;}.project-list-pagination nav {flex-wrap:wrap;}}
+.app-shell.august-workspace .reference-queue-evidence summary {font-size:12px;color:#64748b;cursor:pointer;padding:8px 0;min-height:36px;}
+.app-shell.august-workspace .analysis-queue-meta :is(small,b) {font-size:12px;line-height:1.5;}
+.app-shell.august-workspace details.reference-queue-row {display:block;padding:0;}
+.app-shell.august-workspace .analysis-execution-heading {display:flex;align-items:center;gap:16px;margin-bottom:8px;}
+.app-shell.august-workspace .analysis-execution-heading>div {min-width:0;flex:1;}
+.app-shell.august-workspace .analysis-execution-heading h2 {margin:0;}
+.app-shell.august-workspace .analysis-execution-heading p {margin:4px 0 0;}
+.reference-queue-filter {min-height:44px;max-width:150px;border:1px solid #e3e9f2;border-radius:6px;background:#fff;padding:8px 10px;color:#596580;font-size:13px;}
+.reference-queue-row>summary {display:grid;grid-template-columns:16px minmax(0,1fr) auto auto;align-items:center;gap:12px;min-height:52px;padding:8px 0;cursor:pointer;list-style:none;}
+.reference-queue-row>summary::-webkit-details-marker {display:none;}
+.reference-queue-row>summary>strong {font-size:14px;line-height:1.5;font-weight:500;color:#243650;}
+.reference-queue-row>summary>svg {color:#8290a6;transition:transform 160ms ease;}
+.reference-queue-row[open]>summary>svg {transform:rotate(90deg);}
+.reference-queue-priority,.reference-queue-period {font-size:12px;line-height:1.5;border-radius:12px;padding:3px 10px;white-space:nowrap;}
+.reference-queue-priority {color:#3972b8;background:#f3efff;}
+.reference-queue-priority.priority-high {color:#d94f59;background:#fff0f1;}
+.reference-queue-priority.priority-medium {color:#bb7712;background:#fff7e9;}
+.reference-queue-period {color:#69758b;background:#f2f5f9;}
+.reference-queue-expanded {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;padding:12px 0 16px 28px;border-top:1px solid #eeebf6;}
+.reference-queue-row>summary:focus-visible {outline:2px solid #6544f4;outline-offset:2px;}
+@media(max-width:700px) {.reference-queue-row>summary {grid-template-columns:16px minmax(0,1fr) auto;gap:8px;}.reference-queue-period {grid-column:2;justify-self:start;}.reference-queue-expanded {grid-template-columns:minmax(0,1fr);padding-left:0;}}
+@media(prefers-reduced-motion:reduce) {.reference-queue-row>summary>svg {transition:none;}}
+@media(max-width:700px) {.app-shell.august-workspace .analysis-queue-card {grid-template-columns:minmax(0,1fr);}.app-shell.august-workspace .analysis-queue-actions {justify-content:flex-end;}}
+.reference-project-context h3 {font-size:20px;color:#171b31;margin:0 0 14px;}
+.reference-project-context section>button {display:flex;width:100%;justify-content:space-between;align-items:start;gap:12px;text-align:left;border:0;border-bottom:1px solid #eeebf6;border-radius:0;background:transparent;padding:16px 0;cursor:pointer;}
+.reference-project-context section>button:last-child {border-bottom:0;}
+.reference-project-context strong {display:block;font-size:14px;font-weight:600;color:#171b31;line-height:1.5;}
+.reference-project-context small {display:block;font-size:12px;color:#717990;margin-top:4px;}
+.reference-project-context em {font-size:13px;color:#6544f4;font-style:normal;white-space:nowrap;}
+.reference-project-context em.is-danger {color:#ef465b;}
+.project-context-money {text-align:right;flex-shrink:0;}
+.reference-project-context p {font-size:13px;color:#717990;}
+.app-shell.august-workspace .customer-list-title {font-size:22px;color:#171b31;padding:0;margin:0;}
+.app-shell.august-workspace .customer-master-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 16px;}
+.app-shell.august-workspace .customer-master-heading .messages-toolbar {display:flex;flex-direction:row;align-items:center;justify-content:flex-end;flex-wrap:nowrap;gap:4px;margin:0;padding:0;background:transparent;border:0;}
+.app-shell.august-workspace .customer-master-heading select {min-height:44px;max-width:110px;background:#fff;border:1px solid #e9e5f5;border-radius:6px;padding:6px;font-size:12px;color:#596580;}
+.app-shell.august-workspace .customer-master-heading summary {min-height:44px;display:flex;align-items:center;padding:6px;font-size:12px;white-space:nowrap;}
+.app-shell.august-workspace .workspace-master header {padding:8px 16px;}
+.app-shell.august-workspace .workspace-master input {width:100%;min-height:40px;border:1px solid #e9e5f5;border-radius:7px;background:#fff;font-size:13px;padding:10px 12px;}
+.app-shell.august-workspace .customer-master-heading .messages-toolbar {min-height:44px;}
+.app-shell.august-workspace .workspace-master>.customer-master-search {display:block;min-height:0;padding:0 16px;}
+.app-shell.august-workspace .customer-master-search>label {display:flex;align-items:center;gap:8px;border:1px solid #e9e5f5;border-radius:7px;padding:0 10px;color:#7c899f;}
+.app-shell.august-workspace .customer-master-search>label:focus-within {outline:2px solid #6544f4;outline-offset:2px;}
+.app-shell.august-workspace .customer-master-search input {min-width:0;min-height:40px;border:0;padding:8px 0;outline:0;}
+.app-shell.august-workspace .master-scope-count {font-size:12px;margin-left:6px;font-variant-numeric:tabular-nums;}
+.app-shell.august-workspace .workspace-master>nav {gap:6px;padding:8px 16px 12px;}
+.app-shell.august-workspace .workspace-master>nav button {border:0;border-radius:20px;background:#f3f5f8;color:#596580;font-size:13px;min-height:44px;}
+.app-shell.august-workspace .workspace-master>nav button[aria-pressed=true] {background:#eaf2ff;color:#6544f4;}
+.app-shell.august-workspace .workspace-master-rows>button {min-height:88px;padding:18px 20px;border:0;border-bottom:1px solid #eeebf6;border-radius:0;background:#fff;gap:8px;}
+.app-shell.august-workspace .workspace-master-rows>button:hover:not(.active) {background:#faf8ff;}
+.app-shell.august-workspace .workspace-master-rows>button:focus-visible {outline:2px solid #6544f4;outline-offset:-3px;}
+.app-shell.august-workspace .workspace-master-rows>button:has(.customer-list-avatar) {display:grid;grid-template-columns:42px minmax(0,1fr) auto;column-gap:12px;row-gap:6px;text-align:left;}
+.app-shell.august-workspace .customer-list-avatar {grid-column:1;grid-row:1/3;color:#91a6c7;align-self:center;}
+.app-shell.august-workspace .workspace-master-rows>button:has(.customer-list-avatar)>strong {grid-column:2;grid-row:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.app-shell.august-workspace .workspace-master-rows>button:has(.customer-list-avatar)>time {grid-column:3;grid-row:1;}
+.app-shell.august-workspace .workspace-master-rows>button:has(.customer-list-avatar)>small {grid-column:2;grid-row:2;}
+.app-shell.august-workspace .workspace-master-rows>button:has(.customer-list-avatar)>b {grid-column:3;grid-row:2;justify-self:end;}
+.app-shell.august-workspace .workspace-master-rows strong {font-size:16px;color:#171b31;}
+.app-shell.august-workspace .workspace-master-rows :is(time,small) {font-size:13px;color:#7c899f;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.app-shell.august-workspace .workspace-master-rows b {border-radius:12px;background:#fa4556;color:#fff;font-size:12px;min-width:20px;text-align:center;}
+.app-shell.august-workspace .record-analysis-switch {min-height:44px;white-space:nowrap;border:1px solid #dfe7f1;border-radius:7px;background:#fff;color:#596580;padding:8px 12px;font-size:13px;}
+.app-shell.august-workspace .record-analysis-switch:hover {background:#f3efff;color:#6544f4;}
+.app-shell.august-workspace .record-analysis-switch:focus-visible {outline:2px solid #6544f4;outline-offset:2px;}
+.app-shell.august-workspace .operating-record-list :is(select,input) {min-height:42px;border:1px solid #dfe7f1;border-radius:7px;background:#fff;padding:9px 12px;font-size:13px;color:#596580;min-width:0;}
+.app-shell.august-workspace .operating-record-list input {flex:1;}
+.app-shell.august-workspace .record-actions {display:flex;flex-wrap:nowrap;gap:4px;}
+.app-shell.august-workspace .record-clock {font-size:12px;color:#7c899f;}
+.app-shell.august-workspace .record-actions .workspace-action-menu>summary {padding:8px;font-size:12px;min-height:44px;display:flex;align-items:center;}
+.app-shell.august-workspace .record-actions .workspace-action-menu>div {min-width:150px;z-index:30;}
+.reference-records-context h3 {margin:0 0 16px;font-size:20px;color:#171b31;}
+.reference-records-context section>button {display:flex;width:100%;justify-content:space-between;align-items:start;gap:12px;border:0;border-bottom:1px solid #eeebf6;background:transparent;padding:16px 0;text-align:left;cursor:pointer;}
+.reference-records-context strong {font-size:14px;color:#34445e;}
+.reference-records-context small {display:block;font-size:12px;color:#717990;margin-top:8px;}
+.reference-records-context b {color:#ed8518;font-size:14px;white-space:nowrap;}
+.app-shell.august-workspace .customer-master-heading {flex-wrap:wrap;gap:8px;}
+.app-shell.august-workspace .customer-master-heading h2 {font-size:18px;margin:8px 0;}
+.app-shell.august-workspace .customer-master-heading .messages-toolbar {flex:1;min-width:0;}
+.app-shell.august-workspace .customer-focus .workspace-master-rows>button {min-height:82px;padding:14px 12px;}
+.app-shell.august-workspace .customer-focus .workspace-master-rows>button.active {box-shadow:none;background:#efebff;}
+.app-shell.august-workspace .customer-focus .customer-hub-tabs {flex:none;}
+.app-shell.august-workspace .reference-queue-row {padding:0 16px!important;}
+.app-shell.august-workspace .analysis-queue-list {gap:10px;}
+.app-shell.august-workspace .reference-analysis-data {padding:0;background:transparent;border:0;box-shadow:none;}
+.reference-analysis-data>h2 {display:none;}
+.app-shell.august-workspace .analysis-metrics-grid {height:100%;}
+.app-shell.august-workspace .analysis-metric-card {min-height:200px;}
+.app-shell.august-workspace .analysis-command-copy {display:grid;grid-template-columns:38px minmax(0,1fr);gap:8px 12px;}
+.app-shell.august-workspace .analysis-command-copy>.reference-judgment-icon {width:38px;height:38px;grid-row:1/3;}
+.app-shell.august-workspace .analysis-command-copy>p,.app-shell.august-workspace .reference-judgment-note{grid-column:2;}
+.app-shell.august-workspace .analysis-command-copy>p {margin:0;}
+.reference-analysis-benefits {display:none;}
+.app-shell.august-workspace .analysis-command-bar {padding:16px 20px;}
+.app-shell.august-workspace .operating-record-list>header>div:last-child {display:flex;flex-wrap:wrap;gap:10px;}
+.app-shell.august-workspace .records-column-head {display:grid;grid-template-columns:46px minmax(140px,1.4fr) 54px minmax(100px,1fr) 100px 54px 130px;gap:12px;padding:14px 12px;background:#f7f6fc;border-radius:12px;font-size:12px;color:#717990;}
+.app-shell.august-workspace .operating-record-row {grid-template-columns:46px minmax(140px,1.4fr) 54px minmax(100px,1fr) 100px 54px 130px;gap:12px;}
+.app-shell.august-workspace .record-summary-heading button {display:inline-grid;place-items:center;min-height:44px;min-width:44px;background:#f5f2ff;border:0;border-radius:12px;color:#6544f4;}
+.app-shell.august-workspace .record-summary-icon {display:grid;place-items:center;width:40px;height:40px;border-radius:14px;background:#f0ebff;color:#6544f4;}
+.app-shell.august-workspace .record-summary-icon.income {background:#e6f8ee;color:#12be72;}.app-shell.august-workspace .record-summary-icon.expense {background:#fff0ed;color:#ff7a16;}
+.app-shell.august-workspace .reference-records-context {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;}
+.app-shell.august-workspace .reference-records-context .operating-record-actions {display:flex;flex-wrap:wrap;gap:12px;}
+.app-shell.august-workspace .reference-records-context .operating-record-actions h3{width:100%;}
+.app-shell.august-workspace .operating-period-options button.active {background:#efeaff;color:#6544f4;}
+@media(max-width:700px){
+ .app-shell.august-workspace .records-column-head{display:none;}.app-shell.august-workspace .operating-record-row{display:flex;flex-wrap:wrap;}.app-shell.august-workspace .reference-records-context{grid-template-columns:1fr;}
+ .app-shell.august-workspace .operating-summary-strip{display:grid;grid-template-columns:1fr;gap:16px;padding:18px;}.app-shell.august-workspace .operating-summary-strip>i{display:none;}.app-shell.august-workspace .operating-summary-strip>span{width:100%;gap:12px;}.app-shell.august-workspace .operating-summary-strip b{margin-left:auto;font-size:22px;}
+ .app-shell.august-workspace .reference-analysis-data{min-width:0;}.app-shell.august-workspace .analysis-metrics-grid{grid-template-columns:1fr 1fr;}.app-shell.august-workspace .analysis-metric-card{min-height:180px;}.app-shell.august-workspace .project-hub-metrics{grid-template-columns:1fr 1fr;}
+}
+
+.app-shell.august-workspace .product-master-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px;}
+.app-shell.august-workspace .product-master-heading h2 {margin:0;font-size:18px;font-weight:600;color:#171b31;}
+.app-shell.august-workspace .product-object-workspace .product-master-heading .product-primary-button {order:0;}
+.app-shell.august-workspace .product-master>label {display:block;padding:0 16px 10px;}
+.app-shell.august-workspace .product-master input {font-size:13px;font-weight:400;border-radius:12px;border-color:#dfe7f1;margin-top:0;min-height:44px;}
+.app-shell.august-workspace .product-master>label.product-master-search {display:flex;align-items:center;gap:8px;border:1px solid #dfe7f1;border-radius:12px;margin:0 16px 10px;padding:0 10px;color:#7c899f;}
+.app-shell.august-workspace .product-master .product-master-search input {min-width:0;flex:1;border:0;padding:8px 0;outline:0;box-shadow:none;}
+.app-shell.august-workspace .product-master-search:focus-within {outline:2px solid #6544f4;outline-offset:2px;}
+.app-shell.august-workspace .product-master-filters button>span {margin-left:6px;font-size:12px;font-variant-numeric:tabular-nums;}
+.product-master-filters {display:flex;gap:6px;padding:6px 16px 14px;}
+.app-shell.august-workspace .product-master-filters button {border:0;border-radius:18px;background:#f3f6fa;font-size:13px;color:#607089;min-height:44px;padding:8px 12px;}
+.app-shell.august-workspace .product-master-filters button[aria-pressed=true] {background:#efeaff;color:#6544f4;}
+.app-shell.august-workspace .product-master nav button {min-height:84px;padding:16px;border:0;border-bottom:1px solid #eeebf6;}
+.app-shell.august-workspace .product-master nav strong {display:block;font-size:14px;line-height:1.5;color:#171b31;}
+.app-shell.august-workspace .product-master nav small {display:inline-block;margin-top:8px;color:#198956;background:#e8f8ee;border-radius:5px;padding:3px 8px;font-size:12px;}
+.app-shell.august-workspace .product-master nav small.is-paused {color:#64748b;background:#f1f5f9;}
+.app-shell.august-workspace .product-master>.product-overview-facts {margin:12px 16px;border:0;border-top:1px solid #e7edf5;border-radius:0;padding:12px 0;}
+.app-shell.august-workspace .product-master .product-metrics-grid {display:flex;flex-direction:column;gap:0;}
+.app-shell.august-workspace .product-master .product-metric {min-width:0;}
+.app-shell.august-workspace .workspace-context .reference-product-controls {margin:20px 0 0;padding:0;border:0;border-top:1px solid #e7edf5;border-radius:0;}
+.product-context-facts {display:grid;grid-template-columns:76px minmax(0,1fr);gap:12px;margin:0 0 24px;}
+.product-context-facts dt {font-size:13px;color:#717990;}
+.product-context-facts dd {font-size:13px;color:#455570;margin:0;overflow-wrap:anywhere;}
+.app-shell.august-workspace .product-object-workspace h4 {font-size:16px;color:#171b31;}
+.app-shell.august-workspace .product-object-workspace :is(p,li) {font-size:13px;line-height:1.65;}
+.app-shell.august-workspace .product-object-workspace :is(small,time) {font-size:12px;}
+.app-shell.august-workspace .product-object-detail .product-detail-grid {grid-template-columns:minmax(0,1.4fr) minmax(210px,1fr);gap:12px;margin-top:20px;}
+.app-shell.august-workspace .product-detail-grid>div {border:1px solid #e7edf5;border-radius:18px;background:#fff;padding:16px;}
+.app-shell.august-workspace .product-funnel>div {display:flex;flex-direction:column;align-items:stretch;gap:0;}
+.app-shell.august-workspace .product-funnel>div>svg {display:none;}
+.app-shell.august-workspace .product-funnel>div>span {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;justify-items:start;min-height:52px;padding:10px 0;background:transparent;border-radius:0;border-bottom:1px solid #eeebf6;}
+.app-shell.august-workspace .product-funnel span b {font-size:17px;justify-self:end;}
+.app-shell.august-workspace .product-funnel span em {grid-column:1/-1;font-size:11px;color:#6b7c94;}
+.app-shell.august-workspace .product-browse-accounting {margin:16px 0 0;background:#f6f9fd;border-color:#e5ebf2;color:#596580;}
+.app-shell.august-workspace .product-browse-accounting b {font-size:14px;color:#171b31;}
+.app-shell.august-workspace .reference-product-metrics {margin-top:16px;}
+.app-shell.august-workspace .reference-product-metrics>h4 {font-size:16px;color:#171b31;margin:0 0 14px;}
+.app-shell.august-workspace .reference-product-metrics>dl {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:0;gap:12px;}
+.app-shell.august-workspace .reference-product-metrics>dl>div {min-width:0;border-right:1px solid #eeebf6;padding-right:12px;}
+.app-shell.august-workspace .reference-product-metrics>dl>div:last-child {border:0;}
+.app-shell.august-workspace .reference-product-metrics dt {color:#7c899f;font-size:12px;}
+.app-shell.august-workspace .reference-product-metrics dd {margin:6px 0 0;font-size:22px;font-weight:600;color:#171b31;}
+.app-shell.august-workspace .reference-product-metrics .product-browse-accounting {display:block;margin-top:12px;padding:0 10px;}
+.app-shell.august-workspace .reference-product-metrics summary {min-height:44px;line-height:44px;cursor:pointer;font-size:12px;}
+.app-shell.august-workspace .reference-product-metrics p {font-size:12px;line-height:1.6;margin:0 0 12px;}
+.app-shell.august-workspace .product-linked-projects article {background:transparent;border:0;border-top:1px solid #eeebf6;border-radius:0;padding:12px 0;gap:14px;}
+.app-shell.august-workspace .product-linked-projects article dl dt {font-size:11px;color:#7c899f;}
+.app-shell.august-workspace .product-linked-projects article dl dd {font-size:13px;color:#34445e;}
+.app-shell.august-workspace .product-profit-formula {border:1px solid #e7edf5;border-radius:18px;background:#fff;padding:0 16px;}
+.app-shell.august-workspace .product-profit-formula>summary {display:flex;align-items:center;gap:12px;min-height:52px;cursor:pointer;color:#34445e;font-size:14px;}
+.app-shell.august-workspace .product-profit-formula>summary:before {content:'›';font-size:20px;transition:transform 150ms ease;}
+.app-shell.august-workspace .product-profit-formula[open]>summary:before {transform:rotate(90deg);}
+.app-shell.august-workspace .product-profit-formula>summary b {margin-left:auto;color:#16834b;font-size:16px;}
+.app-shell.august-workspace .product-profit-formula>summary small {font-size:11px;color:#7c899f;}
+.app-shell.august-workspace .product-linked-projects article>span>a {color:#6544f4;font-size:14px;font-weight:600;text-decoration:none;min-height:44px;display:inline-flex;align-items:center;}
+.app-shell.august-workspace .product-linked-projects article>span>a:hover {text-decoration:underline;}
+.app-shell.august-workspace .product-profit-formula header>span>small {display:none;}
+.app-shell.august-workspace .product-profit-detail {display:block;margin-top:16px;}
+.app-shell.august-workspace .product-linked-projects {margin-top:16px;background:#fff;border:1px solid #e7edf5;border-radius:18px;}
+.app-shell.august-workspace .product-project-table {padding:16px;}
+.app-shell.august-workspace .product-project-table table {width:100%;border-collapse:collapse;table-layout:fixed;}
+.app-shell.august-workspace .product-project-table th {font-weight:400;text-align:left;}
+.app-shell.august-workspace .product-project-table thead th {font-size:12px;color:#7c899f;padding:6px 0;}
+.app-shell.august-workspace .product-project-table :is(th,td):first-child {width:46%;}
+.app-shell.august-workspace .product-project-table :is(th,td):last-child {width:44px;}
+.app-shell.august-workspace .product-project-table td {font-size:13px;color:#34445e;font-variant-numeric:tabular-nums;}
+.app-shell.august-workspace .product-project-table tbody tr {border-top:1px solid #eeebf6;}
+.app-shell.august-workspace .product-project-table tbody th a {display:flex;align-items:center;min-height:44px;padding:6px 10px 6px 0;color:#6544f4;text-decoration:none;font-size:13px;line-height:1.5;overflow-wrap:anywhere;}
+.app-shell.august-workspace .product-project-table a:hover {text-decoration:underline;}
+.app-shell.august-workspace .product-project-table button {display:grid;place-items:center;width:44px;height:44px;border:0;background:transparent;color:#64748b;border-radius:6px;}
+.app-shell.august-workspace .product-project-table button:hover {background:#f2f6fc;}
+.app-shell.august-workspace .product-project-table :is(button,a):focus-visible {outline:2px solid #6544f4;outline-offset:2px;}
+.app-shell.august-workspace .product-project-breakdown td {padding:10px 12px;background:#f6f9fd;}
+.app-shell.august-workspace .product-project-breakdown dl {display:flex;gap:24px;margin:0;}
+.app-shell.august-workspace .product-project-breakdown dl div {display:flex;gap:8px;}
+.app-shell.august-workspace .product-project-breakdown :is(dt,dd) {margin:0;font-size:12px;}
+.app-shell.august-workspace .product-project-breakdown p {margin:8px 0 0;font-size:12px;color:#7c899f;}
+@media(max-width:1250px) {.app-shell.august-workspace .product-object-workspace {grid-template-columns:240px minmax(0,1fr);}.app-shell.august-workspace .product-object-workspace>.workspace-context {grid-column:1/-1;}}
+@media(max-width:1450px) {.app-shell.august-workspace .product-object-detail .product-detail-grid {grid-template-columns:minmax(0,1fr);}}
+@media(max-width:700px) {.app-shell.august-workspace .product-object-workspace {display:flex;flex-direction:column;}.app-shell.august-workspace .product-master {max-height:440px;}.app-shell.august-workspace .product-object-detail .product-detail-head>div:first-child {min-width:0;}}
+.app-shell.august-workspace .product-object-workspace {grid-template-columns:240px minmax(0,1fr) 260px;gap:18px;}
+.app-shell.august-workspace .product-object-workspace :is(.product-master,.product-detail-panel,.workspace-context) {border:1px solid #e9e5f5;border-radius:22px;background:#fff;box-shadow:var(--shadow);}
+.app-shell.august-workspace .product-master-heading {flex-wrap:wrap;}
+.app-shell.august-workspace .product-master>label.product-master-search {margin:0 12px 12px;}
+.app-shell.august-workspace .product-master-filters {padding-inline:12px;flex-wrap:wrap;}
+.app-shell.august-workspace .reference-product-controls {display:block;min-height:0;padding:12px;border-radius:16px;}
+.app-shell.august-workspace .reference-product-controls>summary {cursor:pointer;min-height:44px;display:flex;align-items:center;font-size:14px;color:#6544f4;}
+@media(max-width:1300px){.app-shell.august-workspace .product-object-workspace{grid-template-columns:230px minmax(0,1fr);}.app-shell.august-workspace .product-object-workspace>.workspace-context{grid-column:1/-1;}}
+@media(max-width:700px){
+ .app-shell.august-workspace .customer-focus .messages-workbench{height:calc(100dvh - 138px);}
+ .app-shell.august-workspace .customer-focus .thread-header-actions{gap:5px;flex-wrap:nowrap;}.app-shell.august-workspace .customer-focus .thread-header-actions .customer-appica-button{padding-inline:8px;font-size:12px;}.app-shell.august-workspace .customer-focus .thread-header-actions .customer-context-toggle{gap:4px;}
+ .app-shell.august-workspace .operating-summary-strip>span{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;min-height:74px;padding:12px;gap:10px;}.app-shell.august-workspace .operating-summary-strip b{font-size:20px;white-space:nowrap;}.app-shell.august-workspace .operating-summary-strip small{font-size:12px;}.app-shell.august-workspace .record-summary-heading{display:flex;align-items:center;gap:4px;}
+ .app-shell.august-workspace .product-object-workspace{grid-template-columns:minmax(0,1fr);}.app-shell.august-workspace .product-master{max-height:300px;}.app-shell.august-workspace .reference-product-metrics>dl{grid-template-columns:1fr 1fr;row-gap:16px;}
+}
+.app-shell.august-workspace .customer-focus .messages-workbench.customer-resizable {border-radius:22px;}
+.app-shell.august-workspace .header-planet {object-fit:contain;}
+.app-shell.august-workspace .project-hub-status button span {margin-left:5px;}
+@media(max-width:700px){.app-shell.august-workspace .customer-focus .messages-workbench.customer-resizable{border-radius:16px;}.app-shell.august-workspace .customer-focus .thread-header-actions summary{padding-inline:6px;}.app-shell.august-workspace .customer-focus .thread-header-actions .customer-context-toggle{padding-inline:6px;}}
+@media(max-width:700px){.app-shell.august-workspace .project-hub-toolbar>select{display:block;flex:1;min-width:0;min-height:44px;}.app-shell.august-workspace .project-hub-toolbar>.project-hub-status{flex-basis:100%;}.app-shell.august-workspace .project-filter-reset{display:inline-flex;}}

@@ -6,11 +6,15 @@ import test from "node:test";
 const appPath = new URL("../src/App.tsx", import.meta.url);
 const launcherPath = new URL("../src/components/GlobalAgentLauncher.tsx", import.meta.url);
 const panelPath = new URL("../src/components/GlobalAgentPanel.tsx", import.meta.url);
+const chatGPTAccessPath = new URL("../src/components/ChatGPTConversationAccessCard.tsx", import.meta.url);
 const settingsPath = new URL("../src/components/GlobalAgentSettingsCard.tsx", import.meta.url);
 const stylesPath = new URL("../src/components/global-agent.css", import.meta.url);
+const otherPagesPath = new URL("../src/pages/OtherPages.tsx", import.meta.url);
+const otherStylesPath = new URL("../src/pages/other-pages.css", import.meta.url);
 const servicePath = new URL("../src/data/localPlatformService.ts", import.meta.url);
 const agentServicePath = new URL("../backend/app/agents/global_agent/service.py", import.meta.url);
 const agentSchemasPath = new URL("../backend/app/global_agent_schemas.py", import.meta.url);
+const agentApiPath = new URL("../backend/app/global_agent_api.py", import.meta.url);
 
 test("small strategy partner is globally mounted and home insight opens it", async () => {
   const app = await readFile(appPath, "utf8");
@@ -56,9 +60,11 @@ test("opening is read-only and sending explicitly creates a persisted run", asyn
   assert.match(panel, /分析可读 · 客户写入需人工确认/);
   assert.match(panel, /globalAgentCustomerContextOptions/);
   assert.match(panel, /updateGlobalAgentThreadContext/);
-  assert.match(panel, /下次提问时更新总结，不自动调用模型/);
+  assert.match(panel, /持续分析未开启时不会自动调用模型/);
+  assert.match(panel, /新消息先写入 SQLite，再于 30 秒静默窗口或 60 秒最长等待后自动增量分析/);
   assert.match(panel, /下次核验 200 条/);
-  assert.match(panel, /图片完全排除 · 不自动回复/);
+  assert.match(panel, /图片按授权/);
+  assert.match(panel, /不自动回复/);
   assert.match(panel, /消息 #\$\{reference\.slice/);
   assert.match(panel, /event\.type === "customer_context_updated"/);
   assert.match(panel, /thread\?\.customer_context\?\.conversation_id === Number\(event\.conversation_id\)/);
@@ -98,6 +104,55 @@ test("answers expose evidence chain confidence period limits and one next step",
   assert.match(panel, /不会静默切换其他模型/);
 });
 
+test("execution trace shows persisted safe steps and tool calls without hidden reasoning", async () => {
+  const panel = await readFile(panelPath, "utf8");
+  const styles = await readFile(stylesPath, "utf8");
+  const service = await readFile(servicePath, "utf8");
+  const api = await readFile(agentApiPath, "utf8");
+  const assistantMessageSource = panel.slice(
+    panel.indexOf("function AssistantMessage"),
+    panel.indexOf("export function GlobalAgentPanel"),
+  );
+
+  assert.match(service, /globalAgentRunTrace:[\s\S]*\/api\/global-agent\/runs\/\$\{encodeURIComponent\(runId\)\}\/trace/);
+  assert.match(api, /"\/runs\/\{run_id\}\/trace"[\s\S]*response_model=AgentRunTraceView/);
+  assert.match(panel, /event\.type !== "global_agent_run"[\s\S]*event\.type !== "global_agent_tool"[\s\S]*event\.type !== "global_agent_step"/);
+  assert.match(panel, /if \(eventRun\) void refreshRunTrace\(eventRun\)/);
+  assert.match(panel, /if \(event\.type === "global_agent_run"\) void refreshThread\(eventThread\)/);
+  for (const label of ["上下文", "证据", "工具", "生成", "校验", "保存"]) assert.match(panel, new RegExp(`"${label}"`));
+  assert.match(panel, /本次工具调用/);
+  assert.match(panel, /读取原因/);
+  assert.match(panel, /查看全部 \$\{trace\.total_steps\} 个步骤/);
+  assert.match(panel, /旧记录未保存节点轨迹/);
+  assert.match(panel, /仅显示可审计摘要 · 不展示隐藏思维、原始 Prompt 或敏感数据/);
+  assert.match(panel, /function toolProvenance/);
+  assert.match(panel, /formatObservedAt\(tool\.observed_at\)/);
+  assert.match(panel, /revision \$\{tool\.revision\}/);
+  assert.match(panel, /tool\.read_only \? "只读"/);
+  assert.match(panel, /agent-tool-provenance/);
+  assert.doesNotMatch(panel, /tool\.sensitivity/);
+  assert.match(panel, /function AgentLiveProgress/);
+  assert.match(panel, /activeTool\?\.summary[\s\S]*activeStep\?\.summary/);
+  assert.match(panel, /role="status" aria-live="polite"/);
+  assert.match(panel, /agent-run-duration/);
+  assert.match(panel, /`用时 \$\{formatElapsedDuration\(elapsedMs\)\}`/);
+  assert.match(panel, /message\.run_elapsed_ms/);
+  assert.match(panel, /<CaretRight size=\{16\} \/>/);
+  assert.match(panel, /traceExpanded && \(trace[\s\S]*<AgentExecutionTrace/);
+  assert.match(assistantMessageSource, /return <>[\s\S]*agent-trace-history[\s\S]*<article className="agent-answer-card">/);
+  assert.doesNotMatch(assistantMessageSource, /<article className="agent-answer-card">[\s\S]*agent-trace-history/);
+  assert.doesNotMatch(panel, /arguments_json|result_json|detail_json|system_prompt/);
+  assert.match(styles, /\.agent-trace-step-toggle[\s\S]*min-height: 44px/);
+  assert.match(styles, /\.agent-execution-trace \{[\s\S]*width: 100%;[\s\S]*flex: 0 0 auto;/);
+  assert.match(styles, /\.agent-live-progress \{[\s\S]*min-height: 64px;[\s\S]*grid-template-columns: 32px minmax\(0, 1fr\) 44px;/);
+  assert.match(styles, /\.global-agent-conversation > \.agent-trace-history \{[\s\S]*width: 100%;[\s\S]*justify-items: center;/);
+  assert.match(styles, /\.agent-trace-history > \.agent-run-duration \{[\s\S]*min-height: 44px;[\s\S]*border-radius: 999px;/);
+  assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.agent-trace-summary \{ grid-template-columns: repeat\(2/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.agent-trace-state > i\.is-active[\s\S]*\.agent-live-progress > i/);
+  assert.match(service, /run_elapsed_ms: number \| null/);
+  assert.match(service, /source: string;[\s\S]*observed_at: string \| null;[\s\S]*revision: number \| null;[\s\S]*read_only: boolean;[\s\S]*sensitivity: string;/);
+});
+
 test("the original chat renders requirement analysis and four-layer blueprints only when returned", async () => {
   const panel = await readFile(panelPath, "utf8");
   const styles = await readFile(stylesPath, "utf8");
@@ -116,11 +171,85 @@ test("the original chat renders requirement analysis and four-layer blueprints o
   assert.match(styles, /\.agent-blueprint-grid \{ display: grid; grid-template-columns: repeat\(4/);
   assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.agent-blueprint-grid \{ grid-template-columns: repeat\(2/);
   assert.match(service, /operator-note:/);
-  assert.match(service, /普通问答必须让 requirement_analysis 和 requirement_blueprint 为 null/);
+  assert.match(service, /普通问答必须让 requirement_analysis、requirement_blueprint 和[\s\S]*execution_plan 为 null/);
   assert.match(service, /invalid_customer_confirmed/);
   assert.match(service, /invalid_operator_decisions/);
   assert.match(schemas, /class AgentRequirementBlueprint/);
   assert.match(schemas, /实施阶段存在循环依赖/);
+});
+
+test("explicit execution plans expose bounded stages, workspaces, tests, acceptance and stop gates", async () => {
+  const panel = await readFile(panelPath, "utf8");
+  const styles = await readFile(stylesPath, "utf8");
+  const service = await readFile(servicePath, "utf8");
+
+  assert.match(service, /export interface GlobalAgentExecutionPlanStage/);
+  assert.match(service, /task_key: string;[\s\S]*workspace_key: string;[\s\S]*dependency_task_keys: string\[\];/);
+  assert.match(service, /process_tests: string\[\];[\s\S]*acceptance_criteria: string\[\];[\s\S]*stop_conditions: string\[\];/);
+  assert.match(service, /execution_plan\?: GlobalAgentExecutionPlan \| null/);
+  assert.match(panel, /answer\.execution_plan && <ExecutionPlanCard/);
+  for (const label of ["允许修改", "必须保持", "不在范围", "过程测试", "验收标准", "停止条件"]) assert.match(panel, new RegExp(label));
+  assert.match(panel, /stage\.task_key/);
+  assert.match(panel, /stage\.workspace_key/);
+  assert.match(panel, /stage\.dependency_task_keys/);
+  assert.match(styles, /\.agent-plan-boundaries \{[\s\S]*grid-template-columns: repeat\(3/);
+  assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.agent-plan-boundaries,[\s\S]*\.agent-plan-stage-grid \{ grid-template-columns: 1fr; \}/);
+});
+
+test("ChatGPT short-lived reads use an independent settings path while persistent analysis stays explicit", async () => {
+  const panel = await readFile(panelPath, "utf8");
+  const accessCard = await readFile(chatGPTAccessPath, "utf8");
+  const styles = await readFile(stylesPath, "utf8");
+  const otherPages = await readFile(otherPagesPath, "utf8");
+  const otherStyles = await readFile(otherStylesPath, "utf8");
+  const service = await readFile(servicePath, "utf8") + await readFile(new URL("../src/data/customerAccessClient.ts", import.meta.url), "utf8");
+
+  assert.match(service, /export type CustomerContextAudience = "openai_chatgpt" \| "openai_api" \| "codex_cli"/);
+  assert.match(service, /customerConversationAccess:[\s\S]*\/api\/customer-context\/conversations\/\$\{conversationId\}\/access/);
+  assert.match(service, /export interface CustomerContextThreadBinding/);
+  assert.match(service, /customerContextThreadBindings:[\s\S]*"\/api\/customer-context\/thread-bindings"/);
+  assert.match(service, /createCustomerContextThreadBinding:[\s\S]*"\/api\/customer-context\/thread-bindings"/);
+  assert.match(service, /revokeCustomerContextThreadBinding:[\s\S]*\/api\/customer-context\/thread-bindings\/\$\{encodeURIComponent\(bindingId\)\}\/revoke/);
+  assert.match(otherPages, /<ChatGPTConversationAccessCard onToast=\{onToast\} \/>/);
+  assert.match(accessCard, /独立路径 · 不创建小策对话 · 不调用模型/);
+  assert.match(accessCard, /globalAgentCustomerContextOptions\(\)/);
+  assert.match(accessCard, /customerConversationAccess\(targetId\)/);
+  assert.match(accessCard, /createCustomerContextThreadBinding\(/);
+  assert.match(accessCard, /customerContextThreadBindings\(\)/);
+  assert.match(accessCard, /conversation_id: selected\.conversation_id/);
+  assert.match(accessCard, /expected_conversation_revision: access\.revision/);
+  assert.match(accessCard, /allowText.*useState\(true\)/);
+  assert.match(accessCard, /allowImages.*useState\(false\)/);
+  assert.match(accessCard, /allowArtifacts.*useState\(false\)/);
+  assert.match(accessCard, /expiresInSeconds.*useState\(3600\)/);
+  assert.match(accessCard, /navigator\.clipboard\.writeText\(oneTimeKey\.instruction\)/);
+  assert.match(accessCard, /线程绑定说明仅显示一次/);
+  assert.match(accessCard, /多个对话可同时有效/);
+  assert.match(accessCard, /同一客户授权续期时，请继续在原 ChatGPT 对话中使用本说明/);
+  assert.match(accessCard, /以本次 context_key 替换旧密钥/);
+  assert.doesNotMatch(accessCard, /请在一个全新的 ChatGPT 对话中使用本说明/);
+  assert.match(accessCard, /不得省略、替换或猜测 context_key/);
+  assert.doesNotMatch(accessCard, /capabilityToken/);
+  assert.doesNotMatch(accessCard, /createGlobalAgentThread|sendGlobalAgentMessage|createCustomerContextGrant/);
+  assert.doesNotMatch(accessCard, /deepseek[A-Z]|DeepSeekProvider|createDeepSeek/);
+  assert.doesNotMatch(accessCard, /localStorage|sessionStorage|console\./);
+  assert.doesNotMatch(accessCard, /\{capabilityToken\}/);
+
+  assert.doesNotMatch(panel, /createOpenAIGrant|revokeOpenAIGrant|copyCapabilityOnce|capabilityToken/);
+  assert.doesNotMatch(panel, /OpenAI 双层权限|>创建短时读取<|>替换短时读取</);
+  assert.match(panel, /ChatGPT 网页读取不经过小策，也不会因为创建授权而调用模型/);
+  assert.match(panel, /onNavigate\("settings"\)/);
+  assert.match(panel, /DeepSeek 不可授权/);
+  assert.match(panel, /原始文字/);
+  assert.match(panel, /增量关联原图/);
+  assert.match(panel, /仅明确绑定的客户会话/);
+  assert.match(panel, /自动分析新消息/);
+  assert.match(panel, /不自动回复/);
+  assert.match(styles, /\.global-agent-context-access > button,[\s\S]*\.global-agent-openai-grant button \{[\s\S]*min-height: 44px/);
+  assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.global-agent-context-card\.has-openai-grant \{ max-height: 48vh; \}/);
+  assert.match(otherStyles, /\.chatgpt-conversation-access button \{ min-height: 44px; \}/);
+  assert.match(otherStyles, /@media \(max-width: 720px\)[\s\S]*\.chatgpt-access-flow,[\s\S]*grid-template-columns: 1fr/);
+  assert.match(otherStyles, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test("customer creation stays a reviewable proposal with a separate human write boundary", async () => {

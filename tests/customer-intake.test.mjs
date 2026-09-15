@@ -20,7 +20,7 @@ test("customer management uses the dedicated revision-protected intake dialog", 
   ]);
 
   assert.match(pages, /import \{ CustomerCreateDialog \}/);
-  assert.match(pages, /onCreateCustomer=\{\(\) => setCustomerCreateOpen\(true\)\}/);
+  assert.match(pages, /onCreateCustomer=\{\(\) => \{ setIntakeConversation\(undefined\); setCustomerCreateOpen\(true\); \}\}/);
   assert.match(pages, /<CustomerCreateDialog[\s\S]*onPersistedSnapshot\(next\)/);
   assert.doesNotMatch(pages, /if \(kind === "customer"\) next\.customers\.unshift/);
   assert.doesNotMatch(pages, /kind === "customer" && !amount\.trim/);

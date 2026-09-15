@@ -17,12 +17,14 @@ import {
 } from "@phosphor-icons/react";
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { daysUntil, getProjectFinancials } from "../data/businessMetrics";
-import { localPlatformService, type CodexProjectVerificationView, type ProductView } from "../data/localPlatformService";
+import { readUiSession, writeUiSession } from '../data/uiSession';
+import { localPlatformService, type ProductView } from "../data/localPlatformService";
 import { mockLedgerService } from "../data/mockService";
 import { projectKindOf } from "../data/projectKinds";
 import { latestTerminalSettlementIssue } from "../data/settlementIssues";
 import type { CustomerRelationPreview, LedgerSnapshot, Project, ProjectKind, ProjectProductPreview } from "../types";
 import { ProjectDetail, type ProjectPageRoute, type ProjectRouteMode } from "./BusinessAssistantPages";
+import { ProjectListContext } from '../components/workspace/ProjectListContext';
 
 const money = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 0 });
 const shortDate = (value: string) => new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date(`${value.slice(0, 10)}T00:00:00`));
@@ -55,11 +57,6 @@ interface ProjectWorkspacePageProps {
 
 function ProjectMetric({ icon, label, value, detail, tone }: { icon: ReactNode; label: string; value: string; detail: string; tone: "purple" | "blue" | "green" | "orange" }) {
   return <article className={`project-hub-metric is-${tone}`}><i>{icon}</i><span><small>{label}</small><strong>{value}</strong><em>{detail}</em></span></article>;
-}
-
-function VerifiedMeter({ view }: { view: CodexProjectVerificationView | null | undefined }) {
-  const value = view?.progress.verified_delivery.percent ?? 0;
-  return <div className="project-verified-meter" aria-label={`已验证交付进度 ${value}%`}><span><small>VERIFIED</small><b>{value}%</b></span><i><em style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></i></div>;
 }
 
 function ProjectEditView({ project, snapshot, productTitle, onBack, onSave, onChangeRelation }: {
@@ -103,12 +100,18 @@ function ProjectEditView({ project, snapshot, productTitle, onBack, onSave, onCh
 
 export function ProjectWorkspacePage({ snapshot, onCreateProject, onCreatePaymentPlan, onCreateChangeOrder, onConfirmPayment, onRecordSettlementIssue, onSnapshotChange, onPersistedSnapshot, globalSearch, projectRoute, onProjectRouteChange }: ProjectWorkspacePageProps) {
   const routedProject = projectRoute ? snapshot.projects.find((project) => project.id === projectRoute.projectId) : undefined;
-  const [projectKind, setProjectKind] = useState<ProjectKind>(() => routedProject ? projectKindOf(routedProject) : "client");
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<ListStatus>("all");
-  const [sort, setSort] = useState<"due" | "updated" | "amount">("due");
+  const [projectKind, setProjectKind] = useState<ProjectKind>(() => routedProject ? projectKindOf(routedProject) : readUiSession('projects-kind')==='personal'?'personal':'client');
+  const [search, setSearch] = useState(()=>readUiSession('projects-search'));
+  const [customerFilter, setCustomerFilter] = useState(()=>readUiSession('projects-customer'));
+  useEffect(()=>writeUiSession('projects-customer',customerFilter),[customerFilter]);
+  const [page, setPage] = useState(()=>Math.max(1,Number(readUiSession('projects-page'))||1));
+  const [pageSize, setPageSize] = useState(()=>readUiSession('projects-page-size')==='20'?20:10);
+  useEffect(()=>{writeUiSession('projects-page',String(page));writeUiSession('projects-page-size',String(pageSize));},[page,pageSize]);
+  useEffect(()=>writeUiSession('projects-search',search),[search]);
+  const [status, setStatus] = useState<ListStatus>(()=>{const value=readUiSession('projects-status');return ['in_progress','attention','finished','terminated'].includes(value)?value as ListStatus:'all';});
+  const [sort, setSort] = useState<"due" | "updated" | "amount">(()=>{const value=readUiSession('projects-sort');return value==='updated'||value==='amount'?value:'due';});
+  useEffect(()=>{writeUiSession('projects-kind',projectKind);writeUiSession('projects-status',status);writeUiSession('projects-sort',sort);},[projectKind,status,sort]);
   const [products, setProducts] = useState<ProductView[]>([]);
-  const [verification, setVerification] = useState<Record<string, CodexProjectVerificationView | null>>({});
   const [relationDialog, setRelationDialog] = useState<RelationDialog>(null);
   const [relationSearch, setRelationSearch] = useState("");
   const [relationBusy, setRelationBusy] = useState(false);
@@ -121,23 +124,39 @@ export function ProjectWorkspacePage({ snapshot, onCreateProject, onCreatePaymen
 
   useEffect(() => { if (routedProject) setProjectKind(projectKindOf(routedProject)); }, [routedProject]);
   useEffect(() => { let active = true; void localPlatformService.productIntelligence().then((value) => { if (active) setProducts(value.products.filter((product) => product.ownership_status === "owned")); }).catch(() => { if (active) setProducts([]); }); return () => { active = false; }; }, []);
-  useEffect(() => { let active = true; void Promise.all(snapshot.projects.map(async (project) => { try { return [project.id, await localPlatformService.projectVerification(project.id)] as const; } catch { return [project.id, null] as const; } })).then((entries) => { if (active) setVerification(Object.fromEntries(entries)); }); return () => { active = false; }; }, [snapshot.projects]);
 
   const category = financials.filter(({ project }) => projectKindOf(project) === projectKind);
+  const customerOptions = snapshot.customers.filter(customer => category.some(item => item.project.customerId === customer.id));
   const query = (globalSearch || search).trim().toLowerCase();
-  const visible = category.filter((item) => {
+  const searched = category.filter((item) => {
+    if (projectKind === 'client' && customerFilter && item.project.customerId !== customerFilter) return false;
     const customer = snapshot.customers.find((candidate) => candidate.id === item.project.customerId);
     const product = products.find((candidate) => candidate.external_id === item.project.itemExternalId);
+    return `${item.project.name} ${item.project.type || ""} ${customer?.name || ""} ${product?.title || ""}`.toLowerCase().includes(query);
+  });
+  const matchesStatus = (item: (typeof category)[number], selectedStatus: ListStatus) => {
     const terminal = Boolean(latestTerminalSettlementIssue(item.settlementIssues));
-    if (!`${item.project.name} ${item.project.type || ""} ${customer?.name || ""} ${product?.title || ""}`.toLowerCase().includes(query)) return false;
-    if (status === "terminated") return terminal;
+    if (selectedStatus === "terminated") return terminal;
     if (terminal) return false;
-    if (status === "in_progress") return item.project.status === "in_progress";
-    if (status === "attention") return item.project.status === "overdue" || daysUntil(item.project.dueDate) <= 3;
-    if (status === "finished") return item.project.status === "completed" || item.project.status === "delivered";
+    if (selectedStatus === "in_progress") return item.project.status === "in_progress";
+    if (selectedStatus === "attention") {
+      const finished = item.project.status === "completed" || item.project.status === "delivered";
+      return !latestTerminalSettlementIssue(item.settlementIssues)
+        && !finished
+        && (item.project.status === "overdue" || daysUntil(item.project.dueDate) <= 3);
+    }
+    if (selectedStatus === "finished") return item.project.status === "completed" || item.project.status === "delivered";
     return true;
-  }).sort((left, right) => sort === "amount" ? right.project.totalAmount - left.project.totalAmount : sort === "updated" ? right.project.id.localeCompare(left.project.id) : left.project.dueDate.localeCompare(right.project.dueDate));
+  };
+  const visible = searched.filter(item => matchesStatus(item, status)).sort((left, right) => sort === "amount" ? right.project.totalAmount - left.project.totalAmount : sort === "updated" ? right.project.id.localeCompare(left.project.id) : left.project.dueDate.localeCompare(right.project.dueDate));
   const active = category.filter((item) => !latestTerminalSettlementIssue(item.settlementIssues));
+  const pageCount=Math.max(1,Math.ceil(visible.length/pageSize));
+  const currentPage=Math.min(page,pageCount);
+  const pageRows=visible.slice((currentPage-1)*pageSize,currentPage*pageSize);
+  const pageFilterKey=JSON.stringify([search,globalSearch,status,sort,projectKind,pageSize,customerFilter]);
+  const previousPageFilter=useRef(pageFilterKey);
+  useEffect(()=>{if(previousPageFilter.current!==pageFilterKey){previousPageFilter.current=pageFilterKey;setPage(1);}},[pageFilterKey]);
+  useEffect(()=>{if(page>pageCount)setPage(pageCount);},[page,pageCount]);
   const activeProjects = active.filter((item) => item.project.status === "in_progress");
   const totalContract = active.reduce((sum, item) => sum + item.project.totalAmount, 0);
   const outstanding = active.reduce((sum, item) => sum + item.outstanding, 0);
@@ -194,10 +213,11 @@ export function ProjectWorkspacePage({ snapshot, onCreateProject, onCreatePaymen
   return <div className="business-page project-hub-page"><section className="project-hub-shell">
     <header className="project-hub-head"><div><small>PROJECTS</small><h2>所有项目，一眼掌握</h2><p>直接浏览项目全貌，需要时再进入详情或编辑。</p></div><div className="project-hub-kind" role="group" aria-label="项目分类"><button type="button" className={projectKind === "personal" ? "active" : ""} onClick={() => { setProjectKind("personal"); setStatus("all"); }}><Code size={17} />个人项目</button><button type="button" className={projectKind === "client" ? "active" : ""} onClick={() => { setProjectKind("client"); setStatus("all"); }}><Briefcase size={17} />接单项目</button></div><button type="button" className="business-primary project-hub-create" onClick={() => onCreateProject(projectKind)}><Plus size={16} />新建项目</button></header>
     <section className="project-hub-metrics" aria-label="项目概览"><ProjectMetric icon={<Briefcase size={20} weight="duotone" />} label="当前项目" value={`${active.length} 个`} detail={`${category.length - active.length} 个已终止单独归档`} tone="purple" /><ProjectMetric icon={<CheckCircle size={20} weight="duotone" />} label="进行中" value={`${activeProjects.length} 个`} detail={`${projectTasks.length} 项任务持续推进`} tone="green" />{projectKind === "client" ? <><ProjectMetric icon={<Coins size={20} weight="duotone" />} label="合同总额" value={money.format(totalContract)} detail="只统计当前合作项目" tone="blue" /><ProjectMetric icon={<WarningCircle size={20} weight="duotone" />} label="待回款" value={money.format(outstanding)} detail={`${active.filter((item) => item.outstanding > 0).length} 个项目尚未收齐`} tone="orange" /></> : <><ProjectMetric icon={<ListChecks size={20} weight="duotone" />} label="任务总数" value={`${projectTasks.length} 项`} detail={`${projectTasks.filter((task) => task.status === "done").length} 项已完成`} tone="blue" /><ProjectMetric icon={<Timer size={20} weight="duotone" />} label="累计投入" value={`${actualHours}h`} detail="来自真实任务工时" tone="orange" /></>}</section>
-    <section className="project-hub-toolbar"><label><MagnifyingGlass size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={globalSearch ? `顶部搜索：${globalSearch}` : "搜索项目、客户或商品"} disabled={Boolean(globalSearch)} /></label><div className="project-hub-status" role="group" aria-label="项目状态筛选">{([['all', '全部'], ['in_progress', '进行中'], ['attention', '需关注'], ['finished', '已完成'], ['terminated', '已终止']] as Array<[ListStatus, string]>).map(([value, label]) => <button type="button" className={status === value ? "active" : ""} onClick={() => setStatus(value)} key={value}>{label}</button>)}</div><select aria-label="项目排序" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="due">按交付日期</option><option value="updated">最近更新优先</option>{projectKind === "client" && <option value="amount">按合同金额</option>}</select></section>
-    <section className="project-hub-list" aria-label="项目列表"><header><span>项目 / 类型</span><span>客户</span><span>来源商品</span><span>状态</span><span>VERIFIED</span><span>交付 / 风险</span><span>{projectKind === "client" ? "合同 / 待收" : "任务 / 工时"}</span><span>操作</span></header>{visible.length ? visible.map((item) => {
-      const { project } = item; const customer = snapshot.customers.find((candidate) => candidate.id === project.customerId); const product = products.find((candidate) => candidate.external_id === project.itemExternalId); const terminal = latestTerminalSettlementIssue(item.settlementIssues); const tasks = snapshot.tasks.filter((task) => task.projectId === project.id); const remaining = daysUntil(project.dueDate); const statusLabel = terminal ? "已终止" : statusLabels[project.status];
-      return <article key={project.id}><button type="button" className="project-hub-main" onClick={() => openProject(project.id)}><i className={`project-${project.accent}`}>{projectKind === "personal" ? <Code size={18} weight="duotone" /> : <Briefcase size={18} weight="duotone" />}</i><span><b>{project.name}</b><small>{project.type || (projectKind === "personal" ? "个人开发" : "定制开发")} · {project.id}</small></span></button><span className="project-hub-customer"><b>{projectKind === "personal" ? "—" : customer?.name || "未关联"}</b><small>{projectKind === "personal" ? "个人项目" : customer?.source === "xianyu" ? "闲鱼客户" : customer?.source === "wechat" ? "微信客户" : "经营客户"}</small></span><span className="project-hub-product"><b>{projectKind === "personal" ? "—" : product?.title || (project.itemExternalId ? `商品 ${project.itemExternalId}` : "未关联")}</b><small>{project.itemExternalId ? "已绑定" : "未关联"}</small></span><span><em className={`project-hub-badge status-${terminal ? "terminated" : project.status}`}>{statusLabel}</em></span><VerifiedMeter view={verification[project.id]} /><span className="project-hub-date"><b>{shortDate(project.dueDate)}</b><small className={remaining < 0 ? "is-danger" : remaining <= 3 ? "is-warning" : ""}>{terminal ? "历史项目" : remaining < 0 ? `已超期 ${Math.abs(remaining)} 天` : `剩余 ${remaining} 天`}</small></span><span className="project-hub-finance"><b>{projectKind === "client" ? money.format(project.totalAmount) : `${tasks.filter((task) => task.status === "done").length}/${tasks.length} 项`}</b><small className={item.outstanding > 0 ? "is-warning" : ""}>{projectKind === "client" ? `待收 ${money.format(item.outstanding)}` : `${tasks.reduce((sum, task) => sum + task.actualHours, 0)}h 已投入`}</small></span><span className="project-hub-actions"><button type="button" onClick={() => openProject(project.id)}>详情</button><button type="button" onClick={() => editProject(project.id)}><PencilSimple size={13} />编辑</button></span></article>;
+    <section className="project-hub-toolbar"><label><MagnifyingGlass size={17} /><input aria-label="搜索项目、客户或商品" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={globalSearch ? `顶部搜索：${globalSearch}` : "搜索项目、客户或商品"} disabled={Boolean(globalSearch)} /></label><div className="project-hub-status" role="group" aria-label="项目状态筛选">{([['all', '全部'], ['in_progress', '进行中'], ['attention', '需关注'], ['finished', '已完成'], ['terminated', '已终止']] as Array<[ListStatus, string]>).map(([value, label]) => <button type="button" className={status === value ? "active" : ""} onClick={() => setStatus(value)} key={value} aria-pressed={status === value}>{label}<span>{searched.filter(item => matchesStatus(item, value)).length}</span></button>)}</div>{projectKind === "client" && <select aria-label="按客户筛选项目" value={customerFilter} onChange={event => setCustomerFilter(event.target.value)}><option value="">全部客户</option>{customerFilter && !customerOptions.some(customer => customer.id === customerFilter) && <option value={customerFilter}>已选客户（暂无项目）</option>}{customerOptions.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select>}<select aria-label="项目排序" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="due">按交付日期</option><option value="updated">最近更新优先</option>{projectKind === "client" && <option value="amount">按合同金额</option>}</select>{(search || customerFilter || status !== "all") && <button type="button" className="project-filter-reset" onClick={() => {setSearch("");setCustomerFilter("");setStatus("all");}}>清空筛选</button>}</section>
+    <section className="project-hub-list" aria-label="项目列表"><header><span>项目 / 类型</span><span>客户</span><span>来源商品</span><span>状态</span><span>交付 / 风险</span><span>{projectKind === "client" ? "合同 / 待收" : "任务 / 工时"}</span><span>操作</span></header>{visible.length ? pageRows.map((item) => {
+      const { project } = item; const customer = snapshot.customers.find((candidate) => candidate.id === project.customerId); const product = products.find((candidate) => candidate.external_id === project.itemExternalId); const terminal = latestTerminalSettlementIssue(item.settlementIssues); const tasks = snapshot.tasks.filter((task) => task.projectId === project.id); const remaining = daysUntil(project.dueDate); const statusLabel = terminal ? "已终止" : statusLabels[project.status]; const finished = project.status === "delivered" || project.status === "completed"; const dueStatus = terminal ? "历史项目" : finished ? "交付日期未确认" : remaining < 0 ? `已超期 ${Math.abs(remaining)} 天` : `剩余 ${remaining} 天`; const dueTone = !terminal && !finished && remaining < 0 ? "is-danger" : !terminal && !finished && remaining <= 3 ? "is-warning" : "";
+      return <article key={project.id}><button type="button" className="project-hub-main" onClick={() => openProject(project.id)}><i className={`project-${project.accent}`}>{projectKind === "personal" ? <Code size={18} weight="duotone" /> : <Briefcase size={18} weight="duotone" />}</i><span><b>{project.name}</b><small>{project.type || (projectKind === "personal" ? "个人开发" : "定制开发")}</small></span></button><span className="project-hub-customer"><b>{projectKind === "personal" ? "—" : customer?.name || "未关联"}</b><small>{projectKind === "personal" ? "个人项目" : customer?.source === "xianyu" ? "闲鱼客户" : customer?.source === "wechat" ? "微信客户" : "经营客户"}</small></span><span className="project-hub-product"><b>{projectKind === "personal" ? "—" : product?.title || (project.itemExternalId ? `商品 ${project.itemExternalId}` : "未关联")}</b>{project.itemExternalId && <small>已绑定</small>}</span><span><em className={`project-hub-badge status-${terminal ? "terminated" : project.status}`}>{statusLabel}</em></span><span className="project-hub-date"><b>{shortDate(project.dueDate)}</b><small className={dueTone}>{dueStatus}</small></span><span className="project-hub-finance"><b>{projectKind === "client" ? money.format(project.totalAmount) : `${tasks.filter((task) => task.status === "done").length}/${tasks.length} 项`}</b><small className={item.outstanding > 0 ? "is-warning" : ""}>{projectKind === "client" ? `待收 ${money.format(item.outstanding)}` : `${tasks.reduce((sum, task) => sum + task.actualHours, 0)}h 已投入`}</small></span><span className="project-hub-actions"><button type="button" onClick={() => openProject(project.id)}>详情</button><button type="button" onClick={() => editProject(project.id)}><PencilSimple size={13} />编辑</button></span></article>;
     }) : <div className="project-hub-empty"><Briefcase size={32} weight="duotone" /><h3>没有匹配的项目</h3><p>调整搜索或筛选条件，或创建新的{projectKind === "personal" ? "个人" : "接单"}项目。</p><button type="button" className="business-primary" onClick={() => onCreateProject(projectKind)}><Plus size={16} />新建项目</button></div>}</section>
-  </section>{renderRelationDialog()}</div>;
+    <footer className="project-list-pagination"><span>共 {visible.length} 个项目</span><nav aria-label="项目分页"><button disabled={currentPage===1} onClick={()=>setPage(currentPage-1)} aria-label="上一页">上一页</button><span aria-live="polite">{currentPage} / {pageCount}</span><button disabled={currentPage===pageCount} onClick={()=>setPage(currentPage+1)} aria-label="下一页">下一页</button><select aria-label="每页项目数" value={pageSize} onChange={e=>setPageSize(Number(e.target.value))}><option value={10}>10 条/页</option><option value={20}>20 条/页</option></select></nav></footer>
+  </section><ProjectListContext items={active} snapshot={snapshot} onOpen={openProject} onPayment={onConfirmPayment}/>{renderRelationDialog()}</div>;
 }

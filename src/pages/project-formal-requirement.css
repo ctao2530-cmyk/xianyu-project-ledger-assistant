@@ -1,0 +1,32 @@
+/* Scoped to project detail and its existing formal-requirement review. */
+.project-simple-workspace {font-size:14px;}
+.project-simple-workspace :is(small,span) {font-size:12px!important;}
+.project-simple-workspace :is(button,select,p,em,b) {font-size:13px!important;}
+.project-simple-workspace .business-surface-title h2 {font-size:16px!important;}
+.project-simple-workspace .project-requirement-metrics b {font-size:22px!important;}
+.project-simple-workspace.project-detail-workspace small,.project-simple-workspace .project-simple-title>span,.project-simple-workspace .business-surface-title small {font-size:12px;}
+.project-simple-workspace.project-detail-workspace button,.project-simple-workspace.project-detail-workspace select,.project-simple-workspace.project-detail-workspace p,.project-simple-workspace.project-detail-workspace em,.project-simple-workspace.project-detail-workspace b {font-size:13px;}
+.project-simple-workspace.project-detail-workspace .project-simple-metrics article>span,.project-simple-workspace.project-detail-workspace .project-simple-relations span {font-size:12px;}
+.project-simple-workspace button,.project-simple-workspace select,.project-simple-workspace summary {min-height:44px;}
+.project-simple-workspace .project-simple-title h2 {font-size:28px;}
+.project-simple-workspace.project-detail-workspace .business-surface-title h3 {font-size:16px;}
+.project-simple-workspace .project-simple-empty {min-height:0;padding:16px;font-size:13px;}
+.project-simple-workspace .project-requirement-current em {font-size:13px;line-height:1.7;font-style:normal;}
+.project-requirement-metrics {display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:16px 0;}
+.project-requirement-metrics span {display:flex;flex-direction:column;gap:8px;padding:12px;background:#f8f7fc;border-radius:12px;}
+.project-simple-workspace.project-detail-workspace .project-requirement-metrics b {font-size:22px;color:#453d64;}
+.project-requirement-diff {padding:14px;background:#f8f7fc;border-radius:12px;overflow-wrap:anywhere;}
+.project-requirement-advanced {border-top:1px solid #ece9f5;padding-top:8px;color:#726984;}
+.project-requirement-advanced summary {cursor:pointer;display:flex;align-items:center;font-size:13px;}
+.project-requirement-advanced button {border:1px solid #e5dff3;border-radius:9px;background:white;padding:8px 16px;color:#6245c7;}
+.project-requirement-actions {flex-wrap:wrap;}
+.project-requirement-actions select {max-width:100%;border:1px solid #e5dff3;border-radius:8px;background:white;padding:8px;}
+.requirement-proposal-review article {margin-bottom:16px;padding:20px;background:white;border:1px solid #e6dff6;border-radius:16px;}
+.requirement-proposal-review h3 {font-size:16px;}
+.requirement-proposal-review p,.requirement-proposal-review label {font-size:14px;line-height:1.7;}
+.requirement-proposal-review pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;background:#f8f7fc;padding:16px;}
+.requirement-proposal-review summary,.requirement-proposal-review label {display:block;min-height:44px;padding:10px 0;cursor:pointer;}
+.requirement-proposal-review button {min-height:44px;padding:8px 16px;border:0;border-radius:10px;background:#7150df;color:white;}
+.requirement-proposal-review button:disabled {opacity:.5;cursor:not-allowed;}
+.requirement-proposal-review input {width:20px;height:20px;vertical-align:middle;margin-right:8px;}
+@media(max-width:720px){.project-requirement-metrics {grid-template-columns:repeat(2,minmax(0,1fr));}.project-simple-workspace .project-simple-title h2{font-size:24px;}.project-simple-workspace .project-requirement-current>span{min-width:0;}.project-simple-workspace{padding:12px;}.project-requirement-actions>*{max-width:100%;}}

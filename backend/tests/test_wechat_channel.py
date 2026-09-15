@@ -99,7 +99,7 @@ async def test_wecom_image_normalization_keeps_media_id_ephemeral() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wechat_webhook_reuses_message_ai_and_draft_pipeline(tmp_path) -> None:
+async def test_wechat_webhook_persists_messages_without_legacy_ai_drafts(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'wechat-pipeline.db'}")
     database.create_all()
     provider = WechatTestProvider()
@@ -122,7 +122,7 @@ async def test_wechat_webhook_reuses_message_ai_and_draft_pipeline(tmp_path) -> 
         queue,
         MacOSNotifier(False),
         history_limit=20,
-        reply_burst_coalesce_seconds=0,
+        reply_drafts_enabled=False,
     )
     runtime = SimpleNamespace(
         database=database,
@@ -134,7 +134,6 @@ async def test_wechat_webhook_reuses_message_ai_and_draft_pipeline(tmp_path) -> 
     app.include_router(wechat_router)
     app.include_router(api_router)
 
-    await queue.start()
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -152,7 +151,7 @@ async def test_wechat_webhook_reuses_message_ai_and_draft_pipeline(tmp_path) -> 
             assert response.json()["channel"] == "wechat"
 
             # A retry with the same platform ID is idempotent and does not create
-            # a second AI task.
+            # hidden AI work.
             duplicate = await client.post(
                 "/wechat/webhook",
                 json={
@@ -163,15 +162,6 @@ async def test_wechat_webhook_reuses_message_ai_and_draft_pipeline(tmp_path) -> 
                 },
             )
             assert duplicate.status_code == 202
-
-            for _ in range(100):
-                with database.session() as session:
-                    task = session.scalar(select(AIGenerationTask))
-                    if task and task.status == "completed":
-                        break
-                await asyncio.sleep(0.02)
-            else:
-                raise AssertionError("微信消息的 AI 草稿未按时完成")
 
             conversations = await client.get("/api/conversations?channel=wechat")
             assert conversations.status_code == 200
@@ -185,16 +175,15 @@ async def test_wechat_webhook_reuses_message_ai_and_draft_pipeline(tmp_path) -> 
             body = detail.json()
             assert body["channel"] == "wechat"
             assert body["messages"][-1]["platform_message_id"] == "wx-platform-1001"
-            assert len(body["drafts"]) == 3
+            assert body["drafts"] == []
     finally:
         await processor.stop()
-        await queue.stop()
 
-    assert len(provider.payloads) == 1
-    assert provider.payloads[0].customer_message == "这个小程序多少钱"
+    assert provider.payloads == []
     with database.session() as session:
         assert len(list(session.scalars(select(Message)))) == 1
-        assert len(list(session.scalars(select(Draft)))) == 3
+        assert list(session.scalars(select(Draft))) == []
+        assert list(session.scalars(select(AIGenerationTask))) == []
 
 
 @pytest.mark.asyncio

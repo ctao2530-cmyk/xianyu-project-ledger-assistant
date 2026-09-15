@@ -103,6 +103,50 @@ class Settings(BaseSettings):
     ai_temperature: float = 0.4
     ai_timeout_seconds: float = 45
 
+    # Customer requirement analysis is OpenAI-only.  It intentionally does not
+    # reuse an arbitrary OpenAI-compatible base URL because the operator has
+    # authorized this customer data for OpenAI, not for every compatible API.
+    openai_api_key: SecretStr = SecretStr("")
+    openai_api_base_url: str = "https://api.openai.com/v1"
+    customer_analysis_model: str = ""
+    customer_analysis_timeout_seconds: float = Field(default=300, ge=30, le=900)
+    customer_analysis_enabled: bool = True
+    customer_analysis_debounce_seconds: int = Field(default=30, ge=5, le=300)
+    customer_analysis_max_wait_seconds: int = Field(default=60, ge=10, le=600)
+    customer_analysis_poll_seconds: float = Field(default=1, ge=0.2, le=30)
+    customer_analysis_initial_message_limit: int = Field(default=200, ge=20, le=500)
+    customer_analysis_max_context_chars: int = Field(
+        default=100_000, ge=10_000, le=300_000
+    )
+    customer_analysis_max_images: int = Field(default=4, ge=0, le=12)
+    customer_analysis_max_image_bytes: int = Field(
+        default=20_000_000, ge=1_000_000, le=50_000_000
+    )
+
+    # ChatGPT customer-context OAuth is a resource-server integration only.
+    # An established external identity provider owns login, consent, PKCE and
+    # token issuance.  These values remain in the local environment and are
+    # never returned with customer content or written to SQLite.
+    customer_context_oauth_enabled: bool = False
+    customer_context_oauth_issuer_url: str = ""
+    customer_context_oauth_audience: str = ""
+    customer_context_oauth_resource_server_url: str = ""
+    customer_context_oauth_jwks_url: str = ""
+    customer_context_oauth_required_scope: str = "customer-context.read"
+    customer_context_oauth_allowed_subjects: str = ""
+    customer_context_oauth_allowed_client_ids: str = ""
+    customer_context_oauth_jwks_cache_seconds: int = Field(
+        default=300, ge=30, le=3600
+    )
+    customer_context_oauth_clock_skew_seconds: int = Field(
+        default=60, ge=0, le=300
+    )
+    # Secure MCP Tunnel fallback for this single-user local deployment. The
+    # shared secret is injected at runtime from macOS Keychain and is never
+    # stored in SQLite or returned by an API.
+    customer_context_mcp_auth_mode: str = "oauth"
+    customer_context_tunnel_secret: SecretStr = SecretStr("")
+
     # DeepSeek is an independent, low-latency provider for reply drafts and
     # lead-signal analysis.  Its secret is read from the local environment only
     # and is never copied into the database or returned by an API.
@@ -246,6 +290,14 @@ class Settings(BaseSettings):
             self.ai_api_key.get_secret_value().strip()
             and self.ai_base_url.strip()
             and self.ai_model.strip()
+        )
+
+    @property
+    def customer_analysis_configured(self) -> bool:
+        return bool(
+            self.customer_analysis_enabled
+            and self.openai_api_key.get_secret_value().strip()
+            and self.openai_api_base_url.rstrip("/") == "https://api.openai.com/v1"
         )
 
     @property

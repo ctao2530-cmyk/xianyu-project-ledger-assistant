@@ -1,0 +1,84 @@
+/* Customer-page visual roles. Scoped to avoid changing other workspaces. */
+.desktop-workspace-shell .customer-focus {
+  --customer-ink: #1f2937;
+  --customer-muted: #64748b;
+  --customer-line: #e5e7eb;
+  --customer-blue: #2563eb;
+  color: var(--customer-ink);
+  font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.desktop-workspace-shell .customer-focus .messages-workbench {
+  grid-template-columns: 280px minmax(0, 1fr) 248px;
+  gap: 0;
+  border: 1px solid var(--customer-line);
+  border-radius: 10px;
+  background: white;
+  align-items: stretch;
+}
+.desktop-workspace-shell .customer-focus .workspace-master {
+  height: calc(100dvh - 120px); min-height: 480px;
+  border: 0; border-right: 1px solid var(--customer-line);
+  border-radius: 10px 0 0 10px; background: #fafbfc;
+}
+.desktop-workspace-shell .customer-focus .messages-toolbar {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 0;
+  margin: 0; border: 0; border-radius: 0; box-shadow: none;
+  background: transparent; min-height: 0;
+}
+.desktop-workspace-shell .customer-focus .message-filters {display:flex; gap:4px; width:100%;}
+.desktop-workspace-shell .customer-focus .message-filters button {
+  flex: 1; min-height: 44px; padding: 8px 4px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--customer-muted); font-size: 13px; font-weight: 500; box-shadow:none;
+}
+.desktop-workspace-shell .customer-focus .message-filters button.active {background:#eaf1fc;color:var(--customer-blue);}
+.desktop-workspace-shell .customer-focus .customer-hub-more {margin-left:auto;}
+.desktop-workspace-shell .customer-focus .customer-hub-more summary {min-height:44px;display:flex;align-items:center;color:var(--customer-muted);font-weight:400;}
+.desktop-workspace-shell .customer-focus .workspace-master>header {padding:0 16px 12px;}
+.desktop-workspace-shell .customer-focus .workspace-master>header .sr-only {position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
+.desktop-workspace-shell .customer-focus .workspace-master input {height:44px;background:white;border:1px solid #dce2ea;border-radius:7px;font-size:14px;padding:10px 12px;}
+.desktop-workspace-shell .customer-focus .workspace-master>nav {padding:0 12px;gap:4px;border-bottom:1px solid var(--customer-line);}
+.desktop-workspace-shell .customer-focus .workspace-master>nav button {min-height:44px;border:0;border-radius:0;box-shadow:none;background:transparent;color:var(--customer-muted);font-weight:400;}
+.desktop-workspace-shell .customer-focus .workspace-master>nav button[aria-pressed=true] {color:var(--customer-blue);box-shadow:inset 0 -2px var(--customer-blue);background:transparent;}
+.desktop-workspace-shell .customer-focus .workspace-master-rows>button {padding:16px;min-height:76px;gap:6px;background:transparent;border-bottom:1px solid #eef1f5;}
+.desktop-workspace-shell .customer-focus .workspace-master-rows>button:hover {background:#f1f5f9;}
+.desktop-workspace-shell .customer-focus .workspace-master-rows>button.active {background:#edf3fd;box-shadow:inset 3px 0 var(--customer-blue);}
+.desktop-workspace-shell .customer-focus .workspace-master-rows strong {font-size:14px;line-height:20px;font-weight:600;}
+.desktop-workspace-shell .customer-focus .workspace-master-rows small {font-size:13px;line-height:20px;color:var(--customer-muted);}
+.desktop-workspace-shell .customer-focus .workspace-master-rows time {font-size:12px;line-height:18px;color:var(--customer-muted);font-variant-numeric:tabular-nums;}
+.desktop-workspace-shell .customer-focus .thread-header {padding:16px 20px;gap:10px;min-height:88px;flex-wrap:wrap;border-bottom:1px solid var(--customer-line);}
+.desktop-workspace-shell .customer-focus .thread-header-copy {flex:1;min-width:160px;}
+.desktop-workspace-shell .customer-focus .thread-header h2 {font-size:18px;line-height:26px;font-weight:600;letter-spacing:0;}
+.desktop-workspace-shell .customer-focus .thread-header p {font-size:12px;line-height:18px;color:var(--customer-muted);margin:4px 0 0;}
+.desktop-workspace-shell .customer-focus .channel-avatar.large {width:36px;height:36px;border-radius:8px;background:#eff6ff;color:var(--customer-blue);}
+.desktop-workspace-shell .customer-focus .message-readonly {background:transparent;color:var(--customer-muted);padding:0;gap:4px;font-size:12px;}
+.desktop-workspace-shell .customer-focus :is(.conversation-history-trigger,.phrase-library-trigger) {background:white;border:1px solid #dce2ea;color:#334155;min-height:44px;border-radius:7px;box-shadow:none;font-weight:500;}
+.desktop-workspace-shell .customer-focus .customer-hub-tabs {padding:0 20px;gap:20px;background:white;border-bottom:1px solid var(--customer-line);}
+.desktop-workspace-shell .customer-focus .customer-hub-tabs button {min-height:48px;padding:12px 4px;border:0;border-radius:0;background:transparent;color:var(--customer-muted);font-size:14px;font-weight:500;box-shadow:none;}
+.desktop-workspace-shell .customer-focus .customer-hub-tabs button[aria-current] {color:var(--customer-blue);background:transparent;box-shadow:inset 0 -2px var(--customer-blue);}
+.desktop-workspace-shell .customer-focus .thread-messages {height:calc(100dvh - 260px);min-height:320px;padding:24px;background:#f8fafc;}
+.desktop-workspace-shell .customer-focus .thread-messages article>div {box-shadow:none;border-radius:10px;border:1px solid var(--customer-line);background:white;color:var(--customer-ink);padding:12px 16px;}
+.desktop-workspace-shell .customer-focus .thread-messages .outbound>div {background:#edf3fd;border-color:#dce8fa;color:var(--customer-ink);}
+.desktop-workspace-shell .customer-focus .thread-messages p {font-size:14px;line-height:22px;font-weight:400;background:transparent;color:inherit;padding:0;border-radius:0;}
+.desktop-workspace-shell .customer-focus .thread-messages time {font-size:12px;line-height:18px;color:var(--customer-muted);font-variant-numeric:tabular-nums;}
+.desktop-workspace-shell .customer-focus .workspace-context {border:0;border-left:1px solid var(--customer-line);border-radius:0 10px 10px 0;box-shadow:none;background:white;}
+.desktop-workspace-shell .customer-focus .workspace-context>summary {padding:16px;min-height:56px;font-size:14px;font-weight:600;}
+.desktop-workspace-shell .customer-focus .workspace-context:not([open]) {align-self:start;}
+.desktop-workspace-shell .customer-focus .workspace-context dt {font-size:12px;line-height:18px;color:var(--customer-muted);margin-bottom:6px;}
+.desktop-workspace-shell .customer-focus .workspace-context dd {font-size:14px;line-height:22px;color:var(--customer-ink);margin-bottom:24px;}
+.desktop-workspace-shell .customer-focus :is(button,a,summary,input):focus-visible {outline:2px solid var(--customer-blue);outline-offset:3px;}
+.customer-list-back {display:none;}
+@media(max-width:1250px) {
+  .desktop-workspace-shell .customer-focus .messages-workbench {grid-template-columns:260px minmax(0,1fr);}
+  .desktop-workspace-shell .customer-focus .workspace-context {grid-column:1/-1;border-left:0;border-top:1px solid var(--customer-line);}
+}
+@media(max-width:700px) {
+  .desktop-workspace-shell .customer-focus .messages-workbench {display:flex;flex-direction:column;border-radius:8px;}
+  .desktop-workspace-shell .customer-focus.show-customer-list .messages-workbench>:not(.workspace-master),
+  .desktop-workspace-shell .customer-focus.show-customer-detail .workspace-master {display:none;}
+  .desktop-workspace-shell .customer-focus .workspace-master {width:100%;height:calc(100dvh - 104px);max-height:none;min-height:360px;border:0;}
+  .desktop-workspace-shell .customer-focus.show-customer-detail .customer-list-back {display:flex;align-items:center;min-height:44px;padding:8px 4px;margin-bottom:8px;border:0;background:transparent;color:var(--customer-blue);font-size:14px;}
+  .desktop-workspace-shell .customer-focus .thread-header {padding:16px;gap:8px;}
+  .desktop-workspace-shell .customer-focus .thread-header-copy {min-width:0;flex-basis:calc(100% - 52px);}
+  .desktop-workspace-shell .customer-focus .customer-hub-tabs {padding:0 16px;gap:20px;}
+  .desktop-workspace-shell .customer-focus .thread-messages {height:calc(100dvh - 340px);min-height:280px;padding:16px;}
+}

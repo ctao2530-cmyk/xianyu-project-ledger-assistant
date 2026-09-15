@@ -16,6 +16,183 @@ CUSTOMER_INTAKE_COLUMNS = {
     "notes": "TEXT NOT NULL DEFAULT ''",
 }
 
+PROJECT_REQUIREMENT_HANDOFF_COLUMNS = {
+    "project_id": "VARCHAR(128)",
+    "source_filename": "VARCHAR(255) NOT NULL DEFAULT ''",
+    "source_sha256": "VARCHAR(64) NOT NULL DEFAULT ''",
+    "import_metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+}
+
+PROJECT_TASK_DRAFT_COLUMNS = {
+    "workspace_key": "VARCHAR(128)",
+    "dependency_task_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+    "deliverables_json": "TEXT NOT NULL DEFAULT '[]'",
+    "requirement_version_id": "INTEGER REFERENCES requirement_document_versions(id)",
+}
+
+
+def migrate_project_requirement_handoff_schema(connection: Connection) -> bool:
+    """Restore the all-or-nothing 0037 project requirement columns."""
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    table = "requirement_document_versions"
+    if table not in tables:
+        return False
+    column_rows = list(connection.exec_driver_sql(f"PRAGMA table_info({table})"))
+    columns = {str(row[1]) for row in column_rows}
+    expected = set(PROJECT_REQUIREMENT_HANDOFF_COLUMNS)
+    present = columns.intersection(expected)
+    if present and present != expected:
+        raise RuntimeError(
+            "project requirement handoff schema is partial; refusing silent repair; missing columns: "
+            + ", ".join(sorted(expected - present))
+        )
+    changed = False
+    if not present:
+        for name, definition in PROJECT_REQUIREMENT_HANDOFF_COLUMNS.items():
+            connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        changed = True
+    conversation_required = bool(
+        next((row[3] for row in column_rows if str(row[1]) == "conversation_id"), 0)
+    )
+    if conversation_required:
+        temporary = "requirement_document_versions_0037_new"
+        if temporary in tables:
+            raise RuntimeError(
+                "project requirement handoff schema is partial; temporary rebuild table exists"
+            )
+        connection.exec_driver_sql(
+            f"""
+            CREATE TABLE {temporary} (
+                id INTEGER NOT NULL PRIMARY KEY,
+                conversation_id INTEGER,
+                case_id VARCHAR(128),
+                project_id VARCHAR(128),
+                schema_version VARCHAR(16) NOT NULL DEFAULT '1.0',
+                source_type VARCHAR(32) NOT NULL DEFAULT 'codex_cli',
+                source_label VARCHAR(255) NOT NULL DEFAULT 'Codex 生成',
+                imported_at DATETIME,
+                source_filename VARCHAR(255) NOT NULL DEFAULT '',
+                source_sha256 VARCHAR(64) NOT NULL DEFAULT '',
+                import_metadata_json TEXT NOT NULL DEFAULT '{{}}',
+                version INTEGER NOT NULL,
+                title VARCHAR(300) NOT NULL,
+                readiness VARCHAR(32) NOT NULL,
+                change_summary TEXT NOT NULL,
+                structured_json TEXT NOT NULL,
+                content_markdown TEXT NOT NULL,
+                stage_progress_json TEXT NOT NULL DEFAULT '{{}}',
+                model VARCHAR(128) NOT NULL,
+                reasoning_effort VARCHAR(32),
+                created_at DATETIME NOT NULL,
+                CONSTRAINT uq_requirement_conversation_version UNIQUE (conversation_id, version),
+                CONSTRAINT uq_requirement_case_version UNIQUE (case_id, version),
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id),
+                FOREIGN KEY(case_id) REFERENCES requirement_cases(id),
+                FOREIGN KEY(project_id) REFERENCES business_projects(id)
+            )
+            """
+        )
+        copy_columns = [
+            "id", "conversation_id", "case_id", "project_id", "schema_version",
+            "source_type", "source_label", "imported_at", "source_filename",
+            "source_sha256", "import_metadata_json", "version", "title", "readiness",
+            "change_summary", "structured_json", "content_markdown", "stage_progress_json",
+            "model", "reasoning_effort", "created_at",
+        ]
+        joined = ", ".join(copy_columns)
+        connection.exec_driver_sql(
+            f"INSERT INTO {temporary} ({joined}) SELECT {joined} FROM {table}"
+        )
+        connection.exec_driver_sql(f"DROP TABLE {table}")
+        connection.exec_driver_sql(f"ALTER TABLE {temporary} RENAME TO {table}")
+        changed = True
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_requirement_document_versions_conversation_id "
+        "ON requirement_document_versions(conversation_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_requirement_document_versions_created_at "
+        "ON requirement_document_versions(created_at)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_requirement_versions_conversation_created "
+        "ON requirement_document_versions(conversation_id, created_at)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_requirement_document_versions_case_id "
+        "ON requirement_document_versions(case_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_requirement_case_version_partial "
+        "ON requirement_document_versions(case_id, version) WHERE case_id IS NOT NULL"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_requirement_document_versions_project_id "
+        "ON requirement_document_versions(project_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_requirement_document_versions_source_sha256 "
+        "ON requirement_document_versions(source_sha256)"
+    )
+    connection.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_requirement_project_version_partial "
+        "ON requirement_document_versions(project_id, version) WHERE project_id IS NOT NULL"
+    )
+    return changed
+
+
+def migrate_project_task_draft_schema(connection: Connection) -> bool:
+    """Add 0038 task columns and reject every partially-created schema."""
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "business_tasks" not in tables:
+        return False
+    columns = {
+        str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(business_tasks)")
+    }
+    expected_columns = set(PROJECT_TASK_DRAFT_COLUMNS)
+    present_columns = columns.intersection(expected_columns)
+    expected_tables = {"project_task_draft_previews", "project_task_draft_items"}
+    present_tables = tables.intersection(expected_tables)
+    if (present_columns and present_columns != expected_columns) or (
+        present_tables and present_tables != expected_tables
+    ) or (present_tables == expected_tables and present_columns != expected_columns):
+        missing = sorted(
+            (expected_columns - present_columns) | (expected_tables - present_tables)
+        )
+        raise RuntimeError(
+            "project task draft schema is partial; refusing silent repair; missing: "
+            + ", ".join(missing)
+        )
+    if present_columns == expected_columns and present_tables == expected_tables:
+        return False
+    if present_columns != expected_columns:
+        for name, definition in PROJECT_TASK_DRAFT_COLUMNS.items():
+            connection.exec_driver_sql(
+                f"ALTER TABLE business_tasks ADD COLUMN {name} {definition}"
+            )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_business_tasks_workspace_key "
+            "ON business_tasks(workspace_key)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_business_tasks_requirement_version_id "
+            "ON business_tasks(requirement_version_id)"
+        )
+        return True
+    return False
+
 
 def migrate_customer_intake_schema(connection: Connection) -> bool:
     """Add the customer-intake fields as one all-or-nothing schema unit."""
@@ -811,6 +988,739 @@ def migrate_agent_customer_context_schema(connection: Connection) -> bool:
         )
     GlobalAgentConversationSummary.__table__.create(bind=connection, checkfirst=False)
     CustomerImageHistoryRecoveryRun.__table__.create(bind=connection, checkfirst=False)
+    return True
+
+
+def migrate_global_agent_trace_schema(connection: Connection) -> bool:
+    """Mirror phase 0039 and reject a partially created trace table."""
+
+    from .models import GlobalAgentRunStep
+
+    required = {
+        "id",
+        "run_id",
+        "position",
+        "node_name",
+        "status",
+        "summary",
+        "detail_json",
+        "duration_ms",
+        "started_at",
+        "completed_at",
+        "created_at",
+    }
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "global_agent_runs" not in tables:
+        return False
+    if "global_agent_run_steps" not in tables:
+        GlobalAgentRunStep.__table__.create(bind=connection, checkfirst=False)
+        return True
+
+    columns = {
+        str(row[1])
+        for row in connection.exec_driver_sql(
+            "PRAGMA table_info(global_agent_run_steps)"
+        )
+    }
+    missing = required - columns
+    if missing:
+        raise RuntimeError(
+            "global Agent run trace schema is incomplete: "
+            + ", ".join(sorted(missing))
+        )
+    return False
+
+
+def migrate_customer_context_gateway_schema(connection: Connection) -> bool:
+    """Mirror phase 0040 and reject any partial customer-context permission domain."""
+
+    from .models import (
+        CustomerContextAccessAudit,
+        CustomerContextGrant,
+        CustomerContextMutationRequest,
+    )
+
+    expected = {
+        "customer_context_grants": {
+            "id", "thread_id", "conversation_id", "provider_scope",
+            "audience", "token_hash", "allow_text", "allow_images",
+            "allow_artifacts", "allow_new_messages", "consent_policy_version", "consent_text_hash",
+            "status", "revision", "authorization_note", "confirmed_at",
+            "expires_at", "revoked_at", "created_at", "updated_at",
+        },
+        "customer_context_access_audits": {
+            "id", "request_id", "grant_id", "grant_revision", "thread_id",
+            "conversation_id", "provider", "audience", "target_model",
+            "tool_name", "requested_scopes_json", "request_hash", "status",
+            "summary_version", "watermark_before", "watermark_after",
+            "text_message_count", "image_count", "byte_count",
+            "resource_hashes_json", "source_hash", "error_code",
+            "duration_ms", "created_at", "completed_at",
+        },
+        "customer_context_mutation_requests": {
+            "request_id", "operation", "payload_hash", "result_json", "created_at",
+        },
+    }
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    present = set(expected).intersection(tables)
+    if present and present != set(expected):
+        raise RuntimeError(
+            "customer context gateway schema is incomplete: "
+            + ", ".join(sorted(set(expected) - present))
+        )
+    if present == set(expected):
+        for table, required_columns in expected.items():
+            columns = {
+                str(row[1])
+                for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+            }
+            missing = required_columns - columns
+            if missing:
+                raise RuntimeError(
+                    "customer context gateway schema is incomplete: "
+                    f"{table} missing {', '.join(sorted(missing))}"
+                )
+        return False
+    if "global_agent_threads" not in tables or "conversations" not in tables:
+        return False
+
+    for table in (
+        CustomerContextGrant.__table__,
+        CustomerContextAccessAudit.__table__,
+        CustomerContextMutationRequest.__table__,
+    ):
+        table.create(bind=connection, checkfirst=False)
+    return True
+
+
+CUSTOMER_CONTEXT_OAUTH_COLUMNS = {
+    "id",
+    "token_hash",
+    "grant_id",
+    "issuer",
+    "audience",
+    "subject_hash",
+    "client_id_hash",
+    "scopes_json",
+    "issued_at",
+    "expires_at",
+    "created_at",
+    "last_used_at",
+}
+
+
+def validate_customer_context_oauth_schema(connection: Connection) -> bool:
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    table = "customer_context_oauth_bindings"
+    if table not in tables:
+        return False
+    columns = {
+        str(row[1]) for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+    }
+    missing = CUSTOMER_CONTEXT_OAUTH_COLUMNS - columns
+    if missing:
+        raise RuntimeError(
+            "customer context OAuth schema is incomplete: "
+            + ", ".join(sorted(missing))
+        )
+    foreign_keys = {
+        (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+        for row in connection.exec_driver_sql(f"PRAGMA foreign_key_list({table})")
+    }
+    if ("grant_id", "customer_context_grants", "id", "CASCADE") not in foreign_keys:
+        raise RuntimeError(
+            "customer context OAuth schema is incomplete: grant foreign key missing"
+        )
+    unique_sets: set[tuple[str, ...]] = set()
+    for index in connection.exec_driver_sql(f"PRAGMA index_list('{table}')"):
+        if not bool(index[2]):
+            continue
+        unique_sets.add(
+            tuple(
+                str(row[2])
+                for row in connection.exec_driver_sql(
+                    f"PRAGMA index_info('{str(index[1])}')"
+                )
+            )
+        )
+    if ("token_hash",) not in unique_sets:
+        raise RuntimeError(
+            "customer context OAuth schema is incomplete: token hash uniqueness missing"
+        )
+    return True
+
+
+def migrate_customer_context_oauth_schema(connection: Connection) -> bool:
+    """Mirror phase 0042 and reject a partially created OAuth binding table."""
+
+    from .models import CustomerContextOAuthBinding
+
+    if validate_customer_context_oauth_schema(connection):
+        return False
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "customer_context_grants" not in tables:
+        return False
+    CustomerContextOAuthBinding.__table__.create(bind=connection, checkfirst=False)
+    validate_customer_context_oauth_schema(connection)
+    return True
+
+
+CUSTOMER_CONTEXT_TUNNEL_COLUMNS = {
+    "slot",
+    "grant_id",
+    "revision",
+    "created_at",
+    "updated_at",
+}
+
+
+def validate_customer_context_tunnel_schema(connection: Connection) -> bool:
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    table = "customer_context_tunnel_bindings"
+    if table not in tables:
+        return False
+    columns = {
+        str(row[1]) for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+    }
+    missing = CUSTOMER_CONTEXT_TUNNEL_COLUMNS - columns
+    if missing:
+        raise RuntimeError(
+            "customer context tunnel schema is incomplete: "
+            + ", ".join(sorted(missing))
+        )
+    primary_key = tuple(
+        str(row[1])
+        for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+        if int(row[5]) > 0
+    )
+    if primary_key != ("slot",):
+        raise RuntimeError(
+            "customer context tunnel schema is incomplete: slot primary key missing"
+        )
+    foreign_keys = {
+        (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+        for row in connection.exec_driver_sql(f"PRAGMA foreign_key_list({table})")
+    }
+    if ("grant_id", "customer_context_grants", "id", "CASCADE") not in foreign_keys:
+        raise RuntimeError(
+            "customer context tunnel schema is incomplete: grant foreign key missing"
+        )
+    unique_sets: set[tuple[str, ...]] = set()
+    for index in connection.exec_driver_sql(f"PRAGMA index_list('{table}')"):
+        if not bool(index[2]):
+            continue
+        unique_sets.add(
+            tuple(
+                str(row[2])
+                for row in connection.exec_driver_sql(
+                    f"PRAGMA index_info('{str(index[1])}')"
+                )
+            )
+        )
+    if ("grant_id",) not in unique_sets:
+        raise RuntimeError(
+            "customer context tunnel schema is incomplete: grant uniqueness missing"
+        )
+    return True
+
+
+def migrate_customer_context_tunnel_schema(connection: Connection) -> bool:
+    """Mirror phase 0043 and reject a partially created tunnel binding table."""
+
+    from .models import CustomerContextTunnelBinding
+
+    if validate_customer_context_tunnel_schema(connection):
+        return False
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "customer_context_grants" not in tables:
+        return False
+    CustomerContextTunnelBinding.__table__.create(bind=connection, checkfirst=False)
+    validate_customer_context_tunnel_schema(connection)
+    return True
+
+
+CUSTOMER_CONTEXT_THREAD_BINDING_COLUMNS = {
+    "id",
+    "context_key_hash",
+    "context_key_hint",
+    "grant_id",
+    "auth_mode",
+    "owner_issuer",
+    "owner_subject_hash",
+    "owner_client_id_hash",
+    "status",
+    "revision",
+    "expires_at",
+    "revoked_at",
+    "last_used_at",
+    "created_at",
+    "updated_at",
+}
+
+
+def validate_customer_context_thread_binding_schema(connection: Connection) -> bool:
+    table = "customer_context_thread_bindings"
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if table not in tables:
+        return False
+    columns = {
+        str(row[1]) for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+    }
+    missing = CUSTOMER_CONTEXT_THREAD_BINDING_COLUMNS - columns
+    if missing:
+        raise RuntimeError(
+            "customer context thread binding schema is incomplete: "
+            + ", ".join(sorted(missing))
+        )
+    primary_key = tuple(
+        str(row[1])
+        for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+        if int(row[5]) > 0
+    )
+    if primary_key != ("id",):
+        raise RuntimeError(
+            "customer context thread binding schema is incomplete: id primary key missing"
+        )
+    foreign_keys = {
+        (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+        for row in connection.exec_driver_sql(f"PRAGMA foreign_key_list({table})")
+    }
+    if ("grant_id", "customer_context_grants", "id", "CASCADE") not in foreign_keys:
+        raise RuntimeError(
+            "customer context thread binding schema is incomplete: grant foreign key missing"
+        )
+    unique_sets: set[tuple[str, ...]] = set()
+    for index in connection.exec_driver_sql(f"PRAGMA index_list('{table}')"):
+        if not bool(index[2]):
+            continue
+        unique_sets.add(
+            tuple(
+                str(row[2])
+                for row in connection.exec_driver_sql(
+                    f"PRAGMA index_info('{str(index[1])}')"
+                )
+            )
+        )
+    for required in (("context_key_hash",), ("grant_id",)):
+        if required not in unique_sets:
+            raise RuntimeError(
+                "customer context thread binding schema is incomplete: "
+                + required[0]
+                + " uniqueness missing"
+            )
+    return True
+
+
+def migrate_customer_context_thread_binding_schema(connection: Connection) -> bool:
+    """Mirror phase 0044 and reject a partially created thread-binding table."""
+
+    from .models import CustomerContextThreadBinding
+
+    if validate_customer_context_thread_binding_schema(connection):
+        return False
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "customer_context_grants" not in tables:
+        return False
+    CustomerContextThreadBinding.__table__.create(bind=connection, checkfirst=False)
+    validate_customer_context_thread_binding_schema(connection)
+    return True
+
+
+CUSTOMER_ANALYSIS_TABLE_COLUMNS = {
+    "customer_analysis_threads": {
+        "id", "thread_id", "conversation_id", "provider_scope", "model",
+        "external_conversation_id", "status", "analysis_state", "include_images",
+        "debounce_seconds", "max_wait_seconds", "last_enqueued_message_id",
+        "last_analyzed_message_id", "latest_artifact_version", "pending_since",
+        "next_run_at", "last_started_at", "last_completed_at", "last_error_code",
+        "last_error_message", "consent_policy_version", "consent_text_hash",
+        "authorization_note", "confirmed_at", "revision", "paused_at",
+        "created_at", "updated_at",
+    },
+    "customer_analysis_runs": {
+        "id", "analysis_thread_id", "subscription_revision", "run_key", "status", "watermark_before",
+        "watermark_after", "source_hash", "provider", "model",
+        "external_response_id", "artifact_version", "message_count", "image_count",
+        "error_code", "error_message", "created_at", "started_at", "completed_at",
+    },
+    "customer_analysis_events": {
+        "id", "analysis_thread_id", "conversation_id", "message_id", "event_key",
+        "status", "run_id", "attempt_count", "created_at", "processing_at",
+        "completed_at",
+    },
+    "customer_analysis_artifacts": {
+        "id", "analysis_thread_id", "version", "previous_artifact_id", "run_id",
+        "watermark_before", "watermark_after", "source_hash", "content_hash",
+        "content_json", "diff_json", "evidence_message_ids_json",
+        "evidence_image_ids_json", "model", "external_response_id", "created_at",
+    },
+    "customer_analysis_mutation_requests": {
+        "request_id", "operation", "payload_hash", "result_json", "created_at",
+    },
+}
+
+CUSTOMER_ANALYSIS_TRIGGER_NAMES = {
+    "trg_customer_analysis_thread_binding_insert",
+    "trg_customer_analysis_thread_binding_update",
+    "trg_global_agent_thread_analysis_binding_update",
+    "trg_customer_analysis_event_scope_insert",
+    "trg_customer_analysis_event_scope_update",
+    "trg_customer_analysis_artifact_scope_insert",
+    "trg_customer_analysis_artifact_no_update",
+    "trg_customer_analysis_artifact_no_delete",
+}
+
+CUSTOMER_ANALYSIS_NULLABLE_COLUMNS = {
+    "customer_analysis_threads": {
+        "external_conversation_id", "last_enqueued_message_id",
+        "last_analyzed_message_id", "pending_since", "next_run_at",
+        "last_started_at", "last_completed_at", "paused_at",
+    },
+    "customer_analysis_runs": {
+        "watermark_before", "artifact_version", "started_at", "completed_at",
+    },
+    "customer_analysis_events": {"run_id", "processing_at", "completed_at"},
+    "customer_analysis_artifacts": {"previous_artifact_id", "watermark_before"},
+    "customer_analysis_mutation_requests": set(),
+}
+
+CUSTOMER_ANALYSIS_DEFAULTS = {
+    "customer_analysis_threads": {
+        "provider_scope": "openai", "model": "", "status": "active",
+        "analysis_state": "waiting", "include_images": "0",
+        "debounce_seconds": "30", "max_wait_seconds": "60",
+        "latest_artifact_version": "0", "last_error_code": "",
+        "last_error_message": "", "consent_policy_version": "2",
+        "authorization_note": "", "revision": "1",
+    },
+    "customer_analysis_runs": {
+        "subscription_revision": "1", "status": "pending", "source_hash": "",
+        "provider": "openai", "model": "", "external_response_id": "",
+        "message_count": "0", "image_count": "0", "error_code": "",
+        "error_message": "",
+    },
+    "customer_analysis_events": {"status": "pending", "attempt_count": "0"},
+    "customer_analysis_artifacts": {
+        "diff_json": "{}", "evidence_message_ids_json": "[]",
+        "evidence_image_ids_json": "[]", "model": "",
+        "external_response_id": "",
+    },
+    "customer_analysis_mutation_requests": {"result_json": "{}"},
+}
+
+
+def _customer_analysis_unique_sets(
+    connection: Connection, table: str
+) -> set[tuple[str, ...]]:
+    result: set[tuple[str, ...]] = set()
+    for index in connection.exec_driver_sql(f"PRAGMA index_list('{table}')"):
+        if not bool(index[2]):
+            continue
+        columns = tuple(
+            str(row[2])
+            for row in connection.exec_driver_sql(
+                f"PRAGMA index_info('{str(index[1])}')"
+            )
+        )
+        result.add(columns)
+    return result
+
+
+def validate_customer_auto_analysis_schema(
+    connection: Connection, *, require_triggers: bool = True
+) -> bool:
+    """Validate the SQLite 0041 structure beyond table and column presence."""
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    present = set(CUSTOMER_ANALYSIS_TABLE_COLUMNS).intersection(tables)
+    if not present:
+        return False
+    if present != set(CUSTOMER_ANALYSIS_TABLE_COLUMNS):
+        raise RuntimeError(
+            "customer auto analysis schema is incomplete: "
+            + ", ".join(sorted(set(CUSTOMER_ANALYSIS_TABLE_COLUMNS) - present))
+        )
+    for table, required_columns in CUSTOMER_ANALYSIS_TABLE_COLUMNS.items():
+        info = list(connection.exec_driver_sql(f"PRAGMA table_info('{table}')"))
+        columns = {str(row[1]) for row in info}
+        missing = required_columns - columns
+        if missing:
+            raise RuntimeError(
+                "customer auto analysis schema is incomplete: "
+                f"{table} missing {', '.join(sorted(missing))}"
+            )
+        primary_keys = tuple(str(row[1]) for row in info if int(row[5]) > 0)
+        expected_pk = (
+            "request_id",
+        ) if table == "customer_analysis_mutation_requests" else ("id",)
+        if primary_keys != expected_pk:
+            raise RuntimeError(
+                f"customer auto analysis schema is incomplete: {table} primary key"
+            )
+        by_name = {str(row[1]): row for row in info}
+        nullable = CUSTOMER_ANALYSIS_NULLABLE_COLUMNS[table]
+        for column in required_columns:
+            expected_not_null = column not in nullable
+            if bool(by_name[column][3]) != expected_not_null:
+                raise RuntimeError(
+                    "customer auto analysis schema is incomplete: "
+                    f"{table}.{column} nullable"
+                )
+        for column, expected_default in CUSTOMER_ANALYSIS_DEFAULTS[table].items():
+            raw_default = by_name[column][4]
+            actual_default = (
+                str(raw_default).strip().strip("()").strip("'\"")
+                if raw_default is not None
+                else None
+            )
+            if actual_default != expected_default:
+                raise RuntimeError(
+                    "customer auto analysis schema is incomplete: "
+                    f"{table}.{column} default"
+                )
+
+    expected_fks = {
+        "customer_analysis_threads": {
+            ("thread_id", "global_agent_threads", "id", "CASCADE"),
+            ("conversation_id", "conversations", "id", "RESTRICT"),
+        },
+        "customer_analysis_runs": {
+            ("analysis_thread_id", "customer_analysis_threads", "id", "CASCADE"),
+        },
+        "customer_analysis_events": {
+            ("analysis_thread_id", "customer_analysis_threads", "id", "CASCADE"),
+            ("conversation_id", "conversations", "id", "RESTRICT"),
+            ("message_id", "messages", "id", "RESTRICT"),
+            ("run_id", "customer_analysis_runs", "id", "SET NULL"),
+        },
+        "customer_analysis_artifacts": {
+            ("analysis_thread_id", "customer_analysis_threads", "id", "RESTRICT"),
+            ("previous_artifact_id", "customer_analysis_artifacts", "id", "RESTRICT"),
+            ("run_id", "customer_analysis_runs", "id", "RESTRICT"),
+        },
+    }
+    for table, expected in expected_fks.items():
+        actual = {
+            (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+            for row in connection.exec_driver_sql(f"PRAGMA foreign_key_list('{table}')")
+        }
+        if not expected.issubset(actual):
+            raise RuntimeError(
+                f"customer auto analysis schema is incomplete: {table} foreign keys"
+            )
+
+    expected_unique = {
+        "customer_analysis_threads": {
+            ("thread_id",), ("conversation_id",), ("external_conversation_id",),
+        },
+        "customer_analysis_runs": {("run_key",)},
+        "customer_analysis_events": {
+            ("event_key",), ("analysis_thread_id", "message_id"),
+        },
+        "customer_analysis_artifacts": {
+            ("run_id",), ("analysis_thread_id", "version"),
+        },
+    }
+    for table, expected in expected_unique.items():
+        if not expected.issubset(_customer_analysis_unique_sets(connection, table)):
+            raise RuntimeError(
+                f"customer auto analysis schema is incomplete: {table} unique constraints"
+            )
+
+    required_indexes = {
+        "idx_customer_analysis_thread_due",
+        "idx_customer_analysis_run_thread_created",
+        "idx_customer_analysis_event_pending",
+        "idx_customer_analysis_artifact_latest",
+    }
+    indexes = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )
+    }
+    if not required_indexes.issubset(indexes):
+        raise RuntimeError("customer auto analysis schema is incomplete: required indexes")
+    if require_triggers:
+        triggers = {
+            str(row[0])
+            for row in connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='trigger'"
+            )
+        }
+        if not CUSTOMER_ANALYSIS_TRIGGER_NAMES.issubset(triggers):
+            raise RuntimeError("customer auto analysis schema is incomplete: safety triggers")
+    return True
+
+
+def _create_customer_auto_analysis_triggers(connection: Connection) -> None:
+    statements = (
+        """CREATE TRIGGER IF NOT EXISTS trg_customer_analysis_thread_binding_insert
+        BEFORE INSERT ON customer_analysis_threads
+        WHEN NOT EXISTS (
+          SELECT 1 FROM global_agent_threads AS thread
+          WHERE thread.id = NEW.thread_id
+            AND thread.context_scope = 'customer_conversation'
+            AND thread.conversation_id = NEW.conversation_id
+        )
+        BEGIN SELECT RAISE(ABORT, 'customer analysis binding mismatch'); END""",
+        """CREATE TRIGGER trg_customer_analysis_thread_binding_update
+        BEFORE UPDATE OF thread_id, conversation_id ON customer_analysis_threads
+        WHEN NOT EXISTS (
+          SELECT 1 FROM global_agent_threads AS thread
+          WHERE thread.id = NEW.thread_id
+            AND thread.context_scope = 'customer_conversation'
+            AND thread.conversation_id = NEW.conversation_id
+        )
+        BEGIN SELECT RAISE(ABORT, 'customer analysis binding mismatch'); END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_global_agent_thread_analysis_binding_update
+        BEFORE UPDATE OF context_scope, conversation_id ON global_agent_threads
+        WHEN EXISTS (
+          SELECT 1 FROM customer_analysis_threads AS analysis
+          WHERE analysis.thread_id = OLD.id
+            AND analysis.status = 'active'
+            AND (NEW.context_scope <> 'customer_conversation'
+              OR NEW.conversation_id IS NOT analysis.conversation_id)
+        )
+        BEGIN SELECT RAISE(ABORT, 'active customer analysis binding must be preserved'); END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_customer_analysis_event_scope_insert
+        BEFORE INSERT ON customer_analysis_events
+        WHEN NOT EXISTS (
+          SELECT 1 FROM messages AS message
+          WHERE message.id = NEW.message_id
+            AND message.conversation_id = NEW.conversation_id
+        ) OR NOT EXISTS (
+          SELECT 1 FROM customer_analysis_threads AS analysis
+          WHERE analysis.id = NEW.analysis_thread_id
+            AND analysis.conversation_id = NEW.conversation_id
+        ) OR (NEW.run_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM customer_analysis_runs AS run
+          WHERE run.id = NEW.run_id
+            AND run.analysis_thread_id = NEW.analysis_thread_id
+        ))
+        BEGIN SELECT RAISE(ABORT, 'customer analysis event scope mismatch'); END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_customer_analysis_event_scope_update
+        BEFORE UPDATE OF analysis_thread_id, conversation_id, message_id, run_id
+        ON customer_analysis_events
+        WHEN NOT EXISTS (
+          SELECT 1 FROM messages AS message
+          WHERE message.id = NEW.message_id
+            AND message.conversation_id = NEW.conversation_id
+        ) OR NOT EXISTS (
+          SELECT 1 FROM customer_analysis_threads AS analysis
+          WHERE analysis.id = NEW.analysis_thread_id
+            AND analysis.conversation_id = NEW.conversation_id
+        ) OR (NEW.run_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM customer_analysis_runs AS run
+          WHERE run.id = NEW.run_id
+            AND run.analysis_thread_id = NEW.analysis_thread_id
+        ))
+        BEGIN SELECT RAISE(ABORT, 'customer analysis event scope mismatch'); END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_customer_analysis_artifact_scope_insert
+        BEFORE INSERT ON customer_analysis_artifacts
+        WHEN NOT EXISTS (
+          SELECT 1 FROM customer_analysis_runs AS run
+          WHERE run.id = NEW.run_id
+            AND run.analysis_thread_id = NEW.analysis_thread_id
+        ) OR (NEW.previous_artifact_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM customer_analysis_artifacts AS previous
+          WHERE previous.id = NEW.previous_artifact_id
+            AND previous.analysis_thread_id = NEW.analysis_thread_id
+        ))
+        BEGIN SELECT RAISE(ABORT, 'customer analysis artifact scope mismatch'); END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_customer_analysis_artifact_no_update
+        BEFORE UPDATE ON customer_analysis_artifacts
+        BEGIN SELECT RAISE(ABORT, 'customer analysis artifacts are immutable'); END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_customer_analysis_artifact_no_delete
+        BEFORE DELETE ON customer_analysis_artifacts
+        BEGIN SELECT RAISE(ABORT, 'customer analysis artifacts are immutable'); END""",
+    )
+    for name in sorted(CUSTOMER_ANALYSIS_TRIGGER_NAMES):
+        connection.exec_driver_sql(f'DROP TRIGGER IF EXISTS "{name}"')
+    for statement in statements:
+        connection.exec_driver_sql(statement)
+
+
+def migrate_customer_auto_analysis_schema(connection: Connection) -> bool:
+    """Mirror phase 0041 and reject every partially created analysis domain."""
+
+    from .models import (
+        CustomerAnalysisArtifact,
+        CustomerAnalysisEvent,
+        CustomerAnalysisMutationRequest,
+        CustomerAnalysisRun,
+        CustomerAnalysisThread,
+    )
+
+    tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if validate_customer_auto_analysis_schema(connection, require_triggers=False):
+        _create_customer_auto_analysis_triggers(connection)
+        validate_customer_auto_analysis_schema(connection)
+        return False
+    required_base = {"global_agent_threads", "conversations", "messages"}
+    if not required_base.issubset(tables):
+        return False
+
+    for table in (
+        CustomerAnalysisThread.__table__,
+        CustomerAnalysisRun.__table__,
+        CustomerAnalysisEvent.__table__,
+        CustomerAnalysisArtifact.__table__,
+        CustomerAnalysisMutationRequest.__table__,
+    ):
+        table.create(bind=connection, checkfirst=False)
+    _create_customer_auto_analysis_triggers(connection)
+    validate_customer_auto_analysis_schema(connection)
     return True
 
 

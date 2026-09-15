@@ -1,0 +1,27 @@
+.project-detail-page .project-simple-workspace{max-width:1400px}
+.project-detail-page .project-simple-workspace{background:transparent;box-shadow:none;border:0}
+.project-detail-page .project-simple-hero{padding:18px;box-shadow:none}
+.project-detail-page .project-simple-relations{margin-top:12px;padding-top:12px}
+.project-detail-page .project-requirement-metrics{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
+.project-detail-page .project-requirement-metrics span{flex-direction:row;align-items:center;padding:4px 12px 4px 0;background:transparent;border-right:1px solid #e9e3f1;border-radius:0}
+.project-detail-page .project-requirement-metrics b{font-size:15px!important}
+.project-detail-sections{display:flex;gap:8px;border-bottom:1px solid #e5e1ed;padding:8px 0;margin-bottom:18px;flex-wrap:wrap}
+.project-detail-sections button{border:0;background:transparent;border-radius:8px;min-height:44px;padding:10px 18px;color:#665d78;font-size:14px;cursor:pointer}
+.project-detail-sections button[aria-current]{background:#eee8fb;color:#6941c6;font-weight:650}
+.project-detail-sections button:focus-visible{outline:2px solid #7041ce;outline-offset:2px}
+.project-detail-page .project-simple-grid{display:block}
+.project-detail-page .project-simple-column{display:contents}
+.project-detail-page [hidden]{display:none!important}
+.project-detail-page .project-simple-card{margin-bottom:18px}
+.project-detail-page .business-surface-title>div>span{display:none}
+.project-detail-page .project-simple-card p,.project-detail-page .project-simple-card td{font-size:14px;line-height:1.6}
+.project-detail-page .project-simple-card small{font-size:12px}
+.project-detail-page .project-simple-card button{min-height:44px}
+.project-delivery-table{overflow:auto}
+.project-delivery-table table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}
+.project-delivery-table th,.project-delivery-table td{padding:16px 12px;border-bottom:1px solid #eae6f0;vertical-align:top;overflow-wrap:anywhere}
+.project-delivery-table thead{background:#f8f6fc}
+.project-delivery-table small{display:block;color:#79638d;margin-top:8px}
+.project-delivery-summary>p{color:#746c81;font-size:12px!important}
+.project-delivery-summary summary{min-height:44px;cursor:pointer;padding:12px 0}
+@media(max-width:640px){.project-detail-sections{gap:2px}.project-detail-sections button{flex:1;white-space:nowrap;padding:8px;font-size:13px}.project-delivery-table table,.project-delivery-table tbody,.project-delivery-table tr,.project-delivery-table td,.project-delivery-table th{display:block}.project-delivery-table thead{display:none}.project-delivery-table tr{border:1px solid #eae6f0;border-radius:10px;margin-bottom:12px}.project-delivery-table td,.project-delivery-table th{border:0;padding:8px 12px}.project-delivery-table td:nth-child(2):before{content:'修改目标：';font-weight:600}.project-delivery-table td:nth-child(3):before{content:'交付物：';font-weight:600}}

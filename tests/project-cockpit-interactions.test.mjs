@@ -9,36 +9,64 @@ const immersiveFlowPath = new URL("../src/pages/ImmersiveTaskFlow.tsx", import.m
 const stylesPath = new URL("../src/pages/business-assistant.css", import.meta.url);
 const productPagePath = new URL("../src/pages/ProductIntelligencePage.tsx", import.meta.url);
 const productStylesPath = new URL("../src/pages/product-intelligence.css", import.meta.url);
+const packagePath = new URL("../package.json", import.meta.url);
 
-test("project management uses a direct list with explicit detail and edit routes", async () => {
-  const [source, detail, app, styles] = await Promise.all([
+function projectDetailSection(source) {
+  const start = source.indexOf("export function ProjectDetail");
+  const end = source.indexOf("\nexport function ", start + 1);
+  return source.slice(start, end === -1 ? source.length : end);
+}
+
+test("project management uses a direct list and the confirmed single-page detail", async () => {
+  const [source, detailSource, app, styles, packageJson] = await Promise.all([
     readFile(projectWorkspacePath, "utf8"),
     readFile(projectDetailPath, "utf8"),
     readFile(appPath, "utf8"),
     readFile(stylesPath, "utf8"),
+    readFile(packagePath, "utf8"),
   ]);
+  const detail = projectDetailSection(detailSource);
 
   assert.match(source, /所有项目，一眼掌握/);
   assert.match(source, /className="project-hub-list"/);
   assert.match(source, /openProject = \(projectId: string\) => onProjectRouteChange\(\{ projectId, tab: "overview" \}/);
   assert.match(source, /editProject = \(projectId: string\) => onProjectRouteChange\(\{ projectId, tab: "edit" \}/);
   assert.doesNotMatch(source, /projectStackGeometry|project-stack-scene|onScenePointerMove|handleWheel/);
-  assert.match(detail, /\["overview", "总览", Gauge\]/);
-  assert.doesNotMatch(detail, /\["immersive", "沉浸任务流", Stack\]/);
+  assert.match(detail, /className="project-simple-grid"/);
+  assert.match(detail, /<DetailWorkspace context=/);
+  assert.match(detail, /需求与交付/);
+  assert.match(detail, /project-simple-task-trace/);
+  assert.match(detail, /需求 V\{task\.requirementVersionId/);
+  assert.match(detail, /task_key · \{task\.taskKey\}/);
+  assert.match(detail, /<TaskFacts task=\{task\}/);
+  const facts = await readFile(new URL('../src/components/workspace/TaskFacts.tsx', import.meta.url), 'utf8');
+  assert.match(facts, /task\.workspaceKey/);
+  assert.match(facts, /未记录验收结果/);
+  assert.match(detail, /依赖 · \{task\.dependencyTaskKeys/);
+  assert.match(detail, /合同与回款/);
+  assert.match(detail, /最近记录/);
+  assert.doesNotMatch(detail, /title="客户与商品"|title="执行摘要"/);
+  assert.match(detail, /管理关系/);
+  assert.match(detail, /附件与异常/);
+  assert.doesNotMatch(detail, /Codex 同步|交付核验|需求报价|已验证交付进度/);
+  assert.match(app, /const projectDetailTabs: ProjectDetailTab\[\] = \["overview", "immersive", "edit"\]/);
   assert.match(app, /rawProjectTab as ProjectDetailTab\) \? rawProjectTab as ProjectDetailTab : "overview" as const/);
+  assert.match(app, /const expectedProjectHash = projectSectionHash\(route\.projectRoute\)[\s\S]*window\.history\.replaceState\(window\.history\.state, "", expectedProjectHash\)/);
   assert.match(styles, /\.project-hub-list > header,\.project-hub-list > article/);
   assert.match(styles, /@media \(max-width:560px\)[\s\S]*grid-template-areas:"main badge"/);
+  assert.doesNotMatch(packageJson, /codex-sync-workbench\.test|codex-verification-workbench\.test/);
 });
 
-test("verified progress never falls back to legacy project progress", async () => {
-  const [source, detail] = await Promise.all([
+test("project surfaces no longer request or display Codex verification state", async () => {
+  const [source, detailSource] = await Promise.all([
     readFile(projectWorkspacePath, "utf8"),
     readFile(projectDetailPath, "utf8"),
   ]);
+  const detail = projectDetailSection(detailSource);
 
-  assert.match(source, /view\?\.progress\.verified_delivery\.percent \?\? 0/);
-  assert.match(detail, /verificationView\?\.progress\.verified_delivery\.percent \?\? 0/);
-  assert.doesNotMatch(detail, /verified_delivery\.percent \?\? project\.progress/);
+  assert.doesNotMatch(source, /VERIFIED|projectVerification\(|CodexProjectVerificationView|VerifiedMeter/);
+  assert.doesNotMatch(detail, /verified_delivery|verificationView|CodexSyncWorkbench|CodexVerificationWorkbench/);
+  assert.match(detail, /const persistTasks = \(nextTasks: ProjectTask\[\]\) => onSnapshotChange\(\{ \.\.\.snapshot, tasks: nextTasks \}\)/);
 });
 
 test("project edit isolates basic fields from relation changes", async () => {
@@ -106,6 +134,10 @@ test("product radar distinguishes realtime realized profit from immutable histor
   assert.match(source, /product\.profit_is_realtime \? "实时账本" : "快照口径"/);
   assert.match(source, /净确认到账[\s\S]*project_expense_total[\s\S]*project_refund_total[\s\S]*实际利润/);
   assert.match(source, /历史商品快照仍保留采集当时的数据，不追溯改写/);
-  assert.match(source, /selected\.linked_projects\.map/);
+  assert.match(source, /<ProductLinkedProjects projects=\{selected\.linked_projects\}/);
+  const linked = await readFile(new URL('../src/components/workspace/ProductLinkedProjects.tsx', import.meta.url), 'utf8');
+  assert.match(linked, /projects\.map/);
+  assert.match(linked, /project\.net_confirmed_total/);
+  assert.match(linked, /project\.profit_total/);
   assert.match(styles, /\.product-profit-detail \{[^}]*grid-template-columns/);
 });

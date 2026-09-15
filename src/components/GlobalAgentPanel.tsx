@@ -3,6 +3,7 @@ import {
   BookOpenText,
   Brain,
   CaretDown,
+  CaretRight,
   CheckCircle,
   Clock,
   Database,
@@ -28,10 +29,13 @@ import {
   connectPlatformEvents,
   localPlatformService,
   type GlobalAgentBootstrap,
+  type CustomerAnalysisSubscription,
   type GlobalAgentCustomerCreateProposal,
   type GlobalAgentCustomerContextOption,
   type GlobalAgentMessage,
+  type GlobalAgentExecutionPlan,
   type GlobalAgentProfile,
+  type GlobalAgentRunTrace,
   type GlobalAgentRequirementAnalysis,
   type GlobalAgentRequirementBlueprint,
   type GlobalAgentTargetPage,
@@ -47,6 +51,59 @@ const providerLabels = {
   openai_compatible: "OpenAI Compatible",
 };
 
+const initialAnalysisOptions = {
+  allowImages: false,
+  authorizationNote: "仅用于当前绑定客户的新消息增量需求分析与执行计划修订",
+};
+
+const toolSourceLabels: Record<string, string> = {
+  business_customers: "客户业务库",
+  owned_product_registry: "当前卖家商品库",
+  business_projects: "项目业务库",
+  canonical_ledger: "统一账本",
+  business_analysis_overview: "本地经营概览",
+  bound_customer_conversation: "已绑定客户文字会话",
+  local_business_data: "本地业务数据",
+};
+
+function formatObservedAt(value: string | null) {
+  if (!value) return "读取时间未记录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "读取时间未记录";
+  return `读取于 ${date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })}`;
+}
+
+function analysisStateLabel(value: CustomerAnalysisSubscription["analysis_state"]) {
+  return {
+    waiting: "等待新消息",
+    pending: "已收到新消息",
+    analyzing: "正在增量分析",
+    completed: "最新版本已生成",
+    failed: "分析失败",
+    configuration_required: "OpenAI API 待配置",
+  }[value];
+}
+
+function toolProvenance(tool: {
+  source: string;
+  observed_at: string | null;
+  revision: number | null;
+  read_only: boolean;
+}) {
+  return [
+    toolSourceLabels[tool.source] || "本地业务数据",
+    formatObservedAt(tool.observed_at),
+    tool.revision == null ? null : `revision ${tool.revision}`,
+    tool.read_only ? "只读" : "权限状态未确认",
+  ].filter(Boolean).join(" · ");
+}
+
 function requestId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
@@ -60,6 +117,124 @@ function statusLabel(status: string) {
     cancelled: "已取消",
     interrupted: "已中断",
   }[status] || status;
+}
+
+const executionPhases = [
+  ["context", "上下文"],
+  ["evidence", "证据"],
+  ["tools", "工具"],
+  ["generate", "生成"],
+  ["validate", "校验"],
+  ["persist", "保存"],
+] as const;
+
+const completedTraceStatuses = new Set(["completed", "skipped"]);
+const terminalTraceStatuses = new Set(["failed", "cancelled", "interrupted"]);
+
+function formatTraceDuration(milliseconds: number) {
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} 秒`;
+}
+
+function formatElapsedDuration(milliseconds: number) {
+  const totalSeconds = Math.max(1, Math.round(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours} 小时 ${minutes} 分钟 ${seconds} 秒`;
+  if (minutes > 0) return `${minutes} 分钟 ${seconds} 秒`;
+  return `${seconds} 秒`;
+}
+
+function phaseStatus(trace: GlobalAgentRunTrace, phase: typeof executionPhases[number][0]) {
+  const steps = trace.steps.filter((step) => step.phase === phase);
+  if (steps.some((step) => terminalTraceStatuses.has(step.status))) return "failed";
+  if (steps.some((step) => step.status === "running")) return "running";
+  if (steps.length > 0 && steps.every((step) => completedTraceStatuses.has(step.status))) return "completed";
+  return "pending";
+}
+
+function AgentExecutionTrace({ trace, showSteps, onToggleSteps, onCancel }: {
+  trace: GlobalAgentRunTrace;
+  showSteps: boolean;
+  onToggleSteps: () => void;
+  onCancel?: () => void;
+}) {
+  if (trace.legacy) {
+    return <section className="agent-execution-trace is-legacy" aria-label="小策执行轨迹">
+      <div className="agent-trace-legacy"><Clock size={18} /><span><b>旧记录未保存节点轨迹</b><small>这条回答仍保留原有证据来源，但无法补写当时的步骤与工具状态。</small></span></div>
+      <footer><ShieldCheck size={14} />仅显示真实留存记录，不根据回答内容反推执行过程</footer>
+    </section>;
+  }
+
+  const activeStep = trace.steps.find((step) => step.status === "running");
+  const progress = Math.min(
+    trace.total_steps,
+    trace.completed_steps + (activeStep ? 1 : 0),
+  );
+  const stateLabel = trace.status === "completed"
+    ? "执行完成"
+    : trace.status === "running" || trace.status === "pending"
+      ? "正在执行"
+      : statusLabel(trace.status);
+
+  return <section className={`agent-execution-trace is-${trace.status}`} aria-label="小策执行轨迹">
+    <header className="agent-trace-summary">
+      <span className="agent-trace-state"><i className={trace.status === "running" || trace.status === "pending" ? "is-active" : ""}>{trace.status === "completed" ? <CheckCircle size={17} weight="fill" /> : <Brain size={17} weight="duotone" />}</i><b>{stateLabel}</b>{activeStep && <small>{activeStep.label}</small>}</span>
+      <span><b>{progress} / {trace.total_steps} 步</b><small>固定流程</small></span>
+      <span><b>{trace.tool_count} 个只读工具</b><small>无写入权限</small></span>
+      <span><b><Clock size={16} />已用 {formatTraceDuration(trace.elapsed_ms)}</b><small>本地计时</small></span>
+    </header>
+
+    <ol className="agent-trace-phases" aria-label="执行阶段">
+      {executionPhases.map(([phase, label]) => {
+        const state = phaseStatus(trace, phase);
+        return <li className={`is-${state}`} key={phase}><i>{state === "completed" ? <CheckCircle size={19} weight="fill" /> : state === "failed" ? <WarningCircle size={18} weight="fill" /> : <span />}</i><b>{label}</b></li>;
+      })}
+    </ol>
+
+    <section className="agent-trace-tools" aria-label="本次工具调用">
+      <h3>本次工具调用</h3>
+      {trace.tools.length > 0 ? <div>{trace.tools.map((tool) => <article key={tool.id}>
+        <i><Database size={17} weight="duotone" /></i>
+        <span><b>{tool.label}</b><small>{tool.summary}</small><small className="agent-tool-provenance">{toolProvenance(tool)}</small></span>
+        <em className={`is-${tool.status}`}>{tool.status === "completed" ? <CheckCircle size={15} weight="fill" /> : tool.status === "running" ? <span className="agent-button-spinner" /> : terminalTraceStatuses.has(tool.status) ? <WarningCircle size={15} weight="fill" /> : null}{tool.status === "completed" ? "已完成" : statusLabel(tool.status)}</em>
+        <time>{formatTraceDuration(tool.duration_ms)}</time>
+      </article>)}</div> : <p>本次没有调用额外业务工具。</p>}
+      <aside><ShieldCheck size={15} /><span><b>读取原因</b>{trace.decision_summary}</span></aside>
+    </section>
+
+    <button className="agent-trace-step-toggle" type="button" aria-expanded={showSteps} onClick={onToggleSteps}><CaretDown size={17} />{showSteps ? "收起步骤明细" : `查看全部 ${trace.total_steps} 个步骤`}</button>
+    {showSteps && <ol className="agent-trace-step-list">
+      {trace.steps.map((step) => <li className={`is-${step.status}`} key={step.id}><i>{step.position + 1}</i><span><b>{step.label}</b><small>{step.summary}</small></span><em>{statusLabel(step.status)}</em><time>{step.duration_ms > 0 ? formatTraceDuration(step.duration_ms) : "—"}</time></li>)}
+    </ol>}
+    <footer><span><ShieldCheck size={14} />仅显示可审计摘要 · 不展示隐藏思维、原始 Prompt 或敏感数据</span>{onCancel && <button className="agent-trace-cancel" type="button" onClick={onCancel}><StopCircle size={16} />取消</button>}</footer>
+  </section>;
+}
+
+function AgentLiveProgress({ trace, onCancel }: {
+  trace: GlobalAgentRunTrace;
+  onCancel: () => void;
+}) {
+  const activeStep = trace.steps.find((step) => step.status === "running")
+    || trace.steps.find((step) => step.status === "pending");
+  const activeTool = trace.tools.find((tool) => tool.status === "running");
+  const progress = Math.min(
+    trace.total_steps,
+    trace.completed_steps + (activeStep?.status === "running" ? 1 : 0),
+  );
+  const title = activeTool?.summary
+    || activeStep?.summary
+    || "正在建立可审计执行过程";
+  const detail = activeTool
+    ? `${activeStep?.label || "调用只读工具"} · 不执行写入`
+    : activeStep?.label || "正在读取本次回答所需证据";
+
+  return <section className="agent-live-progress" role="status" aria-live="polite" aria-label="小策当前执行状态">
+    <i><Brain size={17} weight="duotone" /></i>
+    <span><b>{title}</b><small>{detail} · {progress} / {trace.total_steps} 步 · 已用 {formatTraceDuration(trace.elapsed_ms)}</small></span>
+    <button type="button" aria-label="取消小策回答" title="取消" onClick={onCancel}><StopCircle size={18} /></button>
+  </section>;
 }
 
 const maturityLabels = {
@@ -134,6 +309,42 @@ function RequirementBlueprintCard({ blueprint, evidenceLabel }: {
   </section>;
 }
 
+function ExecutionPlanCard({ plan, evidenceLabel }: {
+  plan: GlobalAgentExecutionPlan;
+  evidenceLabel: (reference: string) => string;
+}) {
+  const boundaries = [
+    ["允许修改", plan.allowed_changes, "is-allowed"],
+    ["必须保持", plan.must_not_change, "is-protected"],
+    ["不在范围", plan.out_of_scope, "is-out-of-scope"],
+  ] as const;
+  return <section className="agent-requirement-artifact agent-execution-plan-artifact" aria-label="分阶段执行计划">
+    <header><span><b>分阶段执行计划</b><small>{plan.title} · 每个 task_key 对应一个可独立验收的阶段</small></span><em className={`maturity-${plan.readiness}`}>{maturityLabels[plan.readiness]}</em></header>
+    <div className="agent-plan-summary"><small>目标</small><b>{plan.objective}</b><p>{plan.change_summary}</p></div>
+    <div className="agent-plan-boundaries">
+      {boundaries.map(([label, values, className]) => <section className={className} key={label}><h5>{label}</h5>{values.length
+        ? <ul>{values.map((item, index) => <li key={`${label}-${index}`}>{item}</li>)}</ul>
+        : <p>无</p>}</section>)}
+    </div>
+    <ol className="agent-plan-stages">
+      {plan.stages.map((stage, index) => <li key={stage.task_key}>
+        <header><i>{index + 1}</i><span><b>{stage.title}</b><small><code>{stage.task_key}</code><code>{stage.workspace_key}</code></small></span></header>
+        <p>{stage.objective}</p>
+        <small className="agent-plan-dependencies">依赖：{stage.dependency_task_keys.length ? stage.dependency_task_keys.join("、") : "无，可独立开始"}</small>
+        <div className="agent-plan-stage-grid">
+          <section><h5>本阶段允许修改</h5><ul>{stage.allowed_changes.map((item, itemIndex) => <li key={`allowed-${itemIndex}`}>{item}</li>)}</ul></section>
+          {stage.deliverables.length > 0 && <section><h5>交付物</h5><ul>{stage.deliverables.map((item, itemIndex) => <li key={`deliverable-${itemIndex}`}>{item}</li>)}</ul></section>}
+          <section><h5>过程测试</h5><ul>{stage.process_tests.map((item, itemIndex) => <li key={`test-${itemIndex}`}>{item}</li>)}</ul></section>
+          <section><h5>验收标准</h5><ul>{stage.acceptance_criteria.map((item, itemIndex) => <li key={`acceptance-${itemIndex}`}>{item}</li>)}</ul></section>
+          {stage.stop_conditions.length > 0 && <section className="is-stop"><h5>停止条件</h5><ul>{stage.stop_conditions.map((item, itemIndex) => <li key={`stop-${itemIndex}`}>{item}</li>)}</ul></section>}
+        </div>
+        {stage.evidence_refs.length > 0 && <footer>证据：{stage.evidence_refs.map(evidenceLabel).join(" · ")}</footer>}
+      </li>)}
+    </ol>
+    {(plan.assumptions.length > 0 || plan.open_questions.length > 0 || plan.risks.length > 0) && <aside className="agent-plan-notes"><WarningCircle size={15} /><span>{plan.assumptions.length > 0 && <small>假设：{plan.assumptions.join("；")}</small>}{plan.open_questions.length > 0 && <small>待确认：{plan.open_questions.join("；")}</small>}{plan.risks.length > 0 && <small>风险：{plan.risks.map((risk) => `${risk.title}：${risk.description}`).join("；")}</small>}</span></aside>}
+  </section>;
+}
+
 type CustomerProposalStatus = {
   state: "idle" | "busy" | "created" | "unavailable";
   message?: string;
@@ -180,9 +391,15 @@ function CustomerCreateProposalCard({
   </section>;
 }
 
-function AssistantMessage({ message, proposalStatus, onConfirmProposal, onReviseProposal, onNavigate }: {
+function AssistantMessage({ message, proposalStatus, trace, traceExpanded, traceStepsExpanded, traceLoading, onToggleTrace, onToggleTraceSteps, onConfirmProposal, onReviseProposal, onNavigate }: {
   message: GlobalAgentMessage;
   proposalStatus: CustomerProposalStatus;
+  trace: GlobalAgentRunTrace | null;
+  traceExpanded: boolean;
+  traceStepsExpanded: boolean;
+  traceLoading: boolean;
+  onToggleTrace: () => void;
+  onToggleTraceSteps: () => void;
   onConfirmProposal: (message: GlobalAgentMessage) => void;
   onReviseProposal: (message: GlobalAgentMessage) => void;
   onNavigate: (target: GlobalAgentTargetPage) => void;
@@ -198,7 +415,18 @@ function AssistantMessage({ message, proposalStatus, onConfirmProposal, onRevise
     if (reference.startsWith("operator-note:")) return "经营者补充";
     return evidence.get(reference) || reference;
   };
-  return <article className="agent-answer-card">
+  const elapsedMs = trace?.elapsed_ms ?? message.run_elapsed_ms;
+  return <>
+    {message.run_id && <section className="agent-trace-history">
+      <button className="agent-run-duration" type="button" aria-expanded={traceExpanded} onClick={onToggleTrace}>
+        <span>{elapsedMs == null ? "查看执行过程" : `用时 ${formatElapsedDuration(elapsedMs)}`}</span>
+        <CaretRight size={16} />
+      </button>
+      {traceExpanded && (trace
+        ? <AgentExecutionTrace trace={trace} showSteps={traceStepsExpanded} onToggleSteps={onToggleTraceSteps} />
+        : <div className="agent-trace-loading"><span className="agent-button-spinner" />{traceLoading ? "正在读取已保存过程…" : "过程暂时无法读取"}</div>)}
+    </section>}
+    <article className="agent-answer-card">
     <header>
       <span><Sparkle size={16} weight="fill" />小策判断</span>
       <div><em className={`confidence-${answer.confidence}`}>{answer.confidence === "high" ? "高" : answer.confidence === "medium" ? "中" : "低"}置信度</em><small><Clock size={13} />{answer.observation_period}</small></div>
@@ -211,6 +439,7 @@ function AssistantMessage({ message, proposalStatus, onConfirmProposal, onRevise
     </div>
     {answer.requirement_analysis && <RequirementAnalysisCard analysis={answer.requirement_analysis} evidenceLabel={evidenceLabel} />}
     {answer.requirement_blueprint && <RequirementBlueprintCard blueprint={answer.requirement_blueprint} evidenceLabel={evidenceLabel} />}
+    {answer.execution_plan && <ExecutionPlanCard plan={answer.execution_plan} evidenceLabel={evidenceLabel} />}
     {answer.customer_create_proposal && <CustomerCreateProposalCard proposal={answer.customer_create_proposal} status={proposalStatus} evidenceLabel={evidenceLabel} onRevise={() => onReviseProposal(message)} onConfirm={() => onConfirmProposal(message)} />}
     {answer.limitations.length > 0 && <aside className="agent-limitations"><WarningCircle size={16} /><span><b>限制与反证</b>{answer.limitations.join("；")}</span></aside>}
     {(message.citations.length > 0 || message.tool_references.length > 0) && <details className="agent-evidence-details">
@@ -220,11 +449,12 @@ function AssistantMessage({ message, proposalStatus, onConfirmProposal, onRevise
           <i><BookOpenText size={16} /></i><span><b>{citation.title}</b><small>{citation.relative_path} · {citation.heading} · {citation.maturity}</small><p>{citation.snippet}</p></span>
         </article>)}
         {message.tool_references.map((tool) => <article key={tool.id}>
-          <i><Database size={16} /></i><span><b>{tool.label}</b><small>本地只读工具 · {tool.status === "completed" ? "已读取" : "读取失败"} · {tool.duration_ms}ms</small></span>
+          <i><Database size={16} /></i><span><b>{tool.label}</b><small>{tool.status === "completed" ? "已读取" : "读取失败"} · {tool.duration_ms}ms</small><small className="agent-tool-provenance">{toolProvenance(tool)}</small></span>
         </article>)}
       </div>
     </details>}
-  </article>;
+    </article>
+  </>;
 }
 
 export function GlobalAgentPanel({
@@ -250,9 +480,20 @@ export function GlobalAgentPanel({
   const [sending, setSending] = useState(false);
   const [knowledgeBusy, setKnowledgeBusy] = useState(false);
   const [error, setError] = useState("");
+  const [grantPanelOpen, setGrantPanelOpen] = useState(false);
+  const [grantBusy, setGrantBusy] = useState(false);
+  const [analysisSubscription, setAnalysisSubscription] = useState<CustomerAnalysisSubscription | null>(null);
+  const [analysisOptions, setAnalysisOptions] = useState(initialAnalysisOptions);
+  const [grantMessage, setGrantMessage] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [customerProposalStates, setCustomerProposalStates] = useState<Record<string, CustomerProposalStatus>>({});
+  const [runTraces, setRunTraces] = useState<Record<string, GlobalAgentRunTrace>>({});
+  const [expandedTraceRuns, setExpandedTraceRuns] = useState<Set<string>>(new Set());
+  const [expandedStepRuns, setExpandedStepRuns] = useState<Set<string>>(new Set());
+  const [traceLoadingRuns, setTraceLoadingRuns] = useState<Set<string>>(new Set());
+  const traceRequestSequence = useRef<Record<string, number>>({});
+  const grantRequestSequence = useRef(0);
 
   const profiles = bootstrap?.profiles.filter((profile) => profile.enabled) || [];
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) || null;
@@ -298,6 +539,47 @@ export function GlobalAgentPanel({
     }
   };
 
+  const refreshRunTrace = async (runId: string) => {
+    const sequence = (traceRequestSequence.current[runId] || 0) + 1;
+    traceRequestSequence.current[runId] = sequence;
+    setTraceLoadingRuns((current) => new Set(current).add(runId));
+    try {
+      const value = await localPlatformService.globalAgentRunTrace(runId);
+      if (traceRequestSequence.current[runId] !== sequence) return;
+      setRunTraces((current) => ({ ...current, [runId]: value }));
+    } catch {
+      // Thread and answer remain usable if an old trace cannot be loaded.
+    } finally {
+      if (traceRequestSequence.current[runId] === sequence) {
+        setTraceLoadingRuns((current) => {
+          const next = new Set(current);
+          next.delete(runId);
+          return next;
+        });
+      }
+    }
+  };
+
+  const toggleRunTrace = (runId: string) => {
+    const willOpen = !expandedTraceRuns.has(runId);
+    setExpandedTraceRuns((current) => {
+      const next = new Set(current);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+    if (willOpen && !runTraces[runId]) void refreshRunTrace(runId);
+  };
+
+  const toggleRunTraceSteps = (runId: string) => {
+    setExpandedStepRuns((current) => {
+      const next = new Set(current);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+  };
+
   useEffect(() => {
     if (!open) return;
     void loadBootstrap();
@@ -306,22 +588,60 @@ export function GlobalAgentPanel({
   }, [open]);
 
   useEffect(() => {
+    const sequence = grantRequestSequence.current + 1;
+    grantRequestSequence.current = sequence;
+    setGrantMessage("");
+    if (!open || !thread?.id || !thread.customer_context) {
+      setAnalysisSubscription(null);
+      setGrantPanelOpen(false);
+      return;
+    }
+    void localPlatformService.customerAnalysisSubscription(thread.id).then((savedAnalysis) => {
+      if (grantRequestSequence.current !== sequence) return;
+      setAnalysisSubscription(savedAnalysis);
+      setAnalysisOptions((current) => ({
+        ...current,
+        allowImages: savedAnalysis?.include_images ?? current.allowImages,
+        authorizationNote: savedAnalysis?.authorization_note || current.authorizationNote,
+      }));
+    }).catch(() => {
+      if (grantRequestSequence.current !== sequence) return;
+      setAnalysisSubscription(null);
+      setGrantMessage("OpenAI 持续分析状态读取失败；小策对话仍可正常使用。");
+    });
+  }, [open, thread?.id, thread?.customer_context?.conversation_id]);
+
+  useEffect(() => {
     if (!open) return;
     const disconnect = connectPlatformEvents((event) => {
       if (event.type === "customer_context_updated") {
         if (thread?.customer_context?.conversation_id === Number(event.conversation_id)) void refreshThread(thread.id);
         return;
       }
-      if (event.type !== "global_agent_run" && event.type !== "global_agent_tool") return;
+      if (event.type === "customer_analysis_status") {
+        const threadId = thread?.id;
+        if (threadId && threadId === event.thread_id) {
+          void localPlatformService.customerAnalysisSubscription(threadId).then(setAnalysisSubscription);
+        }
+        return;
+      }
+      if (event.type !== "global_agent_run" && event.type !== "global_agent_tool" && event.type !== "global_agent_step") return;
       const eventThread = typeof event.thread_id === "string" ? event.thread_id : thread?.id;
-      if (eventThread && (!thread || eventThread === thread.id)) void refreshThread(eventThread);
+      const eventRun = typeof event.run_id === "string" ? event.run_id : "";
+      if (!eventThread || (thread && eventThread !== thread.id)) return;
+      if (eventRun) void refreshRunTrace(eventRun);
+      if (event.type === "global_agent_run") void refreshThread(eventThread);
     });
     return disconnect;
   }, [open, thread?.id, thread?.customer_context?.conversation_id]);
 
   useEffect(() => {
     if (!open || !thread?.active_run) return;
-    const timer = window.setInterval(() => void refreshThread(thread.id), 1800);
+    void refreshRunTrace(thread.active_run.id);
+    const timer = window.setInterval(() => {
+      void refreshRunTrace(thread.active_run!.id);
+      void refreshThread(thread.id);
+    }, 1800);
     return () => window.clearInterval(timer);
   }, [open, thread?.active_run?.id, thread?.id]);
 
@@ -423,6 +743,81 @@ export function GlobalAgentPanel({
     }
   };
 
+  const enableAutomaticAnalysis = async () => {
+    if (!thread?.customer_context) {
+      setGrantMessage("请先把当前小策对话明确绑定到一个客户会话。");
+      return;
+    }
+    if (analysisOptions.authorizationNote.trim().length < 2) {
+      setGrantMessage("请填写持续分析用途。");
+      return;
+    }
+    setGrantBusy(true);
+    setGrantMessage("");
+    try {
+      const result = await localPlatformService.upsertCustomerAnalysisSubscription({
+        request_id: requestId("customer-analysis-subscription"),
+        thread_id: thread.id,
+        expected_thread_revision: thread.revision,
+        expected_subscription_revision: analysisSubscription?.revision || 0,
+        provider_scope: "openai",
+        model: "",
+        include_images: analysisOptions.allowImages,
+        debounce_seconds: 30,
+        max_wait_seconds: 60,
+        authorization_note: analysisOptions.authorizationNote.trim(),
+        confirmed_automatic_analysis: true,
+      });
+      setAnalysisSubscription(result);
+      setGrantMessage(result.configured
+        ? "持续分析已启用；新消息入库后会自动合并分析并追加需求与计划版本。"
+        : "持续分析授权已保存；请在本机环境配置 OpenAI API 后开始处理待分析消息。");
+    } catch (reason) {
+      setGrantMessage(reason instanceof Error ? reason.message : "OpenAI 持续分析启用失败");
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const pauseAutomaticAnalysis = async () => {
+    if (!analysisSubscription) return;
+    setGrantBusy(true);
+    setGrantMessage("");
+    try {
+      const result = await localPlatformService.pauseCustomerAnalysisSubscription(analysisSubscription.id, {
+        request_id: requestId("customer-analysis-pause"),
+        expected_revision: analysisSubscription.revision,
+        reason: "用户在小策中手动停止持续分析",
+        confirmed: true,
+      });
+      setAnalysisSubscription(result);
+      setGrantMessage("持续分析已停止；已入库消息和历史成果版本仍保留，停止后的在途结果不会写入成果。");
+    } catch (reason) {
+      setGrantMessage(reason instanceof Error ? reason.message : "持续分析停止失败");
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const retryAutomaticAnalysis = async () => {
+    if (!analysisSubscription) return;
+    setGrantBusy(true);
+    setGrantMessage("");
+    try {
+      const result = await localPlatformService.retryCustomerAnalysisSubscription(analysisSubscription.id, {
+        request_id: requestId("customer-analysis-retry"),
+        expected_revision: analysisSubscription.revision,
+        confirmed: true,
+      });
+      setAnalysisSubscription(result);
+      setGrantMessage(result.configured ? "已重新进入分析队列。" : "重试已记录，但 OpenAI API 仍待配置。");
+    } catch (reason) {
+      setGrantMessage(reason instanceof Error ? reason.message : "持续分析重试失败");
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const content = input.trim();
@@ -455,7 +850,7 @@ export function GlobalAgentPanel({
         }
         setThread(activeThread);
       }
-      await localPlatformService.sendGlobalAgentMessage(activeThread.id, {
+      const run = await localPlatformService.sendGlobalAgentMessage(activeThread.id, {
         request_id: requestId("agent-message"),
         expected_revision: activeThread.revision,
         content,
@@ -463,7 +858,10 @@ export function GlobalAgentPanel({
       });
       setInput("");
       setRecheckFullContext(false);
-      await refreshThread(activeThread.id);
+      await Promise.all([
+        refreshRunTrace(run.id),
+        refreshThread(activeThread.id),
+      ]);
     } catch (reason) {
       setSending(false);
       setError(reason instanceof Error ? reason.message : "发送失败");
@@ -475,7 +873,7 @@ export function GlobalAgentPanel({
     if (!run) return;
     try {
       await localPlatformService.cancelGlobalAgentRun(run.id, requestId("agent-cancel"));
-      await refreshThread(thread.id);
+      await Promise.all([refreshRunTrace(run.id), refreshThread(thread.id)]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "取消失败");
     }
@@ -539,6 +937,16 @@ export function GlobalAgentPanel({
   );
   const contextHasSummary = Boolean(selectedContextOption?.summary_version);
   const contextNewMessageCount = selectedContextOption?.new_message_count || 0;
+  const activeTrace = thread?.active_run ? runTraces[thread.active_run.id] || null : null;
+  const analysisIsActive = Boolean(
+    analysisSubscription
+    && analysisSubscription.status === "active"
+    && thread?.customer_context
+    && analysisSubscription.conversation_id === thread.customer_context.conversation_id,
+  );
+  const analysisStatusText = analysisSubscription
+    ? `${analysisStateLabel(analysisSubscription.analysis_state)}${analysisSubscription.latest_artifact_version ? ` · v${analysisSubscription.latest_artifact_version}` : ""}`
+    : "未开启持续分析";
 
   if (!open) return null;
   return <>
@@ -557,34 +965,51 @@ export function GlobalAgentPanel({
 
       <div className="global-agent-controls">
         <label><span>对话</span><select aria-label="选择小策对话" value={thread?.id || ""} onChange={(event) => void chooseThread(event.target.value)}><option value="">新对话</option>{bootstrap?.threads.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></label>
-        <label><span>上下文</span><select aria-label="选择小策上下文" value={selectedContext} disabled={Boolean(thread?.active_run)} onChange={(event) => void changeContext(event.target.value)}><option value="general_business">经营全局</option>{contextOptions.map((option) => <option key={option.conversation_id} value={`customer:${option.conversation_id}`}>客户会话 · {option.customer_name}</option>)}</select></label>
+        <label><span>上下文</span><select aria-label="选择小策上下文" value={selectedContext} disabled={Boolean(thread?.active_run) || analysisIsActive} title={analysisIsActive ? "请先停止当前客户的持续分析" : undefined} onChange={(event) => void changeContext(event.target.value)}><option value="general_business">经营全局</option>{contextOptions.map((option) => <option key={option.conversation_id} value={`customer:${option.conversation_id}`}>客户会话 · {option.customer_name}</option>)}</select></label>
         <label><span>模型</span><select aria-label="选择小策模型" value={selectedProfileId} disabled={Boolean(thread?.active_run)} onChange={(event) => void changeProfile(event.target.value)}>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.label}{profile.configured ? "" : " · 待配置"}</option>)}</select></label>
         <button type="button" className="agent-new-thread" onClick={() => void chooseThread("")}><Plus size={15} />新对话</button>
       </div>
 
-      {selectedContextOption && <section className="global-agent-context-card" aria-label="已绑定客户会话上下文">
-        <header><span><Database size={18} weight="duotone" /></span><div><small>已明确绑定 · 只读</small><h3>{selectedContextOption.customer_name} · {selectedContextOption.channel === "xianyu" ? "闲鱼" : selectedContextOption.channel}</h3></div><em>图片排除</em></header>
+      {selectedContextOption && <section className={`global-agent-context-card ${grantPanelOpen ? "has-openai-grant" : ""}`} aria-label="已绑定客户会话上下文">
+        <header><span><Database size={18} weight="duotone" /></span><div><small>已明确绑定 · 只读</small><h3>{selectedContextOption.customer_name} · {selectedContextOption.channel === "xianyu" ? "闲鱼" : selectedContextOption.channel}</h3></div><em>图片按授权</em></header>
         <div className="global-agent-context-meta">
           <span><small>关联商品</small><b>{selectedContextOption.item_title || "未关联商品"}</b></span>
           <span><small>文字消息</small><b>{selectedContextOption.text_message_count} 条 · 首次最多 200</b></span>
           <span><small>总结版本</small><b>{contextHasSummary ? `v${selectedContextOption.summary_version} · 可追溯` : "首次提问后建立"}</b></span>
           <span><small>覆盖状态</small><b>{selectedContextOption.summarized_through_message_id ? `至消息 #${selectedContextOption.summarized_through_message_id}` : "尚未总结"}</b></span>
         </div>
-        <div className={`global-agent-context-update ${selectedContextOption.context_updated ? "is-updated" : ""}`}><i /><span><b>{!contextHasSummary ? "首次总结待建立" : selectedContextOption.context_updated ? "上下文已更新" : "上下文已就绪"}</b><small>{!contextHasSummary ? `首次提问读取最近 ${Math.min(200, selectedContextOption.text_message_count)} 条文字并建立总结；选择客户不会自动调用模型` : contextNewMessageCount ? `新增 ${contextNewMessageCount} 条文字消息；下次提问时更新总结，不自动调用模型` : "没有新增文字；下次提问只发送最新总结，不重复发送已经总结的原文"}</small></span><button type="button" className={recheckFullContext ? "is-selected" : ""} onClick={() => setRecheckFullContext((value) => !value)}>{recheckFullContext ? "已选完整核验" : "下次核验 200 条"}</button></div>
+        <div className={`global-agent-context-update ${analysisSubscription?.analysis_state === "pending" || analysisSubscription?.analysis_state === "analyzing" ? "is-updated" : ""}`}><i /><span><b>{analysisIsActive ? analysisStatusText : !contextHasSummary ? "首次总结待建立" : selectedContextOption.context_updated ? "上下文已更新" : "上下文已就绪"}</b><small>{analysisIsActive ? `新消息先写入 SQLite，再于 30 秒静默窗口或 60 秒最长等待后自动增量分析；当前待处理 ${analysisSubscription?.pending_message_count || 0} 条` : !contextHasSummary ? `小策问答首次读取最近 ${Math.min(200, selectedContextOption.text_message_count)} 条文字；持续分析需单独授权` : contextNewMessageCount ? `新增 ${contextNewMessageCount} 条文字消息；小策问答会在下次提问时更新总结` : "小策问答复用最新总结；持续分析未开启时不会自动调用模型"}</small></span><button type="button" className={recheckFullContext ? "is-selected" : ""} onClick={() => setRecheckFullContext((value) => !value)}>{recheckFullContext ? "已选完整核验" : "下次核验 200 条"}</button></div>
+        <div className="global-agent-context-access"><span><b>OpenAI 持续后台分析</b><small>{analysisIsActive ? analysisStatusText : "未授权；不会因新消息自动调用模型"}</small></span><button type="button" aria-expanded={grantPanelOpen} disabled={!thread?.customer_context || grantBusy} onClick={() => setGrantPanelOpen((value) => !value)}>{grantPanelOpen ? "收起" : analysisIsActive ? "查看分析" : "设置分析"}</button></div>
+        {grantPanelOpen && <section className="global-agent-openai-grant" aria-label="OpenAI 客户上下文授权">
+          <header><span><b>持续分析授权</b><small>仅在新消息入库后增量调用 OpenAI；DeepSeek 不可授权</small></span><em className={analysisIsActive ? "is-active" : ""}>{analysisIsActive ? "持续分析中" : "未授权"}</em></header>
+          <fieldset><legend>自动分析允许的内容</legend><label><input type="checkbox" checked readOnly /><span><b>原始文字</b><small>持续分析的必需输入</small></span></label><label><input type="checkbox" checked={analysisOptions.allowImages} onChange={(event) => setAnalysisOptions((current) => ({ ...current, allowImages: event.target.checked }))} /><span><b>增量关联原图</b><small>仅本批消息关联且完整性核验通过的入站原图</small></span></label></fieldset>
+          <label className="global-agent-grant-note"><span>持续分析用途</span><textarea rows={2} maxLength={2000} value={analysisOptions.authorizationNote} onChange={(event) => setAnalysisOptions((current) => ({ ...current, authorizationNote: event.target.value }))} /></label>
+          <div className="global-agent-analysis-control"><span><b>持续后台分析</b><small>{analysisSubscription ? `${analysisStatusText} · 待处理 ${analysisSubscription.pending_message_count} 条 · 最近水位线 ${analysisSubscription.last_analyzed_message_id ? `#${analysisSubscription.last_analyzed_message_id}` : "未建立"}` : "仅明确绑定的客户会话在授权后自动分析新消息；不自动回复"}</small><small>{analysisOptions.allowImages ? "分析范围：原始文字 + 本批获准归档原图" : "分析范围：仅原始文字"}</small></span>{analysisSubscription?.analysis_state === "failed" && <button type="button" disabled={grantBusy} onClick={() => void retryAutomaticAnalysis()}>重试</button>}{analysisIsActive ? <button type="button" disabled={grantBusy} onClick={() => void pauseAutomaticAnalysis()}>停止</button> : <button className="primary" type="button" disabled={grantBusy} onClick={() => void enableAutomaticAnalysis()}>开启持续分析</button>}</div>
+          <aside><ShieldCheck size={15} /><span>ChatGPT 网页读取不经过小策，也不会因为创建授权而调用模型。请到“设置中心 → AI与回复”直接选择客户会话并创建短时读取授权。</span></aside>
+          {grantMessage && <p className="global-agent-grant-message" role="status">{grantMessage}</p>}
+          <footer><span>持续分析与短时读取互相独立</span><button type="button" onClick={() => onNavigate("settings")}>打开独立读取设置</button></footer>
+        </section>}
       </section>}
 
       <main className="global-agent-conversation" aria-live="polite">
         {loading && !thread ? <div className="global-agent-loading"><span className="agent-button-spinner" /><p>正在读取本地对话与配置…</p></div> : thread?.messages.length ? thread.messages.map((message) => message.role === "user"
           ? <article className="agent-user-message" key={message.id}><p>{message.content}</p></article>
-          : <AssistantMessage key={message.id} message={message} proposalStatus={customerProposalStates[message.id] || { state: "idle" }} onConfirmProposal={(value) => void confirmCustomerProposal(value)} onReviseProposal={reviseCustomerProposal} onNavigate={onNavigate} />)
+          : <AssistantMessage key={message.id} message={message} proposalStatus={customerProposalStates[message.id] || { state: "idle" }} trace={message.run_id ? runTraces[message.run_id] || null : null} traceExpanded={Boolean(message.run_id && expandedTraceRuns.has(message.run_id))} traceStepsExpanded={Boolean(message.run_id && expandedStepRuns.has(message.run_id))} traceLoading={Boolean(message.run_id && traceLoadingRuns.has(message.run_id))} onToggleTrace={() => message.run_id && toggleRunTrace(message.run_id)} onToggleTraceSteps={() => message.run_id && toggleRunTraceSteps(message.run_id)} onConfirmProposal={(value) => void confirmCustomerProposal(value)} onReviseProposal={reviseCustomerProposal} onNavigate={onNavigate} />)
           : <div className="global-agent-empty">
             <span><Brain size={31} weight="duotone" /></span>
             <h3>从一个真实问题开始</h3>
             <p>{emptyCopy}</p>
             <div><button type="button" onClick={() => setInput("结合当前经营数据，我下一步最应该做什么？")}>下一步优先级</button><button type="button" onClick={() => setInput("查询项目状态并指出最需要核对的风险")}>项目风险</button><button type="button" onClick={() => setInput("分析商品数据，告诉我哪些结论仍缺证据")}>商品证据</button></div>
           </div>}
-        {thread?.active_run && <div className="global-agent-running" role="status"><span className="agent-button-spinner" /><p><b>{statusLabel(thread.active_run.status)}</b><small>正在读取已授权证据并生成结构化判断</small></p><button type="button" onClick={() => void cancel()}><StopCircle size={16} />取消</button></div>}
-        {!thread?.active_run && thread?.latest_run && ["failed", "cancelled", "interrupted"].includes(thread.latest_run.status) && !thread.messages.some((message) => message.role === "assistant" && message.run_id === thread.latest_run?.id) && <div className="global-agent-run-gap"><WarningCircle size={16} /><span><b>{statusLabel(thread.latest_run.status)}</b>{thread.latest_run.error_message || "上一次回答未形成结果，可重新发送问题。"}</span></div>}
+        {thread?.active_run && (activeTrace
+          ? <AgentLiveProgress trace={activeTrace} onCancel={() => void cancel()} />
+          : <div className="global-agent-running" role="status"><span className="agent-button-spinner" /><p><b>{statusLabel(thread.active_run.status)}</b><small>正在读取已授权证据并建立可审计执行轨迹</small></p><button type="button" onClick={() => void cancel()}><StopCircle size={16} />取消</button></div>)}
+        {!thread?.active_run && thread?.latest_run && ["failed", "cancelled", "interrupted"].includes(thread.latest_run.status) && !thread.messages.some((message) => message.role === "assistant" && message.run_id === thread.latest_run?.id) && <>
+          <div className="global-agent-run-gap"><WarningCircle size={16} /><span><b>{statusLabel(thread.latest_run.status)}</b>{thread.latest_run.error_message || "上一次回答未形成结果，可重新发送问题。"}</span><button className="agent-run-trace-toggle" type="button" onClick={() => toggleRunTrace(thread.latest_run!.id)}>查看轨迹</button></div>
+          {expandedTraceRuns.has(thread.latest_run.id) && (runTraces[thread.latest_run.id]
+            ? <AgentExecutionTrace trace={runTraces[thread.latest_run.id]} showSteps={expandedStepRuns.has(thread.latest_run.id)} onToggleSteps={() => toggleRunTraceSteps(thread.latest_run!.id)} />
+            : <div className="agent-trace-loading"><span className="agent-button-spinner" />正在读取已保存轨迹…</div>)}
+        </>}
         <div ref={messagesEndRef} />
       </main>
 

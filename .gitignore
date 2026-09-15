@@ -34,3 +34,13 @@ data/private/
 qa/*.png
 qa/*.jpg
 qa/*.jpeg
+
+# Local business records, credentials and private QA evidence
+/data/
+/design-qa-evidence/
+/qa/
+/artifacts/
+.env.*
+!.env.example
+*.pem
+*.key

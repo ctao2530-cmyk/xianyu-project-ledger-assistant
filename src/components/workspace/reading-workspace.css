@@ -1,0 +1,165 @@
+/* Reading ergonomics within the retained visual system; no business or theme reset. */
+.app-shell.reference-workspace .compact-topbar {height:56px;min-height:56px;padding:6px 20px;margin:0;gap:16px;border-radius:0;border-bottom:1px solid #edf0f5;background:#fff;box-shadow:none;}
+.app-shell.reference-workspace .compact-topbar .greeting {flex:1;min-width:0;}
+.app-shell.reference-workspace .compact-topbar .greeting h1 {font-size:17px;line-height:24px;}
+.app-shell.reference-workspace .compact-topbar .header-actions {margin-left:0;gap:12px;}
+.app-shell.reference-workspace .compact-topbar .compact-global-search {flex:0 0 auto;width:auto;max-width:none;position:relative;}
+.compact-global-search .workspace-search-toggle {display:inline-flex!important;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 12px;border:0;background:transparent;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;}
+.compact-global-search .workspace-search-toggle:hover {background:#f1f5fa;}
+.compact-global-search:not(.is-open) .search-box {display:none!important;}
+.compact-global-search.is-open .search-box {position:absolute;right:0;top:48px;width:min(540px,calc(100vw - 32px));box-sizing:border-box;z-index:75;background:#fff!important;}
+.compact-global-search.is-open .workspace-search-results {position:absolute;left:auto;right:0;top:98px;width:min(540px,calc(100vw - 32px));box-sizing:border-box;max-height:65dvh;overflow:auto;}
+.app-shell.reference-workspace .main-panel {background:#fff;}
+.app-shell.reference-workspace .page-route-view {padding:0;margin:0;background:#fff;}
+.app-shell.reference-workspace .customer-focus {--customer-workspace-height:calc(100dvh - 56px);}
+.app-shell.reference-workspace .customer-focus .thread-header {min-height:76px;padding:12px 20px;}
+.app-shell.reference-workspace .customer-focus .thread-header h2 {font-size:20px;line-height:28px;}
+.app-shell.reference-workspace .customer-focus .thread-header-actions {gap:8px;}
+.app-shell.reference-workspace .customer-focus .customer-hub-tabs {min-height:46px;gap:16px;padding:0 20px;}
+.app-shell.reference-workspace .customer-focus .customer-hub-tabs button {min-height:44px;white-space:nowrap;}
+.app-shell.reference-workspace .customer-focus .customer-hub-tabs .message-search-trigger {margin-left:auto;gap:6px;display:inline-flex;align-items:center;padding-inline:8px;font-size:13px;}
+.app-shell.reference-workspace .customer-master-search input:focus-visible {outline:0;box-shadow:none;}
+.app-shell.reference-workspace .customer-master-search>label:focus-within {outline:2px solid #2563eb;outline-offset:2px;}
+.app-shell.reference-workspace .customer-focus .chat-message,.search-context-messages .chat-message {display:flex;flex-direction:column;align-items:flex-start;gap:6px;}
+.app-shell.reference-workspace .customer-focus .chat-message.outbound,.search-context-messages .chat-message.outbound {align-items:flex-end;}
+.app-shell.reference-workspace .customer-focus .thread-messages .chat-message>.chat-message-media,
+.chat-message>.chat-message-media {padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;max-width:100%;}
+.chat-message-media .message-image-grid {margin:0;gap:8px;}
+.chat-message-media .message-image-grid button {padding:0;border:0;background:transparent;min-height:0;width:auto;max-width:100%;border-radius:8px;}
+.chat-message-media .message-image-grid img {width:auto;height:auto;max-width:min(260px,100%);max-height:300px;object-fit:contain;border-radius:8px;}
+.chat-message-media .message-image-format-fallback {padding:12px;}
+.customer-image-frame {height:auto;min-height:0;}
+.customer-image-frame img {min-width:0;min-height:0;max-width:100%;max-height:100%;object-fit:contain;}
+.customer-image-lightbox {width:min(1400px,calc(100vw - 40px));height:92dvh;max-height:calc(100dvh - 32px);grid-template-rows:auto minmax(0,1fr) auto;}
+.customer-image-lightbox>header {padding:8px 16px;min-height:52px;}
+.customer-image-lightbox-body {display:flex;flex-direction:column;min-height:0;overflow:hidden;padding:0;gap:0;}
+.image-viewer {flex:1;display:grid;grid-template-rows:44px minmax(0,1fr);min-height:0;overflow:hidden;}
+.image-viewer-controls {display:flex;align-items:center;justify-content:center;gap:8px;border-bottom:1px solid #e9e5ef;}
+.image-viewer-controls button,.image-viewer-more summary {display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 10px;border:0;background:transparent;border-radius:6px;font-size:13px;color:#4b4560;cursor:pointer;}
+.image-viewer-controls button:hover,.image-viewer-controls button[aria-pressed=true] {background:#f0edfc;color:#6550cf;}
+.image-viewer-controls output {min-width:48px;text-align:center;font-size:12px;font-variant-numeric:tabular-nums;}
+.image-viewer-viewport {min-height:0;min-width:0;overflow:auto;background:#f5f6f9;overscroll-behavior:contain;}
+.image-viewer-viewport.is-zoomed {cursor:grab;touch-action:none;}
+.image-viewer-viewport.is-zoomed:active {cursor:grabbing;}
+.image-viewer-canvas {min-width:100%;min-height:100%;width:max-content;height:max-content;display:grid;place-items:center;padding:12px;box-sizing:border-box;}
+.image-viewer-surface {min-width:0;min-height:0;}
+.image-viewer-surface img {display:block;width:100%;height:100%;object-fit:contain;max-width:none;max-height:none;user-select:none;}
+.image-viewer-info {flex:none;padding:0 16px;max-height:32%;overflow:auto;border-top:1px solid #e9e5ef;}
+.image-viewer-info>summary {min-height:44px;align-content:center;font-size:13px;color:#6b647b;cursor:pointer;}
+.image-viewer-info dl {grid-template-columns:repeat(3,minmax(0,1fr));gap:0 20px;}
+.image-viewer-info .customer-image-integrity {margin:8px 0;}
+.customer-image-lightbox>footer {padding:8px 16px;min-height:52px;gap:8px;}
+.image-viewer-more {position:relative;}
+.image-viewer-more[open]>.danger {position:absolute;right:0;bottom:48px;background:#fff;min-width:180px;box-shadow:0 6px 24px #30254420;}
+.requirement-reading-dialog {place-items:center;justify-items:center;z-index:240;}
+.requirement-reading-dialog>.customer-workflow-dialog {width:min(1440px,94vw);height:92dvh;max-height:calc(100dvh - 24px);padding:0;border-radius:16px;background:#fff;overflow:auto;}
+.requirement-reading-dialog>.customer-workflow-dialog>header {position:sticky;top:0;z-index:6;padding:8px 20px;background:#fff;border-bottom:1px solid #e9e5ef;}
+.requirement-reading-dialog .requirement-blueprint-page {padding:20px;}
+.requirement-reading-dialog .blueprint-command-bar>.blueprint-back {display:none;}
+.requirement-reading-dialog .blueprint-command-bar {grid-template-columns:minmax(0,1fr) auto;}
+.requirement-reading-dialog .blueprint-command-actions {grid-column:auto;display:flex;}
+.requirement-reading-dialog .blueprint-summary-strip {display:flex;flex-wrap:wrap;gap:12px;padding:10px 16px;}
+.requirement-reading-dialog .blueprint-summary-strip>span {min-height:36px;padding:0 12px 0 0;}
+.requirement-reading-dialog .blueprint-summary-strip small {font-size:12px;}
+.requirement-reading-dialog .blueprint-summary-strip>p {flex:1;min-width:160px;}
+.requirement-compact-list .requirement-center-hero {display:flex;flex-wrap:wrap;padding:0 0 16px;background:transparent;border:0;box-shadow:none;border-radius:0;gap:12px;}
+.requirement-compact-list .requirement-center-hero:after {display:none;}
+.requirement-compact-list .requirement-center-hero h2 {font-size:18px;}
+.requirement-compact-list .requirement-center-hero p {font-size:13px;margin-top:6px;}
+.requirement-compact-list .requirement-center-hero aside {display:inline-flex;align-items:center;gap:6px;padding:0;border:0;background:transparent;margin-left:auto;}
+.requirement-compact-list .requirement-center-hero aside strong {font-size:18px;}
+.requirement-compact-list .requirement-case-grid {display:flex;flex-direction:column;gap:10px;}
+.requirement-compact-list .requirement-case-grid>button {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px 16px;padding:16px 20px;min-height:0;box-shadow:none;border-radius:10px;}
+.requirement-compact-list .requirement-case-grid>button>i {display:none;}
+.requirement-compact-list .requirement-case-grid>button>.case-status {grid-column:2;grid-row:1;}
+.requirement-compact-list .requirement-case-grid>button h3 {grid-row:1;grid-column:1;font-size:16px;margin:0;overflow-wrap:anywhere;}
+.requirement-compact-list .requirement-case-grid>button>p {font-size:12px;margin:0;grid-column:1;}
+.requirement-compact-list .requirement-case-grid>button footer {grid-column:1/-1;gap:16px;justify-content:flex-start;border:0;margin:4px 0 0;padding:0;font-size:12px;}
+.requirement-compact-list .requirement-case-grid>button footer>svg {margin-left:auto;}
+.requirement-blueprint-page .blueprint-command-bar {grid-template-columns:auto minmax(0,1fr);padding:16px;gap:12px 16px;}
+.requirement-blueprint-page .blueprint-command-actions {grid-column:1/-1;}
+.requirement-blueprint-page .blueprint-command-bar>.blueprint-back {justify-self:start;}
+.requirement-blueprint-page .blueprint-title>span {display:none;}
+.requirement-blueprint-page .blueprint-title h2 {font-size:24px;line-height:1.4;overflow-wrap:anywhere;}
+.requirement-blueprint-page .blueprint-command-actions {flex-wrap:wrap;justify-content:flex-start;min-width:0;}
+.requirement-blueprint-page .blueprint-command-actions label {min-width:0;max-width:100%;}
+.requirement-blueprint-page .blueprint-command-actions select {max-width:100%;min-width:0;}
+.blueprint-reading-tabs {display:flex;flex-wrap:wrap;gap:8px;margin:0;}
+.blueprint-reading-tabs button {min-height:44px;padding:8px 14px;background:#fff;border:1px solid #e3ddec;border-radius:8px;font:inherit;font-size:13px;color:#675881;cursor:pointer;}
+.blueprint-reading-tabs button[aria-pressed=true] {color:#684de0;background:#f3f0ff;}
+.blueprint-workspace[hidden],.blueprint-inspector[hidden] {display:none!important;}
+.blueprint-workspace.inspector-closed {grid-template-columns:minmax(0,1fr);}
+.requirement-reading {display:grid;gap:12px;}
+.requirement-reading-layer {border:1px solid #e7e2ef;border-radius:10px;background:#fff;overflow-wrap:anywhere;}
+.requirement-reading-layer>summary {padding:12px 16px;font-size:16px;font-weight:600;cursor:pointer;min-height:44px;}
+.requirement-reading-layer>summary>span {margin-left:12px;font-size:12px;font-weight:400;color:#8a819a;}
+.requirement-reading-layer>article {padding:16px 20px;border-top:1px solid #ede9f2;}
+.requirement-reading-layer h3 {font-size:16px;margin:0 0 8px;line-height:1.5;}
+.requirement-reading-layer p,.requirement-reading-layer li {font-size:14px;line-height:1.75;margin:6px 0;white-space:pre-wrap;}
+.requirement-reading-layer>p,.requirement-reading-layer>ul {margin:8px 20px 16px;}
+.reading-node-meta {display:flex;flex-wrap:wrap;gap:12px;color:#82788e;font-size:12px;}
+.reading-node-field {margin:12px 0;}
+.reading-node-field h4 {font-size:13px;margin:0 0 4px;color:#6a607c;}
+.reading-node-field ul {margin:0;padding-left:20px;}
+.requirement-reading-layer blockquote {margin:10px 0;padding:12px;background:#f8f6fc;border-radius:8px;}
+.reading-note {color:#81768e;font-size:12px;line-height:1.7;}
+.message-search-dialog {place-items:center;justify-items:center;}
+.message-search-dialog>.customer-workflow-dialog {width:min(960px,94vw);height:90dvh;border-radius:14px;background:white;padding:0;display:flex;flex-direction:column;overflow:hidden;}
+.message-search-dialog>.customer-workflow-dialog>header {flex:none;padding:12px 20px;border-bottom:1px solid #e9e5ef;}
+.message-search-content {overflow:auto;padding:16px 20px;min-height:0;}
+.message-search-form {display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin-bottom:12px;}
+.message-search-form label {display:grid;gap:6px;min-width:0;font-size:12px;color:#6a607c;}
+.message-search-form .message-keyword {flex:1;min-width:180px;}
+.message-search-form input {border:1px solid #ded7ee;border-radius:8px;padding:8px 12px;min-width:0;box-sizing:border-box;}
+.message-search-members {margin:12px 0;font-size:13px;}
+.message-search-members summary {min-height:44px;align-content:center;cursor:pointer;}
+.message-search-members label {display:flex;align-items:center;gap:8px;min-height:44px;}
+.message-search-results>button {display:block;width:100%;text-align:left;margin:8px 0;padding:16px;}
+.message-search-results>button>span {font-size:12px;color:#867b95;}
+.message-search-results p {font-size:14px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;}
+.message-search-results mark,.search-context-messages mark {background:#fff0b3;color:inherit;}
+.search-context-messages {background:#f7f8fb;padding:16px;border-radius:10px;}
+.search-context-messages .chat-message-bubble {border:1px solid #e7e3ef;border-radius:10px;background:#fff;padding:10px 14px;max-width:90%;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;}
+.search-context-messages .outbound .chat-message-bubble {background:#eaf1ff;}
+.search-message-hit {border-left:3px solid #8571df;padding-left:8px;}
+.app-shell.reference-workspace .reference-workbench-grid {padding:16px 20px;gap:20px;background:white;}
+.app-shell.reference-workspace .reference-workbench-grid.no-schedule {grid-template-columns:minmax(0,1fr);}
+.app-shell.reference-workspace .reference-workbench-grid .action-workbench {border:0;padding:0;margin:0;max-width:none;border-radius:0;box-shadow:none;}
+@media(max-width:700px) {
+  .app-shell.reference-workspace .compact-topbar {padding:6px 12px;gap:8px;}
+  .compact-global-search .workspace-search-toggle kbd {display:none;}
+  .compact-global-search.is-open .search-box,.compact-global-search.is-open .workspace-search-results {position:fixed;right:12px;left:12px;width:auto;}
+  .compact-global-search.is-open .search-box {top:60px;}.compact-global-search.is-open .workspace-search-results {top:112px;}
+  .app-shell.reference-workspace .customer-focus.show-customer-detail {--customer-workspace-height:calc(100dvh - 100px);}
+  .app-shell.reference-workspace .customer-focus .thread-header {padding:10px 12px;min-height:0;}
+  .app-shell.reference-workspace .customer-focus .customer-hub-tabs {padding:0 12px;gap:12px;}
+  .app-shell.reference-workspace .customer-focus .customer-hub-tabs .message-search-trigger {padding:0;min-width:44px;}
+  .message-search-trigger span {display:none;}
+  .customer-image-lightbox {width:100vw;height:100dvh;max-height:100dvh;border-radius:0;}
+  .customer-image-lightbox-backdrop {padding:0;}
+  .image-viewer-info dl {grid-template-columns:1fr;}
+  .image-viewer-info {max-height:30%;}
+  .customer-image-lightbox>footer {padding:6px 12px;flex-wrap:nowrap;}
+  .customer-image-lightbox>footer>div {gap:6px;}
+  .customer-image-lightbox>footer :is(a,button) {padding:8px;font-size:12px;}
+  .requirement-reading-dialog>.customer-workflow-dialog,.message-search-dialog>.customer-workflow-dialog {width:100vw;height:100dvh;max-height:100dvh;border-radius:0;}
+  .requirement-reading-dialog .requirement-blueprint-page {padding:12px;}
+  .requirement-blueprint-page .blueprint-title h2 {font-size:20px;}
+  .requirement-blueprint-page .blueprint-command-bar {grid-template-columns:minmax(0,1fr);}
+  .requirement-reading-dialog .blueprint-command-actions {display:flex;gap:8px;}
+  .requirement-reading-dialog .blueprint-command-actions>label {white-space:nowrap;font-size:12px;flex:1 0 100%;box-sizing:border-box;}
+  .requirement-reading-dialog .blueprint-command-actions>label select {flex:1;max-width:none;width:auto;}
+  .requirement-reading-dialog .blueprint-command-actions>button,.requirement-reading-dialog .blueprint-command-actions>a {min-height:44px;flex:0 1 auto;}
+  .requirement-reading-dialog .blueprint-summary-strip>span {border:0;}
+  .requirement-blueprint-page .blueprint-summary-strip {display:flex;flex-wrap:wrap;gap:12px;padding:12px;}
+  .requirement-blueprint-page .blueprint-summary-strip>p {flex-basis:100%;}
+  .requirement-reading-layer>article {padding:12px;}
+  .requirement-compact-list .requirement-case-grid>button {padding:12px;gap:8px;}
+  .requirement-compact-list .requirement-case-grid>button h3 {grid-column:1/-1;grid-row:2;}
+  .requirement-compact-list .requirement-case-grid>button>.case-status {grid-column:1;}
+  .message-search-content {padding:12px;}
+  .message-search-form .message-keyword {flex-basis:100%;}
+  .message-search-form label:not(.message-keyword) {flex:1;max-width:calc(50% - 5px);}
+  .app-shell.reference-workspace .reference-workbench-grid {padding:16px 12px;}
+}
+@media(prefers-reduced-motion:reduce) {.image-viewer *, .requirement-reading-dialog *, .message-search-dialog * {scroll-behavior:auto;animation:none;transition:none;}}

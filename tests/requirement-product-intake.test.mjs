@@ -5,7 +5,10 @@ import test from "node:test";
 const customerPagePath = new URL("../src/pages/CustomerMessagesPage.tsx", import.meta.url);
 const blueprintPagePath = new URL("../src/pages/CustomerRequirementBlueprintPage.tsx", import.meta.url);
 const productPagePath = new URL("../src/pages/ProductIntelligencePage.tsx", import.meta.url);
-const servicePath = new URL("../src/data/localPlatformService.ts", import.meta.url);
+const servicePaths = [
+  new URL("../src/data/localPlatformService.ts", import.meta.url),
+  new URL("../src/data/productIntelligenceClient.ts", import.meta.url),
+];
 const customerStylesPath = new URL("../src/pages/customer-messages.css", import.meta.url);
 const productStylesPath = new URL("../src/pages/product-intelligence.css", import.meta.url);
 
@@ -21,7 +24,7 @@ test("customer conversations no longer expose the retired requirement workbench"
 test("formal requirement empty state points to Xiaoce without promising automatic persistence", async () => {
   const page = await readFile(blueprintPagePath, "utf8");
 
-  assert.match(page, /全局“小策”对话框/);
+  assert.match(page, /已授权 GPT 生成拟写入蓝图/);
   assert.match(page, /聊天结果不会自动保存为正式需求案例/);
   assert.match(page, /小策中的新蓝图不会自动覆盖正式需求案例/);
 });
@@ -65,7 +68,9 @@ test("product management shows only enabled owned listings in the workspace-cent
 });
 
 test("new intake APIs are local-only and support idempotent multi-select", async () => {
-  const service = await readFile(servicePath, "utf8");
+  const service = (
+    await Promise.all(servicePaths.map((path) => readFile(path, "utf8")))
+  ).join("\n");
   const styles = await readFile(productStylesPath, "utf8");
 
   assert.match(service, /\/api\/products\/owned-listings\/discover/);

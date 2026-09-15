@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -12,6 +13,7 @@ from ..adapters import IncomingMessage, ItemInfo
 from ..ai import AIInput, ChatContextMessage, GeneratedDraft
 from ..models import AIGenerationTask, Conversation, Draft, Item, Message, OperationLog, utcnow
 from .risk import detect_risks
+from .customer_names import stable_customer_name
 
 
 @dataclass(slots=True)
@@ -41,26 +43,29 @@ def _merge_conversation_context(
     event: IncomingMessage,
     history: list[IncomingMessage],
     item_info: ItemInfo | None,
+    on_media_persist: Callable[[Session, Message, IncomingMessage], None] | None = None,
 ) -> None:
     item = _upsert_item(session, item_info)
     if item:
         conversation.item = item
 
-    known_ids = {(event.channel, event.platform_message_id)}
+    known_ids: set[tuple[str, str | None]] = set()
     for old in history:
         identity = (old.channel, old.platform_message_id)
         if identity in known_ids:
             continue
         known_ids.add(identity)
-        if session.scalar(
-            select(Message.id).where(
+        existing = session.scalar(
+            select(Message).where(
                 Message.channel == old.channel,
                 Message.platform_message_id == old.platform_message_id,
             )
-        ):
+        )
+        if existing:
+            if on_media_persist is not None:
+                on_media_persist(session, existing, old)
             continue
-        session.add(
-            Message(
+        old_message = Message(
                 channel=old.channel,
                 platform_message_id=old.platform_message_id or old.external_id,
                 external_id=old.external_id,
@@ -73,8 +78,12 @@ def _merge_conversation_context(
                 status="sent" if old.direction == "outbound" else "history",
                 risk_flags_json=json.dumps(detect_risks(old.content), ensure_ascii=False),
                 received_at=old.received_at,
+                source_item_external_id=old.item_id,
             )
-        )
+        session.add(old_message)
+        session.flush()
+        if on_media_persist is not None:
+            on_media_persist(session, old_message, old)
 
 
 def hydrate_conversation_context(
@@ -82,6 +91,7 @@ def hydrate_conversation_context(
     event: IncomingMessage,
     history: list[IncomingMessage],
     item_info: ItemInfo | None,
+    on_media_persist: Callable[[Session, Message, IncomingMessage], None] | None = None,
 ) -> bool:
     """Merge asynchronously fetched context without touching unread state."""
     conversation = session.scalar(
@@ -92,7 +102,7 @@ def hydrate_conversation_context(
     )
     if not conversation:
         return False
-    _merge_conversation_context(session, conversation, event, history, item_info)
+    _merge_conversation_context(session, conversation, event, history, item_info, on_media_persist)
     session.commit()
     return True
 
@@ -104,6 +114,8 @@ def ingest_message(
     item_info: ItemInfo | None,
     *,
     source: str = "live",
+    on_persist: Callable[[Session, Message], None] | None = None,
+    on_media_persist: Callable[[Session, Message, IncomingMessage], None] | None = None,
 ) -> IngestResult:
     conversation = session.scalar(
         select(Conversation).where(
@@ -116,13 +128,13 @@ def ingest_message(
             channel=event.channel,
             external_id=event.conversation_id,
             customer_id=event.sender_id,
-            customer_name=event.sender_name,
+            customer_name=stable_customer_name(None, event.sender_name) if event.direction == "inbound" else "闲鱼客户",
         )
         session.add(conversation)
         session.flush()
     if event.direction == "inbound":
         conversation.customer_id = event.sender_id
-        conversation.customer_name = event.sender_name or conversation.customer_name
+        conversation.customer_name = stable_customer_name(conversation.customer_name, event.sender_name)
 
     existing = session.scalar(
         select(Message).where(
@@ -131,7 +143,11 @@ def ingest_message(
         )
     )
     if existing:
-        session.rollback()
+        if on_media_persist is not None:
+            on_media_persist(session, existing, event)
+            session.commit()
+        else:
+            session.rollback()
         return IngestResult(existing.id, False)
 
     current = Message(
@@ -147,11 +163,14 @@ def ingest_message(
         status="new" if event.direction == "inbound" else "sent",
         risk_flags_json=json.dumps(detect_risks(event.content), ensure_ascii=False),
         received_at=event.received_at,
+        source_item_external_id=event.item_id,
     )
     session.add(current)
     session.flush()
 
-    _merge_conversation_context(session, conversation, event, history, item_info)
+    _merge_conversation_context(session, conversation, event, history, item_info, on_media_persist)
+    if on_media_persist is not None:
+        on_media_persist(session, current, event)
     if event.direction == "inbound":
         conversation.unread_count += 1
     conversation.last_message_at = event.received_at
@@ -178,6 +197,10 @@ def ingest_message(
             ),
         )
     )
+    if on_persist is not None:
+        # The callback may add an Outbox row but must not commit.  Message and
+        # event therefore become visible in one SQLite transaction.
+        on_persist(session, current)
     session.commit()
     return IngestResult(current.id, True)
 

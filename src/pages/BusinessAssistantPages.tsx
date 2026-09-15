@@ -1,6 +1,9 @@
+import { DetailWorkspace, ContextPanel } from '../components/workspace/AppShell';
+import { TaskFacts } from '../components/workspace/TaskFacts';
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowsLeftRight,
   BellRinging,
   BookOpenText,
   Brain,
@@ -15,11 +18,7 @@ import {
   Code,
   Coins,
   Eye,
-  File,
-  FileArchive,
   FileText,
-  FolderSimple,
-  FolderOpen,
   Gauge,
   House,
   Lightbulb,
@@ -27,14 +26,12 @@ import {
   MagicWand,
   MagnifyingGlass,
   NotePencil,
-  Paperclip,
   PencilSimple,
   Plus,
   Robot,
   ShieldCheck,
   Sparkle,
   Stack,
-  Storefront,
   Target,
   Timer,
   TrendUp,
@@ -47,6 +44,9 @@ import {
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import './project-formal-requirement.css';
+import './project-sections.css';
+import { ProjectDeliverySummary } from '../components/ProjectDeliverySummary';
 import {
   daysBetween,
   daysUntil,
@@ -54,8 +54,9 @@ import {
   getCustomerBusiness,
   getProjectFinancials,
 } from "../data/businessMetrics";
-import { localPlatformService, type BusinessQuote, type BusinessRequirementAnalysis, type BusinessReview, type CodexProjectVerificationView } from "../data/localPlatformService";
+import { localPlatformService, type BusinessQuote, type BusinessRequirementAnalysis, type BusinessReview, type ProjectRequirementBlueprintView, type ProjectRequirementImportPreview, type ProjectTaskDraftPreviewView } from "../data/localPlatformService";
 import {
+  getLedgerRevision,
   LedgerRevisionConflictError,
   mockLedgerService,
 } from "../data/mockService";
@@ -63,7 +64,6 @@ import { projectKindOf } from "../data/projectKinds";
 import {
   predictionService,
   predictionSufficiencyLabel,
-  type CalibrationQuoteAssistView,
   type PredictionResult,
 } from "../data/predictionService";
 import { hasTerminalSettlementIssue, latestSettlementIssue, settlementIssueLabels } from "../data/settlementIssues";
@@ -84,8 +84,8 @@ import type {
 import { ImmersiveTaskFlow } from "./ImmersiveTaskFlow";
 import { ProjectTaskEditor } from "./ProjectTaskEditor";
 import { PredictionSummaryStrip } from "../components/PredictionSummaryStrip";
-import { CodexSyncWorkbench } from "../components/CodexSyncWorkbench";
-import { CodexVerificationWorkbench } from "../components/CodexVerificationWorkbench";
+import { ProjectTaskDraftDrawer } from "../components/ProjectTaskDraftDrawer";
+import { CustomerConversationWorkspace } from "../components/CustomerConversationWorkspace";
 import "./business-assistant.css";
 import "./customer-classification.css";
 
@@ -128,7 +128,7 @@ const projectStatusLabel: Record<Project["status"], string> = {
   overdue: "已逾期",
 };
 
-export type ProjectDetailTab = "overview" | "tasks" | "gantt" | "immersive" | "codex" | "verification" | "communication" | "quote" | "logs" | "files" | "edit";
+export type ProjectDetailTab = "overview" | "immersive" | "edit";
 
 export interface ProjectPageRoute {
   projectId: string;
@@ -225,80 +225,6 @@ function BarProgress({ value, tone = "purple" }: { value: number; tone?: string 
   return <div className="business-progress"><i className={`business-progress-${tone}`} style={{ width: `${Math.min(100, Math.max(0, value))}%` }} /></div>;
 }
 
-function ProjectEstimateCalibration({
-  value,
-  loading,
-  error,
-  busy,
-  adoptedHours,
-  targetHourlyRate,
-  riskBuffer,
-  dailyHours,
-  onAdoptedHoursChange,
-  onDecision,
-}: {
-  value: CalibrationQuoteAssistView | null;
-  loading: boolean;
-  error: string;
-  busy: boolean;
-  adoptedHours: string;
-  targetHourlyRate: number | null;
-  riskBuffer: number;
-  dailyHours: number;
-  onAdoptedHoursChange: (value: string) => void;
-  onDecision: (action: "adopt" | "reject") => void;
-}) {
-  if (loading) return <Surface className="project-estimate-calibration is-loading" aria-label="正在读取工时校准建议"><span /><span /><span /></Surface>;
-  if (!value) return <Surface className="project-estimate-calibration is-error"><WarningCircle size={22} weight="duotone" /><span><b>工时校准建议暂时不可用</b><small>{error || "请稍后重新进入需求报价页"}</small></span></Surface>;
-
-  const statusLabel = value.status === "adopted"
-    ? "已人工采用"
-    : value.status === "rejected"
-      ? "已人工拒绝"
-      : value.status === "pending"
-        ? "等待人工决定"
-        : value.status === "preview"
-          ? "实时预览 · 尚未冻结"
-          : value.sufficiency === "exploratory"
-            ? "探索样本 · 仅展示偏差"
-            : "样本收集中";
-  const suggestionReady = value.suggested_hours != null;
-  const decisionReady = value.sufficiency === "actionable" && Boolean(value.suggestion_id);
-  const adopted = value.status === "adopted" ? value.adopted_hours : null;
-  const appliedHours = adopted ?? value.original_estimated_hours;
-  const quoteAmount = targetHourlyRate ? appliedHours * targetHourlyRate * (1 + riskBuffer) : null;
-  const suggestedQuote = targetHourlyRate && value.suggested_hours != null
-    ? value.suggested_hours * targetHourlyRate * (1 + riskBuffer)
-    : null;
-  const scheduleText = value.lower_hours != null && value.upper_hours != null
-    ? `${Math.max(1, Math.ceil(value.lower_hours / dailyHours))}–${Math.max(1, Math.ceil(value.upper_hours / dailyHours))} 个工作日`
-    : `${Math.max(1, Math.ceil(value.original_estimated_hours / dailyHours))} 个工作日`;
-
-  return <Surface className="project-estimate-calibration">
-    <header>
-      <div><span>VERIFIED OUTCOME CALIBRATION</span><h2>工时校准与报价 / 排期辅助</h2><p>只读取已验证且已冻结的项目结果；建议不会覆盖项目原始预计工时。</p></div>
-      <em className={`status-${value.status}`}>{statusLabel}</em>
-    </header>
-    <div className="project-estimate-layers" aria-label="原始估算、校准建议与人工采用值">
-      <article className="is-original"><small>01 · 原始估算</small><strong>{value.original_estimated_hours}h</strong><p>项目创建时保存，始终保留且不被校准覆盖。</p></article>
-      <article className={suggestionReady ? "is-suggested" : "is-unavailable"}><small>02 · 校准建议</small><strong>{suggestionReady ? `${value.suggested_hours}h` : "暂不生成"}</strong><p>{suggestionReady && value.lower_hours != null && value.upper_hours != null ? `历史 P25–P75 区间 ${value.lower_hours}–${value.upper_hours}h${suggestedQuote == null ? "" : ` · 约 ${money.format(suggestedQuote)}`}` : `${value.sample_count} 个可用样本；达到 5 个后才可供人工采用。`}</p></article>
-      <article className={adopted != null ? "is-adopted" : "is-unavailable"}><small>03 · 人工采用值</small><strong>{adopted != null ? `${adopted}h` : "尚未采用"}</strong><p>{value.status === "rejected" ? "本轮建议已拒绝，报价仍以原始估算为基准。" : adopted != null ? "这是人工决定投影；原始估算和决策审计均保留。" : "未确认前不会进入报价或排期辅助基准。"}</p></article>
-    </div>
-    <div className="project-estimate-assist">
-      <span><small>当前报价辅助基准</small><b>{appliedHours}h</b><em>{quoteAmount == null ? "请先在设置中心填写目标时薪" : `约 ${money.format(quoteAmount)}`}</em></span>
-      <span><small>风险缓冲</small><b>{Math.round(riskBuffer * 100)}%</b><em>{targetHourlyRate ? `${money.format(targetHourlyRate)}/小时` : "目标时薪未设置"}</em></span>
-      <span><small>排期辅助</small><b>{scheduleText}</b><em>按每日 {dailyHours}h 计算，不修改交付日期</em></span>
-    </div>
-    {decisionReady && <div className="project-estimate-decision">
-      <label><span>人工采用工时</span><input type="number" min="0.5" max="10000" step="0.5" value={adoptedHours} disabled={busy} onChange={(event) => onAdoptedHoursChange(event.target.value)} /></label>
-      <button type="button" className="is-adopt" disabled={busy || !(Number(adoptedHours) > 0)} onClick={() => onDecision("adopt")}><CheckCircle size={16} weight="fill" />{busy ? "正在保存" : "人工采用"}</button>
-      <button type="button" className="is-reject" disabled={busy} onClick={() => onDecision("reject")}><X size={16} />拒绝建议</button>
-    </div>}
-    {value.status === "preview" && <p className="project-estimate-preview-note"><ShieldCheck size={15} weight="fill" />已有 5 个以上样本，但尚未生成持久化校准快照；请先在经营分析中心显式冻结快照，随后才能人工采用或拒绝。</p>}
-    <footer><ShieldCheck size={15} weight="fill" /><span><b>{value.formula}</b><small>当前仅提供计算辅助；不会创建或修改 QuoteProposal、项目、任务、交付日期或客户消息。</small></span></footer>
-  </Surface>;
-}
-
 export function ProjectDetail({
   snapshot,
   projectId,
@@ -328,8 +254,8 @@ export function ProjectDetail({
   const customer = snapshot.customers.find((item) => item.id === project.customerId);
   const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!;
   const projectIssues = financial.settlementIssues.slice().sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
-  const projectTerminated = hasTerminalSettlementIssue(projectIssues);
   const latestIssue = latestSettlementIssue(projectIssues);
+  const projectTerminated = hasTerminalSettlementIssue(projectIssues);
   const projectPayments = snapshot.payments.filter((item) => item.projectId === project.id);
   const projectChangeOrders = snapshot.changeOrders
     .filter((item) => item.projectId === project.id && item.status === "confirmed")
@@ -352,35 +278,191 @@ export function ProjectDetail({
       payments: projectPayments.filter((item) => item.changeOrderId === order.id),
     })),
   ].filter((group) => group.payments.length > 0);
-  const pendingPayments = projectPayments.filter((item) => item.status === "pending");
   const tasks = snapshot.tasks.filter((item) => item.projectId === project.id);
-  const logs = snapshot.logs.filter((item) => item.projectId === project.id);
-  const files = snapshot.attachments.filter((item) => item.projectId === project.id);
-  const [logText, setLogText] = useState("");
-  const [taskEditor, setTaskEditor] = useState<
-    { mode: "create" } | { mode: "edit"; task: ProjectTask } | null
-  >(null);
-  const [verificationView, setVerificationView] = useState<CodexProjectVerificationView | null>(null);
-  const [estimateCalibration, setEstimateCalibration] = useState<CalibrationQuoteAssistView | null>(null);
-  const [estimateCalibrationLoading, setEstimateCalibrationLoading] = useState(false);
-  const [estimateCalibrationError, setEstimateCalibrationError] = useState("");
-  const [estimateCalibrationBusy, setEstimateCalibrationBusy] = useState(false);
-  const [adoptedHours, setAdoptedHours] = useState("");
-  const fileInput = useRef<HTMLInputElement>(null);
-  const duration = daysBetween(project.startDate, project.dueDate);
+  const logs = snapshot.logs
+    .filter((item) => item.projectId === project.id)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const files = snapshot.attachments
+    .filter((item) => item.projectId === project.id)
+    .sort((left, right) => right.uploadedAt.localeCompare(left.uploadedAt));
   const projectKind = projectKindOf(project);
   const isPersonal = projectKind === "personal";
-  const taskCompletion = tasks.length ? Math.round(tasks.filter((item) => item.status === "done").length / tasks.length * 100) : 0;
+  const duration = daysBetween(project.startDate, project.dueDate);
   const remainingDays = Math.max(0, daysUntil(project.dueDate));
-  const overdueTasks = tasks.filter((item) => item.status !== "done" && daysUntil(item.dueDate) < 0).length;
-  const healthScore = Math.max(28, Math.min(98, 92 - overdueTasks * 14 - (project.status === "overdue" ? 18 : 0) - projectIssues.length * 18));
-  const totalTimeline = Math.max(1, new Date(`${project.dueDate}T00:00:00`).getTime() - new Date(`${project.startDate}T00:00:00`).getTime());
-  const persistTasks = (nextTasks: ProjectTask[]) => {
-    onSnapshotChange({
-      ...snapshot,
-      tasks: nextTasks,
-    });
+  const completedTasks = tasks.filter((item) => item.status === "done").length;
+  const taskCompletion = tasks.length ? Math.round(completedTasks / tasks.length * 100) : 0;
+  const timeUsage = project.estimatedHours ? Math.round(financial.actualHours / project.estimatedHours * 100) : 0;
+  const [taskEditor, setTaskEditor] = useState<{ mode: "create" } | { mode: "edit"; task: ProjectTask } | null>(null);
+  const [tasksExpanded, setTasksExpanded] = useState(true);
+  const readSection = () => {
+    const value = new URLSearchParams(decodeURIComponent(window.location.hash).split('?')[1] || '').get('section');
+    return ['requirements','tasks','payments','records'].includes(value || '') ? value! : 'requirements';
   };
+  const [section, setSection] = useState(readSection);
+  useEffect(() => {
+    const sync = () => setSection(readSection());
+    sync(); window.addEventListener('hashchange',sync); window.addEventListener('popstate',sync);
+    return () => { window.removeEventListener('hashchange',sync); window.removeEventListener('popstate',sync); };
+  }, [projectId]);
+  const selectSection = (value: string) => {
+    setSection(value);
+    window.location.hash = encodeURIComponent(`项目管理/${projectId}/overview?section=${value}`);
+  };
+  const [logComposerOpen, setLogComposerOpen] = useState(false);
+  const [logText, setLogText] = useState("");
+  const [projectBlueprints, setProjectBlueprints] = useState<ProjectRequirementBlueprintView[]>([]);
+  const [caseCandidates,setCaseCandidates] = useState<{id:string;title:string}[]>([]);
+  const [selectedCase,setSelectedCase] = useState('');
+  const [showBlueprintDiff,setShowBlueprintDiff] = useState(false);
+  const [blueprintImportPreview, setBlueprintImportPreview] = useState<ProjectRequirementImportPreview | null>(null);
+  const [blueprintSourceName, setBlueprintSourceName] = useState("");
+  const [taskDraftPreview, setTaskDraftPreview] = useState<ProjectTaskDraftPreviewView | null>(null);
+  const [blueprintBusy, setBlueprintBusy] = useState(false);
+  const [blueprintError, setBlueprintError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const blueprintFileInput = useRef<HTMLInputElement>(null);
+  const draftTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    setTaskEditor(null);
+    setTasksExpanded(true);
+    setLogComposerOpen(false);
+    setBlueprintImportPreview(null);
+    setTaskDraftPreview(null);
+    setBlueprintError("");
+  }, [projectId]);
+
+  useEffect(() => {
+    let active = true;
+    setProjectBlueprints([]);setSelectedCase('');setShowBlueprintDiff(false);
+    const load=()=>localPlatformService.projectRequirementBlueprints(projectId)
+      .then((rows) => { if (active) setProjectBlueprints(rows); })
+      .catch((e) => { if (active) {setProjectBlueprints([]);setBlueprintError(e.message);} });
+    void load();window.addEventListener('focus',load);
+    if(project.customerId) void localPlatformService.customerRequirements(project.customerId).then(rows=>{if(active)setCaseCandidates(rows);}).catch(()=>{if(active)setCaseCandidates([]);});
+    return () => { active = false; window.removeEventListener('focus',load); };
+  }, [projectId, project.customerId]);
+
+  const latestBlueprint = projectBlueprints.find(row=>row.case_id) || null;
+  const formalBlueprint = latestBlueprint?.case_id ? latestBlueprint : null;
+  const openFormalBlueprint = () => {
+    if(!customer) return;
+    const path = project.conversationId
+      ? `客户消息/conversation/${project.conversationId}?view=requirements${formalBlueprint?.case_id?`&case=${encodeURIComponent(formalBlueprint.case_id)}`:''}`
+      : `客户管理/${customer.id}/requirements${formalBlueprint?.case_id?`/${formalBlueprint.case_id}`:''}`;
+    window.history.pushState({xianyuCustomerFromList:true,xunyingReturnTo:'项目详情'},'',`#${encodeURIComponent(path)}`);
+    window.dispatchEvent(new Event('hashchange'));
+  };
+  const linkFormalCase = async () => {setBlueprintBusy(true);setBlueprintError('');try{
+    await localPlatformService.linkProjectRequirement(projectId,{case_id:selectedCase,expected_revision:requireLedgerRevision(),request_id:crypto.randomUUID(),confirmed:true});
+    await refreshProjectData();
+  }catch(e){setBlueprintError(e instanceof Error?e.message:'关联失败');}finally{setBlueprintBusy(false);}};
+  const requireLedgerRevision = () => {
+    const revision = getLedgerRevision();
+    if (revision === null) throw new Error("请先连接本机经营数据，再导入或写入任务");
+    return revision;
+  };
+  const refreshProjectData = async () => {
+    const [rows, nextSnapshot] = await Promise.all([
+      localPlatformService.projectRequirementBlueprints(projectId),
+      mockLedgerService.refreshDashboard(),
+    ]);
+    setProjectBlueprints(rows);
+    onSnapshotChange(nextSnapshot);
+  };
+  const previewBlueprintFile = async (file: File) => {
+    setBlueprintBusy(true);
+    setBlueprintError("");
+    try {
+      const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
+      const preview = await localPlatformService.previewProjectRequirementImport(projectId, {
+        expected_revision: requireLedgerRevision(),
+        source_filename: file.name,
+        blueprint: parsed,
+      });
+      setBlueprintSourceName(file.name);
+      setBlueprintImportPreview(preview);
+    } catch (error) {
+      setBlueprintImportPreview(null);
+      setBlueprintError(error instanceof Error ? error.message : "需求蓝图文件无法预览");
+    } finally {
+      setBlueprintBusy(false);
+    }
+  };
+  const selectBlueprintFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) void previewBlueprintFile(file);
+    event.target.value = "";
+  };
+  const commitBlueprintFile = async () => {
+    if (!blueprintImportPreview) return;
+    setBlueprintBusy(true);
+    setBlueprintError("");
+    try {
+      await localPlatformService.commitProjectRequirementImport(projectId, {
+        request_id: crypto.randomUUID(),
+        expected_revision: blueprintImportPreview.current_revision,
+        source_filename: blueprintSourceName,
+        blueprint: blueprintImportPreview.blueprint,
+        preview_token: blueprintImportPreview.preview_token,
+        confirmed: true,
+      });
+      setBlueprintImportPreview(null);
+      await refreshProjectData();
+    } catch (error) {
+      setBlueprintError(error instanceof Error ? error.message : "需求蓝图没有导入");
+    } finally {
+      setBlueprintBusy(false);
+    }
+  };
+  const openTaskDraft = async () => {
+    if (!latestBlueprint) {
+      blueprintFileInput.current?.click();
+      return;
+    }
+    setBlueprintBusy(true);
+    setBlueprintError("");
+    try {
+      const preview = await localPlatformService.createProjectTaskDraftPreview(projectId, {
+        expected_revision: requireLedgerRevision(),
+        requirement_version_id: latestBlueprint.id,
+      });
+      setTaskDraftPreview(preview);
+    } catch (error) {
+      setBlueprintError(error instanceof Error ? error.message : "任务差异无法生成");
+    } finally {
+      setBlueprintBusy(false);
+    }
+  };
+  const closeTaskDraft = () => {
+    setTaskDraftPreview(null);
+    window.setTimeout(() => draftTriggerRef.current?.focus(), 0);
+  };
+  const confirmTaskDraft = async (taskKeys: string[]) => {
+    if (!taskDraftPreview) return;
+    setBlueprintBusy(true);
+    setBlueprintError("");
+    try {
+      await localPlatformService.confirmProjectTaskDraft(projectId, {
+        request_id: crypto.randomUUID(),
+        expected_revision: taskDraftPreview.project_revision,
+        preview_id: taskDraftPreview.id,
+        preview_token: taskDraftPreview.preview_token,
+        selected_task_keys: taskKeys,
+        apply_allowed_updates_only: true,
+        note: "人工确认按需求蓝图写入允许更新的任务字段",
+        confirmed: true,
+      });
+      await refreshProjectData();
+      closeTaskDraft();
+    } catch (error) {
+      setBlueprintError(error instanceof Error ? error.message : "任务没有写入");
+    } finally {
+      setBlueprintBusy(false);
+    }
+  };
+
+  const persistTasks = (nextTasks: ProjectTask[]) => onSnapshotChange({ ...snapshot, tasks: nextTasks });
   const updateTask = (taskId: string) => {
     const nextTasks: ProjectTask[] = snapshot.tasks.map((item) => {
       if (item.id !== taskId) return item;
@@ -396,10 +478,7 @@ export function ProjectDetail({
   };
   const saveTask = (task: ProjectTask) => {
     const exists = snapshot.tasks.some((item) => item.id === task.id);
-    const nextTasks = exists
-      ? snapshot.tasks.map((item) => item.id === task.id ? task : item)
-      : [...snapshot.tasks, task];
-    persistTasks(nextTasks);
+    persistTasks(exists ? snapshot.tasks.map((item) => item.id === task.id ? task : item) : [...snapshot.tasks, task]);
     setTaskEditor(null);
   };
   const deleteTask = (taskId: string) => {
@@ -409,9 +488,17 @@ export function ProjectDetail({
   const addLog = (event: FormEvent) => {
     event.preventDefault();
     if (!logText.trim()) return;
-    const log: ProjectLog = { id: `log-${Date.now()}`, projectId: project.id, createdAt: new Date().toISOString(), content: logText.trim(), hours: 1, category: "development" };
+    const log: ProjectLog = {
+      id: `log-${Date.now()}`,
+      projectId: project.id,
+      createdAt: new Date().toISOString(),
+      content: logText.trim(),
+      hours: 1,
+      category: "development",
+    };
     onSnapshotChange({ ...snapshot, logs: [log, ...snapshot.logs] });
     setLogText("");
+    setLogComposerOpen(false);
   };
   const addFile = () => fileInput.current?.click();
   const storeFiles = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -425,173 +512,174 @@ export function ProjectDetail({
         reader.readAsDataURL(file);
       }) : undefined;
       const extension = file.name.split(".").pop()?.toLowerCase();
-      return { id: `file-${Date.now()}-${index}`, projectId: project.id, name: file.name, size: file.size < 1_000_000 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / 1_000_000).toFixed(1)} MB`, type: extension === "zip" || extension === "rar" ? "archive" as const : ["png", "jpg", "jpeg", "fig", "sketch"].includes(extension || "") ? "design" as const : "document" as const, uploadedAt: new Date().toISOString(), dataUrl };
+      return {
+        id: `file-${Date.now()}-${index}`,
+        projectId: project.id,
+        name: file.name,
+        size: file.size < 1_000_000 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / 1_000_000).toFixed(1)} MB`,
+        type: extension === "zip" || extension === "rar" ? "archive" as const : ["png", "jpg", "jpeg", "fig", "sketch"].includes(extension || "") ? "design" as const : "document" as const,
+        uploadedAt: new Date().toISOString(),
+        dataUrl,
+      };
     }));
     onSnapshotChange({ ...snapshot, attachments: [...attachments, ...snapshot.attachments] });
     event.target.value = "";
   };
-  const tabs = [
-    ["overview", "总览", Gauge], ["tasks", "任务", ListChecks], ["gantt", "甘特图", ChartLineUp],
-    ["codex", "Codex 同步", Code], ["quote", "需求报价", FileText],
-    ["logs", "日志", NotePencil], ["files", "附件", Paperclip], ["verification", "交付核验", ShieldCheck],
-  ] as const;
-  const visibleTabs = tabs.filter(([key]) => !isPersonal || key !== "quote");
 
-  useEffect(() => {
-    if (isPersonal && (tab === "communication" || tab === "quote")) onTabChange("overview");
-  }, [isPersonal, onTabChange, tab]);
+  if (tab === "immersive") {
+    return <div className="business-page project-detail-page">
+      <section className="project-workspace-shell project-detail-workspace">
+        <header className="project-detail-workspace-head">
+          <button className="business-back" onClick={() => onTabChange("overview")}><ArrowLeft size={17} />返回项目详情</button>
+          <button type="button" className="project-detail-edit-action" onClick={onEdit}><PencilSimple size={15} />编辑项目</button>
+        </header>
+        <ImmersiveTaskFlow project={project} tasks={tasks} onCreateTask={addTask} onEditTask={editTask} onAdvanceTask={updateTask} />
+      </section>
+      {taskEditor && <ProjectTaskEditor project={project} task={taskEditor.mode === "edit" ? taskEditor.task : null} onClose={() => setTaskEditor(null)} onDelete={deleteTask} onSave={saveTask} />}
+    </div>;
+  }
 
-  useEffect(() => setTaskEditor(null), [projectId]);
-
-  useEffect(() => {
-    let active = true;
-    setVerificationView(null);
-    void localPlatformService.projectVerification(projectId)
-      .then((next) => { if (active) setVerificationView(next); })
-      .catch(() => { if (active) setVerificationView(null); });
-    return () => { active = false; };
-  }, [projectId]);
-
-  useEffect(() => {
-    if (isPersonal || tab !== "quote") return;
-    let active = true;
-    setEstimateCalibrationLoading(true);
-    setEstimateCalibrationError("");
-    void predictionService.projectCalibration(projectId)
-      .then((next) => {
-        if (!active) return;
-        setEstimateCalibration(next);
-        setAdoptedHours(String(next.adopted_hours ?? next.suggested_hours ?? next.original_estimated_hours));
-        setEstimateCalibrationLoading(false);
-      })
-      .catch((reason: unknown) => {
-        if (!active) return;
-        setEstimateCalibration(null);
-        setEstimateCalibrationError(reason instanceof Error ? reason.message : "工时校准建议读取失败");
-        setEstimateCalibrationLoading(false);
-      });
-    return () => { active = false; };
-  }, [isPersonal, projectId, tab]);
-
-  const decideEstimateCalibration = async (action: "adopt" | "reject") => {
-    if (!estimateCalibration?.suggestion_id) return;
-    const nextHours = Number(adoptedHours);
-    if (action === "adopt" && !(nextHours > 0)) {
-      setEstimateCalibrationError("请输入大于 0 的人工采用工时");
-      return;
-    }
-    const verb = action === "adopt" ? `采用 ${nextHours} 小时` : "拒绝本轮校准建议";
-    if (!window.confirm(`确认${verb}？该决定会追加审计记录，但不会修改项目原始预计工时、报价或交付日期。`)) return;
-    setEstimateCalibrationBusy(true);
-    setEstimateCalibrationError("");
-    try {
-      const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}`;
-      const next = await predictionService.decideCalibration(
-        projectId,
-        estimateCalibration.suggestion_id,
-        {
-          request_id: `calibration-decision-ui:${suffix}`,
-          expected_revision: estimateCalibration.suggestion_revision,
-          action,
-          ...(action === "adopt" ? { adopted_hours: nextHours } : {}),
-          note: "项目需求报价页人工决定",
-        },
-      );
-      setEstimateCalibration(next);
-      setAdoptedHours(String(next.adopted_hours ?? next.suggested_hours ?? next.original_estimated_hours));
-    } catch (reason) {
-      setEstimateCalibrationError(reason instanceof Error ? reason.message : "人工决定保存失败");
-    } finally {
-      setEstimateCalibrationBusy(false);
-    }
-  };
-
-  const verifiedProgress = verificationView?.progress.verified_delivery.percent ?? 0;
+  const visibleTasks = tasksExpanded ? tasks : tasks.slice(0, 2);
+  const visibleLogs = logs.slice(0, 3);
+  const visibleFiles = files.slice(0, 3);
+  const projectStatus = latestIssue ? settlementIssueLabels[latestIssue.type] : projectStatusLabel[project.status];
 
   return <div className="business-page project-detail-page">
-    <section className="project-workspace-shell project-detail-workspace">
+    <section className="project-workspace-shell project-detail-workspace project-simple-workspace">
       <header className="project-detail-workspace-head">
         <button className="business-back" onClick={onBack}><ArrowLeft size={17} />返回项目列表</button>
-        <div className="project-detail-head-actions"><span className={`project-kind-badge kind-${projectKind}`}>{isPersonal ? <Code size={15} /> : <Briefcase size={15} />}{projectKindLabel[projectKind]}</span><button type="button" onClick={onEdit}><PencilSimple size={15} />编辑项目</button></div>
+        <div className="project-detail-head-actions">
+          <span className={`project-kind-badge kind-${projectKind}`}>{isPersonal ? <Code size={15} /> : <Briefcase size={15} />}{projectKindLabel[projectKind]}</span>
+          <button type="button" onClick={onEdit}><PencilSimple size={15} />编辑项目</button>
+        </div>
       </header>
-      <div className="project-detail-hero">
-        <div className="project-detail-heading"><span className={`project-avatar project-${project.accent}`}>{isPersonal ? <Code size={27} weight="duotone" /> : <Briefcase size={27} weight="duotone" />}</span><div><small>{project.type || (isPersonal ? "个人开发" : "定制开发")}{!isPersonal && customer ? ` · ${customer.name}` : ""}</small><h2>{project.name}</h2><p>{project.notes || (isPersonal ? "聚焦个人产品、开源计划与长期能力沉淀。" : "围绕交付目标推进开发、验收与回款。")}</p></div><span className="project-health"><i />项目健康度 {healthScore}</span></div>
-        <div className="project-detail-summary"><span><small>自动工期</small><b>{duration} 天</b></span><span><small>已验证交付进度</small><b>{verifiedProgress}%</b></span><span><small>实际投入</small><b>{verificationView ? verificationView.time.total_hours : financial.actualHours} 小时</b></span><span><small>{isPersonal ? "距离里程碑" : "距离交付"}</small><b>{remainingDays} 天</b></span></div>
-      </div>
-      <section className="project-detail-kpis" aria-label="项目核心数据">
-        {isPersonal ? <>
-          <WorkspaceMetric icon={Target} label="任务完成" value={`${taskCompletion}%`} detail={`${tasks.filter((item) => item.status === "done").length}/${tasks.length} 项已完成`} tone="purple" />
-          <WorkspaceMetric icon={Timer} label="计划工时" value={`${project.estimatedHours || 0}h`} detail="个人投入预算" tone="blue" />
-          <WorkspaceMetric icon={Clock} label="实际工时" value={`${financial.actualHours}h`} detail="来自任务记录" tone="green" />
-          <WorkspaceMetric icon={WarningCircle} label="风险任务" value={`${overdueTasks}`} detail={overdueTasks ? "需要优先收敛" : "当前节奏可控"} tone="orange" />
+
+      <section className="project-simple-hero">
+        <div className="project-simple-title">
+          <h2>{project.name}</h2>
+          <span>交付日期 · {shortDate(project.dueDate)}</span>
+        </div>
+        <em className={`status-${project.status}${latestIssue ? " is-issue" : ""}`}>{projectStatus}</em>
+        {!isPersonal && <div className="project-simple-relations">
+          <span>客户：<b>{customer?.name || "未关联客户"}</b></span>
+          <span>来源商品：<b>{project.itemExternalId ? `商品 ${project.itemExternalId}` : "未关联商品"}</b></span>
+          <button type="button" onClick={onEdit}>管理关系</button>
+        </div>}
+      </section>
+
+
+      {!isPersonal && project.status === "delivered" && financial.outstanding > 0 && <section className="delivered-receivable-alert"><WarningCircle size={18} weight="fill" /><span><b>项目已交付，仍有 {money.format(financial.outstanding)} 待回款</b><small>到账后可直接在这里确认，不需要先建立付款节点。</small></span><button type="button" onClick={() => onConfirmPayment(project.id)}>确认到账 <ArrowRight size={14} /></button></section>}
+      {!isPersonal && latestIssue && <section className="project-settlement-alert"><WarningCircle size={19} weight="fill" /><span><b>{settlementIssueLabels[latestIssue.type]} · 已记录 {projectIssues.length} 条异常</b><small>{latestIssue.reason}</small></span><button type="button" onClick={() => onRecordSettlementIssue(project.id)}>继续记录 <ArrowRight size={14} /></button></section>}
+
+      <DetailWorkspace context={<ContextPanel title="项目上下文">
+<section className="project-simple-metrics" aria-label="项目核心事实">
+        {!isPersonal ? <>
+          <article><span>合同 / 已收</span><strong>{money.format(project.totalAmount)} / {money.format(financial.income)}</strong><small>待收 {money.format(financial.outstanding)}</small></article>
+          <article><span>项目周期</span><strong>{duration} 天</strong><small>当前状态：{projectStatusLabel[project.status]}</small></article>
+          <article><span>任务完成</span><strong>{completedTasks} / {tasks.length}</strong><small>{tasks.length ? `完成率 ${taskCompletion}%` : "还没有任务"}</small></article>
+          <article><span>投入 / 利润</span><strong>{financial.actualHours}h / {money.format(financial.profit)}</strong><small>小时收益 {money.format(financial.hourlyIncome)}</small></article>
         </> : <>
-          <WorkspaceMetric icon={Wallet} label="合同金额" value={money.format(project.totalAmount)} detail={projectChangeOrders.length ? `原合同 ${money.format(baseContractAmount)} + ${projectChangeOrders.length} 次追加 ${money.format(changeOrderTotal)}` : "项目原合同金额"} tone="purple" action={<div className="workspace-financial-actions">{projectTerminated ? <span className="is-terminated"><WarningCircle size={14} weight="fill" />已终止，请新建项目</span> : <button type="button" onClick={() => onCreateChangeOrder(project.id)}><Plus size={14} />新增追加订单</button>}</div>} />
-          <WorkspaceMetric icon={Coins} label="净到账 / 可收" value={`${money.format(financial.income)} / ${money.format(financial.outstanding)}`} detail={financial.issueCount ? `已退款 ${money.format(financial.refundedAmount)} · 已核销 ${money.format(financial.uncollectible)}` : `净回款率 ${financial.paymentProgress.toFixed(0)}%`} tone="blue" action={<div className="workspace-financial-actions">{financial.outstanding > 0 ? <button type="button" onClick={() => onConfirmPayment(project.id)}><Wallet size={14} weight="duotone" />确认到账</button> : <span><CheckCircle size={14} weight="fill" />可收余额已结清</span>}<button type="button" className="is-exception" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={14} weight="duotone" />记录异常</button></div>} />
-          <WorkspaceMetric icon={TrendUp} label="实际利润" value={money.format(financial.profit)} detail={`已扣除成本 ${money.format(financial.expenses)}`} tone="green" />
-          <WorkspaceMetric icon={Timer} label="平均小时收益" value={money.format(financial.hourlyIncome)} detail="按已投入工时计算" tone="orange" />
+          <article><span>计划 / 实际</span><strong>{project.estimatedHours || 0}h / {financial.actualHours}h</strong><small>工时使用 {timeUsage}%</small></article>
+          <article><span>项目周期</span><strong>{duration} 天</strong><small>距离里程碑 {remainingDays} 天</small></article>
+          <article><span>任务完成</span><strong>{completedTasks} / {tasks.length}</strong><small>{tasks.length ? `完成率 ${taskCompletion}%` : "还没有任务"}</small></article>
+          <article><span>当前状态</span><strong>{projectStatusLabel[project.status]}</strong><small>{latestIssue ? settlementIssueLabels[latestIssue.type] : "当前节奏正常"}</small></article>
         </>}
       </section>
-      {!isPersonal && project.status === "delivered" && financial.outstanding > 0 && <section className="delivered-receivable-alert"><WarningCircle size={18} weight="fill" /><span><b>项目已交付，仍有 {money.format(financial.outstanding)} 待回款</b><small>到账后可直接在这里确认，不需要先建立付款节点。</small></span><button type="button" onClick={() => onConfirmPayment(project.id)}>确认到账 <ArrowRight size={14} /></button></section>}
-      {!isPersonal && latestIssue && <section className="project-settlement-alert"><WarningCircle size={19} weight="fill" /><span><b>{settlementIssueLabels[latestIssue.type]} · 已记录 {projectIssues.length} 条异常</b><small>{latestIssue.reason}{financial.refundedAmount > 0 || financial.uncollectible > 0 ? ` · 已退款 ${money.format(financial.refundedAmount)}，已核销 ${money.format(financial.uncollectible)}` : " · 金额影响待确认"}</small></span><button type="button" onClick={() => onRecordSettlementIssue(project.id)}>继续记录 <ArrowRight size={14} /></button></section>}
-      <nav className="project-detail-tabs" aria-label="项目详情模块">{visibleTabs.map(([key, label, Icon]) => <button type="button" aria-current={tab === key ? "page" : undefined} className={tab === key ? "active" : ""} onClick={() => onTabChange(key)} key={key}><Icon size={17} />{label}</button>)}</nav>
-      <div className="project-detail-content">
+      </ContextPanel>}>
+      <nav className="project-detail-sections" aria-label="项目内容">{[['requirements','需求与交付'],['tasks','开发任务'],...(!isPersonal ? [['payments','合同回款']] : []),['records','附件记录']].map(([key,label])=><button type="button" key={key} aria-current={section===key?'page':undefined} onClick={()=>selectSection(key)}>{label}</button>)}</nav>
+      <section className="project-simple-grid">
+        <div className="project-simple-column">
+          <div hidden={section !== 'records'}>
+          <Surface className="project-simple-card project-simple-info">
+            <SurfaceTitle eyebrow="PROJECT INFO" title="项目基本信息" action={<button type="button" onClick={onEdit}>编辑基本信息</button>} />
+            <div className="project-simple-info-grid">
+              <span><small>预计工时</small><b>{project.estimatedHours || 0} 小时</b></span>
+            </div>
+            <div className="project-simple-description"><small>项目说明</small><p>{project.notes || "暂无补充说明。"}</p></div>
+          </Surface>
+          </div>
+          <div hidden={section !== 'requirements'}>
+          <Surface className="project-simple-card project-requirement-card" >
+            <input ref={blueprintFileInput} hidden type="file" accept="application/json,.json" onChange={selectBlueprintFile} />
+            <SurfaceTitle eyebrow="REQUIREMENT BLUEPRINT" title="需求蓝图" action={latestBlueprint ? <span className="project-requirement-version">V{latestBlueprint.version} · {formalBlueprint ? latestBlueprint.readiness === 'approved' ? '已确认' : '待确认' : '历史导入'}</span> : undefined} />
+            {latestBlueprint ? <div className="project-requirement-current">
+              <span><i><FileText size={20} weight="duotone" /></i><span><small>{latestBlueprint.source_label} · {latestBlueprint.schema_version}</small><b>{latestBlueprint.title}</b><em>{latestBlueprint.change_summary}</em></span></span>
+            </div> : <div className="project-simple-empty"><b>尚未确认正式需求</b><p>请在客户正式需求页确认 GPT 提案，再关联到此项目。</p></div>}
+            {latestBlueprint && <div className="project-requirement-metrics">{[['capabilities','需求项'],['stages','实施阶段'],['deliverables','交付物'],['criteria','验收标准'],['questions','待确认问题']].map(([key,label])=><span key={key}><small>{label}</small><b>{latestBlueprint.metrics?.[key] ?? '—'}</b></span>)}</div>}
+            {formalBlueprint?.case_id && <ProjectDeliverySummary caseId={formalBlueprint.case_id} version={formalBlueprint.version} />}
+            <div className="project-requirement-actions">
+              {customer&&<button type="button" onClick={openFormalBlueprint}>{formalBlueprint?'查看完整蓝图':'进入客户正式需求'}</button>}
+              {latestBlueprint&&<><button type="button" aria-expanded={showBlueprintDiff} onClick={()=>setShowBlueprintDiff(v=>!v)}>版本变化</button><button ref={draftTriggerRef} type="button" disabled={blueprintBusy} onClick={()=>void openTaskDraft()}>生成任务差异</button></>}
+            </div>
+            {showBlueprintDiff&&latestBlueprint&&<div className="project-requirement-diff"><p>{latestBlueprint.change_summary}</p>{Object.entries(latestBlueprint.diff||{}).map(([kind,groups])=><div key={kind}>{Object.entries(groups).map(([status,nodes])=><p key={status}>{{added:'新增',modified:'修改',removal_proposed:'删除建议',unchanged:'未变化'}[status]||status}：{nodes.map(n=>String(n.after?.title||n.before?.title||n.id)).join('、')||'无'}</p>)}</div>)}{!Object.keys(latestBlueprint.diff||{}).length&&<p>此历史版本未记录逐节点差异；可进入完整蓝图切换版本核对。</p>}</div>}
+            {!formalBlueprint&&customer&&caseCandidates.length>0&&<div className="project-requirement-actions"><select aria-label="选择正式需求" value={selectedCase} onChange={e=>setSelectedCase(e.target.value)}><option value="">选择当前客户的正式需求</option>{caseCandidates.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select><button type="button" disabled={!selectedCase||blueprintBusy} onClick={()=>void linkFormalCase()}>确认关联此需求</button></div>}
+            {blueprintImportPreview && <div className="project-requirement-import-preview"><span><CheckCircle size={17} weight="duotone" /><span><b>蓝图结构已通过校验</b><small>{blueprintSourceName} · 将追加为 V{blueprintImportPreview.next_version}</small></span></span><button type="button" disabled={blueprintBusy} onClick={() => void commitBlueprintFile()}>确认导入</button></div>}
+            <details className="project-requirement-advanced"><summary>更多</summary><button type="button" onClick={() => blueprintFileInput.current?.click()}>导入 JSON</button><p>只校验并预览，不会创建任务或启动 Codex</p><span><ShieldCheck size={14} />task_key、workspace_key 与依赖关系会在写入前逐项比较</span>{projectBlueprints.filter(row=>!row.case_id).map(row=><p key={row.id}><a href={`/api/requirements/versions/${row.id}`} target="_blank" rel="noreferrer">历史导入 V{row.version} · {row.title}（只读）</a></p>)}</details>
+            {blueprintError && <p className="project-requirement-error"><WarningCircle size={14} />{blueprintError}</p>}
+          </Surface>
+          </div>
+          <div hidden={section !== 'tasks'}>
+          <Surface className="project-simple-card project-simple-tasks">
+            <SurfaceTitle eyebrow="" title="开发任务" action={<span className="project-simple-complete">{completedTasks} / {tasks.length} 已完成</span>} />
+            <p>任务状态仅表示开发进度，不代表客户已验收。</p>
+            <div className="project-simple-task-list">
+              {visibleTasks.length ? visibleTasks.map((task) => <article key={task.id}>
+                <button type="button" className={`task-check task-${task.status}`} onClick={() => updateTask(task.id)} aria-label={`切换${task.title}状态`}>{task.status === "done" ? <CheckCircle size={18} weight="fill" /> : <CaretRight size={16} />}</button>
+                <span><b>{task.title}</b><small>{task.startDate && task.dueDate ? `${shortDate(task.startDate)} — ${shortDate(task.dueDate)}` : "日期待补充"}</small>{task.taskKey && <small className="project-simple-task-trace"><span>需求 V{task.requirementVersionId || project.requirementVersionId || "—"}</span><span>task_key · {task.taskKey}</span>{Boolean(task.dependencyTaskKeys?.length) && <span>依赖 · {task.dependencyTaskKeys?.join("、")}</span>}<span>验收来源 · 需求蓝图 V{task.requirementVersionId || project.requirementVersionId || "—"}</span></small>}</span>
+                <TaskFacts task={task}/>
+                <em className={`task-${task.status}`}>{taskLabel[task.status]}</em>
+                <button type="button" className="project-simple-row-action" onClick={() => editTask(task.id)}><PencilSimple size={13} />编辑</button>
+              </article>) : <div className="project-simple-empty">还没有任务，可从第一项真实交付工作开始记录。</div>}
+            </div>
+            <div className="project-simple-card-actions">
+              {tasks.length > 2 && <button type="button" onClick={() => setTasksExpanded((value) => !value)}>{tasksExpanded ? "收起任务" : `展开全部 ${tasks.length} 个任务`}</button>}
+              <button type="button" className="is-primary" onClick={addTask}><Plus size={14} />新增任务</button>
+            </div>
+          </Surface>
+          </div>
+          <div hidden={section !== 'payments'}>
+          {!isPersonal && <Surface className="project-simple-card project-simple-payments">
+            <SurfaceTitle eyebrow="PAYMENTS" title="合同与回款" action={<div className="project-simple-inline-actions">
+              {!projectTerminated && <button type="button" onClick={() => onCreateChangeOrder(project.id)}><Plus size={14} />追加订单</button>}
+              {financial.outstanding > 0 && <button type="button" onClick={() => onConfirmPayment(project.id)}><Wallet size={14} />确认到账</button>}
+            </div>} />
+            {paymentGroups.length ? <div className="project-simple-payment-list">{paymentGroups.map((group) => <article key={group.id}>
+              <div><small>{group.id === "base-contract" ? "原合同" : "追加订单"}</small><b>{group.title}</b><span>{group.detail}</span></div>
+              <strong>{money.format(group.amount)}</strong>
+              <small>{group.payments.filter((item) => item.status === "confirmed").length}/{group.payments.length} 笔已到账</small>
+            </article>)}</div> : <div className="project-simple-empty">当前没有付款节点，合同和已收金额仍按统一账本计算。</div>}
+            <footer><span>合同合计 <b>{money.format(project.totalAmount)}</b></span><span>已收 {money.format(financial.income)} · 待收 {money.format(financial.outstanding)}</span></footer>
+            <div className="project-simple-card-actions">
+              {financial.outstanding > 0 && <button type="button" onClick={() => onCreatePaymentPlan(project.id)}>建立收款计划</button>}
+              <button type="button" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={14} />记录异常</button>
+            </div>
+          </Surface>}
+          </div>
+        </div>
 
-    {tab === "overview" && (isPersonal ? <section className="project-detail-grid personal-project-overview">
-      <Surface><SurfaceTitle eyebrow="PROJECT PULSE" title="个人项目执行脉搏" /><div className="project-pulse"><div><span>开发进度</span><b>{project.progress}%</b><BarProgress value={project.progress} tone="purple" /></div><div><span>任务完成</span><b>{taskCompletion}%</b><BarProgress value={taskCompletion} tone="green" /></div><div><span>工时消耗</span><b>{project.estimatedHours ? Math.round(financial.actualHours / project.estimatedHours * 100) : 0}%</b><BarProgress value={project.estimatedHours ? financial.actualHours / project.estimatedHours * 100 : 0} tone="orange" /></div></div></Surface>
-      <Surface><SurfaceTitle eyebrow="MILESTONES" title="里程碑概览" /><div className="personal-milestone-list"><span><i><FolderSimple size={19} weight="duotone" /></i><b>{tasks.length} 项任务</b><small>{tasks.filter((item) => item.status === "in_progress").length} 项正在推进</small></span><span><i><CalendarBlank size={19} weight="duotone" /></i><b>{shortDate(project.dueDate)} 里程碑</b><small>还有 {remainingDays} 天</small></span><span><i><Clock size={19} weight="duotone" /></i><b>{financial.actualHours}h 已投入</b><small>计划 {project.estimatedHours || 0}h</small></span></div></Surface>
-      <Surface className="project-next-action"><SurfaceTitle eyebrow="NEXT ACTION" title="本地规则建议" /><div><Sparkle size={25} weight="fill" /><span><b>{overdueTasks ? `先处理 ${overdueTasks} 项逾期任务` : "保持当前交付节奏"}</b><p>{overdueTasks ? "建议收敛功能边界，把最小可验收成果作为下一个里程碑。" : "当前任务、工时和日期未出现明显风险，完成后记录可复用的开发结论。"}</p></span></div><button onClick={() => onTabChange("tasks")}>查看任务安排 <ArrowRight size={15} /></button></Surface>
-    </section> : <section className="project-detail-grid">
-      <Surface>
-        <SurfaceTitle eyebrow="PAYMENT PLAN" title="付款计划与回款进度" action={<div className="payment-plan-title-actions"><button className="payment-plan-title-action is-change-order" type="button" disabled={projectTerminated} title={projectTerminated ? "已取消或终止合作的项目需要新建项目" : undefined} onClick={() => onCreateChangeOrder(project.id)}><Plus size={14} />{projectTerminated ? "已终止，请新建项目" : "新增追加订单"}</button>{financial.outstanding > 0 && <button className="payment-plan-title-action" type="button" onClick={() => onConfirmPayment(project.id)}><Wallet size={14} />确认到账</button>}<button className="payment-plan-title-action is-exception" type="button" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={14} />记录异常</button></div>} />
-        {projectPayments.length ? <div className="payment-contract-groups">{paymentGroups.map((group) => <section className={`payment-contract-group ${group.id === "base-contract" ? "is-base" : "is-change-order"}`} key={group.id}>
-          <header><span><small>{group.id === "base-contract" ? "BASE CONTRACT" : "CHANGE ORDER"}</small><b>{group.title}</b><em>{group.detail}</em></span><strong>{money.format(group.amount)}</strong></header>
-          <div className="payment-node-list">{group.payments.map((payment, index) => <article className={payment.status === "confirmed" ? "done" : payment.status === "written_off" ? "written-off" : payment.status === "refunded" ? "refunded" : ""} key={payment.id}><i>{payment.status === "confirmed" ? <CheckCircle size={19} weight="fill" /> : payment.status === "written_off" || payment.status === "refunded" ? <WarningCircle size={19} weight="fill" /> : index + 1}</i><span><b>{payment.changeOrderId ? `追加款 · ${paymentLabel[payment.type]}` : paymentLabel[payment.type]}</b><small>{payment.notes || (payment.status === "confirmed" ? "已确认到账" : payment.status === "written_off" ? "已因项目异常核销" : payment.status === "refunded" ? "已退款" : "等待收款")}</small></span><strong>{money.format(payment.amount)}</strong><time>{payment.status === "confirmed" ? `已到账 ${shortDate(payment.paidAt)}` : payment.status === "written_off" ? "已核销，不再催收" : payment.status === "refunded" ? "已退款" : `${shortDate(payment.dueAt)} 应收`}</time>{payment.status === "pending" && <button className="payment-node-confirm" type="button" onClick={() => onConfirmPayment(project.id, payment.id)}>到账</button>}</article>)}</div>
-        </section>)}</div> : <div className="payment-plan-empty"><i><Wallet size={29} weight="duotone" /></i><span><b>{projectTerminated ? "原合作已经终止" : financial.outstanding > 0 ? "合同余额尚未拆分为付款节点" : "当前合同已结清"}</b><small>{projectTerminated ? "如客户重新提出付费需求，请新建项目，避免把新合作混入已完成核销的原合同。" : financial.outstanding > 0 ? `当前仍有 ${money.format(financial.outstanding)} 可收，可确认到账、记录异常或先建立收款计划。` : "客户再次付费追加修改时，请新增追加订单；原合同和收款历史会完整保留。"}</small></span><div>{!projectTerminated && <button className="business-primary" type="button" onClick={() => onCreateChangeOrder(project.id)}><Plus size={15} />新增追加订单</button>}{financial.outstanding > 0 && <button type="button" onClick={() => onConfirmPayment(project.id)}><CheckCircle size={15} />确认已到账</button>}{financial.outstanding > 0 && <button type="button" onClick={() => onCreatePaymentPlan(project.id)}><Plus size={15} />建立收款计划</button>}<button type="button" className="is-exception" onClick={() => onRecordSettlementIssue(project.id)}><WarningCircle size={15} />记录异常</button></div></div>}
-      </Surface>
-      <Surface><SurfaceTitle eyebrow="PROJECT PULSE" title="项目执行脉搏" /><div className="project-pulse"><div><span>开发进度</span><b>{project.progress}%</b><BarProgress value={project.progress} tone="purple" /></div><div><span>任务完成</span><b>{taskCompletion}%</b><BarProgress value={taskCompletion} tone="green" /></div><div><span>工时消耗</span><b>{project.estimatedHours ? Math.round(financial.actualHours / project.estimatedHours * 100) : 0}%</b><BarProgress value={project.estimatedHours ? financial.actualHours / project.estimatedHours * 100 : 0} tone="orange" /></div></div><div className="project-customer-brief"><UserCircle size={38} weight="duotone" /><span><small>关联客户</small><b>{customer?.name}</b><em>{customer?.phone}</em></span><span><small>客户等级</small><b>{customer?.level} 级客户</b><em>{followLabel[customer?.followUpStatus || "new"]}</em></span></div></Surface>
-      <Surface className="project-next-action"><SurfaceTitle eyebrow="NEXT ACTION" title="本地经营建议" /><div><Sparkle size={25} weight="fill" /><span><b>{latestIssue ? "先确认异常处理边界" : "优先检查临近交付任务"}</b><p>{latestIssue ? `已记录“${settlementIssueLabels[latestIssue.type]}”。建议保留沟通证据，明确退款、核销和仍可收金额后再继续催收。` : `当前工时已使用 ${project.estimatedHours ? Math.round(financial.actualHours / project.estimatedHours * 100) : 0}%，建议冻结新增需求，并在验收前主动发送阶段款提醒。`}</p></span></div><button onClick={() => latestIssue ? onRecordSettlementIssue(project.id) : onTabChange("tasks")}>{latestIssue ? "更新异常记录" : "查看任务安排"} <ArrowRight size={15} /></button></Surface>
-      <Surface className="project-relations-summary"><SurfaceTitle eyebrow="RELATIONSHIPS" title="客户与商品关系" action={<button type="button" onClick={onEdit}>管理关系 <ArrowRight size={14} /></button>} /><div><article><UserCircle size={23} weight="duotone" /><span><small>关联客户</small><b>{customer?.name || "未关联客户"}</b></span></article><article><Storefront size={23} weight="duotone" /><span><small>来源商品</small><b>{project.itemExternalId ? `商品 ${project.itemExternalId}` : "未关联来源商品"}</b></span></article></div><p>关系变更必须进入影响预览，并使用 revision 与 request-id 单独确认。</p></Surface>
-      <Surface className="project-settlement-history"><SurfaceTitle eyebrow="EXCEPTION HISTORY" title={`项目异常记录 · ${projectIssues.length}`} action={<button type="button" onClick={() => onRecordSettlementIssue(project.id)}><Plus size={14} />记录异常</button>} />{projectIssues.length ? <div>{projectIssues.map((issue) => <article key={issue.id}><i><WarningCircle size={18} weight="duotone" /></i><span><small>{shortDate(issue.occurredAt)} · {settlementIssueLabels[issue.type]}</small><b>{issue.reason}</b>{issue.notes && <em>{issue.notes}</em>}</span><dl><div><dt>无法收回</dt><dd>{money.format(issue.receivableImpact)}</dd></div><div><dt>实际退款</dt><dd>{money.format(issue.refundAmount)}</dd></div></dl></article>)}</div> : <div className="project-settlement-empty"><CheckCircle size={23} weight="duotone" /><span><b>暂无客户或回款异常</b><small>客户不满意、退款、取消合作或拒付时，可从这里留下原因和金额影响。</small></span></div>}</Surface>
-    </section>)}
+        <aside className="project-simple-column" hidden={section !== 'records'}>
+          <Surface className="project-simple-card project-simple-logs">
+            <SurfaceTitle eyebrow="RECENT" title="最近记录" action={<button type="button" onClick={() => setLogComposerOpen((value) => !value)}>{logComposerOpen ? "取消" : "新增日志"}</button>} />
+            {logComposerOpen && <form onSubmit={addLog}><textarea value={logText} onChange={(event) => setLogText(event.target.value)} rows={3} placeholder="记录完成事项、沟通或风险变化…" /><button type="submit" className="business-primary" disabled={!logText.trim()}><NotePencil size={15} />保存日志</button></form>}
+            <div className="project-simple-log-list">{visibleLogs.length ? visibleLogs.map((log) => <article key={log.id}><b>{log.content}</b><small>{new Date(log.createdAt).toLocaleString("zh-CN")} · {log.hours} 小时</small></article>) : <div className="project-simple-empty">暂无项目日志。</div>}</div>
+          </Surface>
 
-    {tab === "tasks" && <Surface className="project-module"><SurfaceTitle eyebrow="TASKS" title={`项目任务列表 · ${tasks.filter((item) => item.status === "done").length}/${tasks.length} 已完成`} action={<button className="business-primary" onClick={addTask}><Plus size={16} />新增任务</button>} /><div className="project-task-table"><div className="project-task-head"><span>任务</span><span>状态</span><span>计划日期</span><span>预计 / 实际</span><span>操作</span></div>{tasks.map((task) => <article key={task.id}><span><button className={`task-check task-${task.status}`} onClick={() => updateTask(task.id)} aria-label={`切换${task.title}状态`}>{task.status === "done" && <CheckCircle size={18} weight="fill" />}</button><b>{task.title}</b></span><em className={`task-status task-${task.status}`}>{taskLabel[task.status]}</em><time>{shortDate(task.startDate)} — {shortDate(task.dueDate)}</time><small>{task.estimatedHours}h / {task.actualHours}h</small><span className="task-row-actions"><button type="button" onClick={() => editTask(task.id)} aria-label={`编辑任务 ${task.title}`}><PencilSimple size={13} />编辑</button><button type="button" onClick={() => updateTask(task.id)}>推进 <CaretRight size={13} /></button></span></article>)}</div></Surface>}
-
-    {tab === "gantt" && <Surface className="project-module"><SurfaceTitle eyebrow="TIMELINE" title="项目甘特图" action={<span className="auto-duration"><Clock size={15} />工期自动计算：{duration} 天</span>} /><div className="gantt-calendar"><div className="gantt-scale"><span>任务</span>{Array.from({ length: duration }, (_, index) => <time key={index}>{index + 1}日</time>)}</div>{tasks.map((task, index) => { const left = Math.max(0, (new Date(`${task.startDate}T00:00:00`).getTime() - new Date(`${project.startDate}T00:00:00`).getTime()) / totalTimeline * 100); const width = Math.max(8, (new Date(`${task.dueDate}T00:00:00`).getTime() - new Date(`${task.startDate}T00:00:00`).getTime() + 86_400_000) / (totalTimeline + 86_400_000) * 100); return <article key={task.id}><b>{task.title}</b><div><i className={`gantt-tone-${index % 4}`} style={{ left: `${left}%`, width: `${Math.min(100 - left, width)}%` }}><span>{task.status === "done" ? "已完成" : task.status === "in_progress" ? `${Math.max(20, Math.round(task.actualHours / Math.max(task.estimatedHours, 1) * 100))}%` : "待开始"}</span></i></div></article>; })}</div></Surface>}
-
-    {tab === "immersive" && <ImmersiveTaskFlow project={project} tasks={tasks} onCreateTask={addTask} onEditTask={editTask} onAdvanceTask={updateTask} />}
-
-    {tab === "codex" && <CodexSyncWorkbench projectId={project.id} />}
-
-    {tab === "verification" && <CodexVerificationWorkbench projectId={project.id} onProgressChange={setVerificationView} />}
-
-    {tab === "communication" && <section className="project-detail-grid"><Surface className="project-module"><SurfaceTitle eyebrow="CUSTOMER CONVERSATION" title="客户沟通记录" /><div className="project-link-panel"><i><ChatCircleDots size={34} weight="duotone" /></i><span><small>来源会话</small><b>{project.conversationId ? `会话 #${project.conversationId}` : "当前项目未关联客户会话"}</b><p>{project.conversationId ? "项目由客户消息工作台人工确认转化，可返回原会话继续跟进需求与交付。" : "从客户消息完成“人工确认并转项目”后，这里会保留原会话关联。"}</p></span></div>{project.conversationId && <button className="business-primary" onClick={() => { window.location.hash = encodeURIComponent("客户消息"); }}>返回客户消息</button>}</Surface><Surface><SurfaceTitle eyebrow="CUSTOMER" title="关联客户" /><div className="project-customer-brief"><UserCircle size={38} weight="duotone" /><span><small>客户名称</small><b>{customer?.name || "未关联"}</b><em>{customer?.source === "wechat" ? "微信客户" : customer?.source === "xianyu" ? "闲鱼客户" : "经营客户"}</em></span><span><small>最近联系</small><b>{customer?.lastContactAt ? shortDate(customer.lastContactAt) : "暂无"}</b><em>{customer ? followLabel[customer.followUpStatus] : "待补充"}</em></span></div></Surface></section>}
-
-    {tab === "quote" && <section className="project-quote-calibration-layout">
-      <ProjectEstimateCalibration
-        value={estimateCalibration}
-        loading={estimateCalibrationLoading}
-        error={estimateCalibrationError}
-        busy={estimateCalibrationBusy}
-        adoptedHours={adoptedHours}
-        targetHourlyRate={snapshot.settings.targetHourlyRate ?? null}
-        riskBuffer={snapshot.settings.quoteRiskBuffer ?? .15}
-        dailyHours={Math.max(1, snapshot.settings.defaultDailyAvailableHours ?? 6)}
-        onAdoptedHoursChange={setAdoptedHours}
-        onDecision={(action) => void decideEstimateCalibration(action)}
-      />
-      {estimateCalibrationError && estimateCalibration && <p className="project-estimate-inline-error" role="alert"><WarningCircle size={15} />{estimateCalibrationError}</p>}
-      <section className="project-detail-grid">
-        <Surface className="project-module"><SurfaceTitle eyebrow="REQUIREMENT VERSION" title="采用的需求与报价" /><div className="project-source-links"><article><FileText size={24} weight="duotone" /><span><small>需求版本</small><b>{project.requirementVersionId ? `需求文档 #${project.requirementVersionId}` : "未关联需求版本"}</b></span></article><article><Coins size={24} weight="duotone" /><span><small>报价版本</small><b>{project.quoteId || "未关联报价版本"}</b></span></article><article><Target size={24} weight="duotone" /><span><small>成交金额</small><b>{money.format(project.totalAmount)}</b></span></article></div><p className="business-note">从会话转化的项目会固定保存采用的需求和报价版本，后续变更不会覆盖历史确认依据；工时校准只提供旁路辅助，不会改写这些记录。</p></Surface>
-        <Surface><SurfaceTitle eyebrow="PAYMENT PLAN" title="已生成付款节点" /><div className="payment-node-list">{snapshot.payments.filter((item) => item.projectId === project.id).map((payment, index) => <article className={payment.status === "confirmed" ? "done" : ""} key={payment.id}><i>{payment.status === "confirmed" ? <CheckCircle size={19} weight="fill" /> : index + 1}</i><span><b>{paymentLabel[payment.type]}</b><small>{payment.notes}</small></span><strong>{money.format(payment.amount)}</strong><time>{payment.dueAt ? `${shortDate(payment.dueAt)} 应收` : "待排期"}</time></article>)}</div></Surface>
+          <Surface className="project-simple-card project-simple-files">
+            <input ref={fileInput} hidden type="file" multiple onChange={storeFiles} />
+            <SurfaceTitle eyebrow="FILES & ISSUES" title="附件与异常" action={<button type="button" onClick={addFile}><UploadSimple size={14} />上传附件</button>} />
+            <div className="project-simple-summary-list">
+              <span><small>项目附件</small><b>{files.length}</b></span>
+              <span><small>异常记录</small><b>{projectIssues.length}</b></span>
+            </div>
+            {visibleFiles.length > 0 && <div className="project-simple-file-list">{visibleFiles.map((file) => <article key={file.id}><span><b>{file.name}</b><small>{file.size} · {shortDate(file.uploadedAt)}</small></span>{file.dataUrl ? <a href={file.dataUrl} target="_blank" rel="noreferrer">查看</a> : <em>仅信息</em>}</article>)}</div>}
+            {latestIssue && <p className="project-simple-issue"><WarningCircle size={15} />{latestIssue.reason}</p>}
+          </Surface>
+        </aside>
       </section>
-    </section>}
-
-    {tab === "logs" && <section className="project-detail-grid"><Surface className="project-module"><SurfaceTitle eyebrow="DAILY LOG" title="开发日志" /><form className="log-composer" onSubmit={addLog}><textarea value={logText} onChange={(event) => setLogText(event.target.value)} placeholder="记录今天完成的功能、客户沟通或风险变化…" rows={3} /><button className="business-primary" type="submit"><NotePencil size={16} />发布日志</button></form><div className="dev-log-list">{logs.map((log) => <article key={log.id}><i><NotePencil size={17} /></i><span><b>{log.content}</b><small>{new Date(log.createdAt).toLocaleString("zh-CN")} · {log.hours} 小时 · {log.category === "development" ? "开发" : log.category === "communication" ? "沟通" : "交付"}</small></span></article>)}</div></Surface><Surface className="log-insight"><Lightbulb size={31} weight="duotone" /><h3>本周投入 {logs.reduce((sum, item) => sum + item.hours, 0)} 小时</h3><p>沟通记录和开发日志完整，当前最大风险是验收前新增需求。建议所有变更进入下期报价。</p></Surface></section>}
-
-    {tab === "files" && <Surface className="project-module"><input ref={fileInput} hidden type="file" multiple onChange={storeFiles} /><SurfaceTitle eyebrow="FILES" title={`项目附件 · ${files.length}`} action={<button className="business-primary" onClick={addFile}><UploadSimple size={16} />上传附件</button>} /><div className="attachment-grid">{files.map((file) => { const Icon = file.type === "archive" ? FileArchive : file.type === "design" ? FolderOpen : FileText; return <article key={file.id}><i><Icon size={27} weight="duotone" /></i><span><b>{file.name}</b><small>{file.size} · {shortDate(file.uploadedAt)} 上传</small></span>{file.dataUrl ? <a href={file.dataUrl} target="_blank" rel="noreferrer">查看</a> : <button disabled title="旧附件只保存了文件信息">仅信息</button>}</article>; })}<button className="attachment-drop" onClick={addFile}><UploadSimple size={28} /><b>上传项目文件</b><small>1.5 MB 内文件可在当前设备打开</small></button></div></Surface>}
-      </div>
+      </DetailWorkspace>
     </section>
-    {taskEditor && <ProjectTaskEditor project={project} task={taskEditor.mode === "edit" ? taskEditor.task : null} onClose={() => setTaskEditor(null)} onDelete={deleteTask} onSave={saveTask} />}
+      {taskEditor && <ProjectTaskEditor project={project} task={taskEditor.mode === "edit" ? taskEditor.task : null} onClose={() => setTaskEditor(null)} onDelete={deleteTask} onSave={saveTask} />}
+    {taskDraftPreview && <ProjectTaskDraftDrawer preview={taskDraftPreview} busy={blueprintBusy} error={blueprintError} onClose={closeTaskDraft} onConfirm={(taskKeys) => void confirmTaskDraft(taskKeys)} />}
   </div>;
 }
 
@@ -997,8 +1085,8 @@ function CustomerEditorDrawer({
 }
 
 export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onSnapshotChange, onPersistedSnapshot, onNavigate, globalSearch, onOpenRequirements }: { snapshot: LedgerSnapshot; onCreateCustomer: () => void; onSnapshotChange: (snapshot: LedgerSnapshot) => void; onPersistedSnapshot: (snapshot: LedgerSnapshot) => void; onNavigate: (page: string) => void; globalSearch: string; onOpenRequirements: (customerId: string) => void }) {
-  const [selected, setSelected] = useState(snapshot.customers[0]?.id || "");
-  const [lifecycle, setLifecycle] = useState<"following" | "won" | "lost">("following");
+  const [selected, setSelected] = useState(() => typeof window.history.state?.xunyingCustomerId === "string" ? window.history.state.xunyingCustomerId : snapshot.customers[0]?.id || "");
+  const [lifecycle, setLifecycle] = useState<"following" | "won" | "lost">(() => { const customer = snapshot.customers.find((row) => row.id === window.history.state?.xunyingCustomerId); return customer?.followUpStatus === "won" ? "won" : customer?.followUpStatus === "inactive" ? "lost" : "following"; });
   const [channel, setChannel] = useState<"all" | "xianyu" | "wechat">("all");
   const [requirementCount, setRequirementCount] = useState(0);
   const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
@@ -1041,6 +1129,7 @@ export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onS
     return () => { active = false; };
   }, [selectedId]);
   const selectedBusiness = getCustomerBusiness(snapshot, selectedId);
+  useEffect(() => { if (selectedId) window.history.replaceState({ ...window.history.state, xunyingCustomerId: selectedId }, "", window.location.href); }, [selectedId]);
   const nextStatus = () => {
     if (!customer) return;
     const followUpStatus = customer.followUpStatus === "inactive"
@@ -1062,7 +1151,7 @@ export function EnhancedCustomerManagementPage({ snapshot, onCreateCustomer, onS
       <nav aria-label="客户渠道筛选">{([ ["all", "全部"], ["xianyu", "闲鱼"], ["wechat", "微信"] ] as const).map(([value, label]) => <button type="button" aria-pressed={channel === value} className={channel === value ? "active" : ""} onClick={() => setChannel(value)} key={value}>{label}</button>)}</nav>
     </div>
     {visibleRows.length ? <div className="crm-table"><div><span>客户</span><span>跟进状态</span><span>最近联系</span><span>历史订单</span><span>消费金额</span><span>客户等级</span></div>{visibleRows.map(({ item, business }) => { const status = item.followUpStatus; const priority = customerPredictions.find((row) => row.entity_id === item.id); return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelected(item.id)} key={item.id}><span><i>{item.name.slice(0, 1)}</i><b>{item.name}<small>{item.phone || (item.source === "xianyu" ? "闲鱼客户" : "暂无联系方式")}{priority ? ` · 优先级 ${Math.round(priority.score || 0)}/100` : ""}</small></b></span><em className={`follow-${status}`}>{followLabel[status]}</em><time>{shortDate(item.lastContactAt)}</time><strong>{business.orderCount} 单</strong><strong>{money.format(business.totalSpend)}</strong><i className={`customer-level level-${item.level}`}>{item.level}</i></button>; })}</div> : <div className="crm-filter-empty"><MagnifyingGlass size={28} weight="duotone" /><b>当前分类没有客户</b><small>{globalSearch ? "尝试清除搜索词或切换分类、渠道。" : "切换生命周期或渠道查看其他客户。"}</small></div>}
-  </Surface></main>{customer ? <aside><Surface className="customer-profile"><div className="customer-profile-head"><i>{customer.name.slice(0, 1)}</i><span><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : customer.source === "referral" ? "转介绍" : "其他来源"}</small><h3>{customer.name}</h3><p>{customer.phone || "暂无联系方式"}</p></span><b className={`customer-level level-${customer.level}`}>{customer.level}</b></div>{selectedPrediction && <section className={`customer-priority-card priority-${selectedPrediction.risk_level || "normal"}`}><header><span><Gauge size={16} weight="duotone" />今日跟进优先级</span><strong>{Math.round(selectedPrediction.score || 0)} / 100</strong></header><p>{selectedPrediction.drivers[0]?.detail || "当前没有明显的优先跟进信号。"}</p><small>数据充分度 {predictionSufficiencyLabel(selectedPrediction.data_sufficiency)} · 规则评分不是成交概率</small></section>}<div className="customer-profile-stats"><span><small>历史订单</small><b>{selectedBusiness.orderCount}</b></span><span><small>累计消费</small><b>{money.format(selectedBusiness.totalSpend)}</b></span><span><small>最近联系</small><b>{shortDate(customer.lastContactAt)}</b></span></div><div className="customer-tags">{customer.tags?.map((tag) => <i key={tag}>{tag}</i>)}</div><button className="customer-edit-entry" onClick={() => setEditingCustomerId(customer.id)}><PencilSimple size={17} weight="duotone" /><span><b>编辑客户</b><small>资料、状态与订单关系修正</small></span><ArrowRight size={15} /></button><button className="customer-blueprint-entry" onClick={() => onOpenRequirements(customer.id)}><FileText size={17} weight="duotone" /><span><b>需求蓝图</b><small>{requirementCount ? `${requirementCount} 个需求案例` : "查看或导入客户需求"}</small></span><ArrowRight size={15} /></button><button className="business-primary wide" onClick={nextStatus}><NotePencil size={16} />{customer.followUpStatus === "inactive" ? "重新开始跟进" : "记录本次跟进"}</button></Surface><Surface><SurfaceTitle eyebrow="ORDER HISTORY" title="历史订单" /><div className="customer-order-list">{selectedBusiness.projects.length ? selectedBusiness.projects.map((project) => { const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!; return <article key={project.id}><i><Briefcase size={17} /></i><span><b>{project.name}</b><small>{shortDate(project.startDate)} · {project.status === "completed" ? "已完成" : "进行中"}</small></span><strong>{money.format(project.totalAmount)}<small>净到账 {money.format(financial.income)}</small></strong></article>; }) : <div className="customer-order-empty">暂无成交项目，需求蓝图可在成交前独立存在。</div>}</div></Surface></aside> : null}</section></div>{editingCustomer && <CustomerEditorDrawer key={editingCustomer.id} customer={editingCustomer} snapshot={snapshot} onPersistedSnapshot={onPersistedSnapshot} onClose={() => setEditingCustomerId(null)} />}</>;
+  </Surface></main>{customer ? <aside><Surface className="customer-profile"><div className="customer-profile-head"><i>{customer.name.slice(0, 1)}</i><span><small>{customer.source === "xianyu" ? "闲鱼客户" : customer.source === "wechat" ? "微信客户" : customer.source === "referral" ? "转介绍" : "其他来源"}</small><h3>{customer.name}</h3><p>{customer.phone || "暂无联系方式"}</p></span><b className={`customer-level level-${customer.level}`}>{customer.level}</b></div>{selectedPrediction && <section className={`customer-priority-card priority-${selectedPrediction.risk_level || "normal"}`}><header><span><Gauge size={16} weight="duotone" />今日跟进优先级</span><strong>{Math.round(selectedPrediction.score || 0)} / 100</strong></header><p>{selectedPrediction.drivers[0]?.detail || "当前没有明显的优先跟进信号。"}</p><small>数据充分度 {predictionSufficiencyLabel(selectedPrediction.data_sufficiency)} · 规则评分不是成交概率</small></section>}<div className="customer-profile-stats"><span><small>历史订单</small><b>{selectedBusiness.orderCount}</b></span><span><small>累计消费</small><b>{money.format(selectedBusiness.totalSpend)}</b></span><span><small>最近联系</small><b>{shortDate(customer.lastContactAt)}</b></span></div><CustomerConversationWorkspace customerId={customer.id} /><div className="customer-tags">{customer.tags?.map((tag) => <i key={tag}>{tag}</i>)}</div><button className="customer-edit-entry" onClick={() => setEditingCustomerId(customer.id)}><PencilSimple size={17} weight="duotone" /><span><b>编辑客户</b><small>资料、状态与订单关系修正</small></span><ArrowRight size={15} /></button><button className="customer-blueprint-entry" onClick={() => onOpenRequirements(customer.id)}><FileText size={17} weight="duotone" /><span><b>需求蓝图</b><small>{requirementCount ? `${requirementCount} 个需求案例` : "查看或导入客户需求"}</small></span><ArrowRight size={15} /></button><button className="business-primary wide" onClick={nextStatus}><NotePencil size={16} />{customer.followUpStatus === "inactive" ? "重新开始跟进" : "记录本次跟进"}</button></Surface><Surface><SurfaceTitle eyebrow="ORDER HISTORY" title="历史订单" /><div className="customer-order-list">{selectedBusiness.projects.length ? selectedBusiness.projects.map((project) => { const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!; return <article key={project.id}><i><Briefcase size={17} /></i><span><b>{project.name}</b><small>{shortDate(project.startDate)} · {project.status === "completed" ? "已完成" : "进行中"}</small></span><strong>{money.format(project.totalAmount)}<small>净到账 {money.format(financial.income)}</small></strong></article>; }) : <div className="customer-order-empty">暂无成交项目，需求蓝图可在成交前独立存在。</div>}</div></Surface></aside> : null}</section></div>{editingCustomer && <CustomerEditorDrawer key={editingCustomer.id} customer={editingCustomer} snapshot={snapshot} onPersistedSnapshot={onPersistedSnapshot} onClose={() => setEditingCustomerId(null)} />}</>;
 }
 
 interface RequirementResult {
@@ -1176,7 +1265,7 @@ export function buildXunyingDecision(snapshot: LedgerSnapshot) {
       value: `${confirmedPayments} 笔确认收款 · ${snapshot.expenses.length} 笔支出`,
       detail: confirmedPayments > 0 && snapshot.expenses.length > 0 ? "已有真实现金流记录" : "需要同时具备确认收款与支出",
       complete: confirmedPayments > 0 && snapshot.expenses.length > 0,
-      targetPage: confirmedPayments > 0 ? "支出记录" : "收入记录",
+      targetPage: "经营记录",
     },
     {
       id: "hours",

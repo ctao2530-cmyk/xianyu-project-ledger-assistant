@@ -1,0 +1,71 @@
+/* Preserve the pre-Scheme-B visual system. This sheet owns layout only. */
+.retained-workspace-layout.liquid-glass-shell {background:#fff;}
+.retained-workspace-layout.liquid-glass-shell .dashboard-main {padding:0;min-height:100dvh;background:#fff;}
+.retained-workspace-layout.liquid-glass-shell .top-header {margin:0;padding:8px 24px;box-shadow:none;border-bottom:0;}
+.retained-workspace-layout .page-route-view {padding:24px;min-height:calc(100dvh - 68px);background:#fff;}
+.retained-workspace-layout .page-route-view>.action-workbench {max-width:none;margin:0;padding:0;border:0;border-radius:0;box-shadow:none;}
+.retained-workspace-layout .page-route-view>:is(.other-page,.customer-messages-page,.operating-records-page,.product-intelligence-page,.business-analysis-page,.settings-page,.project-detail-page) {max-width:none;margin-top:0;}
+.retained-workspace-layout .page-route-view>.business-surface,
+.retained-workspace-layout .page-route-view>.project-simple-workspace {border:0;border-radius:0;box-shadow:none;margin:0;}
+.retained-workspace-layout .workspace-sidebar .brand {display:flex;align-items:center;gap:12px;}
+.retained-workspace-layout .workspace-sidebar .sidebar-nav-parent {display:flex;align-items:center;width:100%;}
+.retained-workspace-layout .workspace-sidebar .sidebar-nav-parent>span {flex:1;text-align:left;}
+.retained-workspace-layout .workspace-sidebar .brand button {margin-left:auto;}
+.retained-workspace-layout .workspace-sidebar nav {display:flex;flex-direction:column;}
+.retained-workspace-layout .customer-focus {position:relative;}
+.retained-workspace-layout .customer-focus .messages-workbench {display:grid;grid-template-columns:280px minmax(0,1fr);gap:0;align-items:start;overflow:visible;}
+.retained-workspace-layout .customer-focus.context-visible .messages-workbench {grid-template-columns:260px minmax(0,1fr) 240px;}
+.retained-workspace-layout .customer-focus:not(.context-visible) .messages-workbench>.workspace-context {display:none;}
+.retained-workspace-layout .workspace-master {max-height:calc(100dvh - 180px);overflow:auto;}
+.retained-workspace-layout .workspace-master header {display:block;padding:12px 16px;}
+.retained-workspace-layout .workspace-master .sr-only {position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
+.retained-workspace-layout .workspace-master .messages-toolbar {display:flex;flex-wrap:wrap;padding:12px;margin:0;gap:8px;}
+.retained-workspace-layout .workspace-master .message-filters {display:flex;width:100%;gap:4px;}
+.retained-workspace-layout .workspace-master .message-filters button {flex:1;min-height:44px;padding:8px 4px;}
+.retained-workspace-layout .workspace-master .customer-hub-more {margin-left:auto;}
+.retained-workspace-layout .workspace-master>nav {display:flex;gap:4px;padding:8px 12px;}
+.retained-workspace-layout .workspace-master>nav button {flex:1;min-height:44px;}
+.retained-workspace-layout .workspace-master-rows>button {display:grid;width:100%;grid-template-columns:minmax(0,1fr) auto;gap:8px;text-align:left;padding:16px;min-height:76px;}
+.retained-workspace-layout .workspace-master-rows small {min-width:0;}
+.retained-workspace-layout .workspace-master>nav button[aria-pressed=true] {background:#f2efff;color:#6749df;}
+.retained-workspace-layout .customer-list-title {margin:0;padding:16px;}
+.retained-workspace-layout .message-thread {position:relative;min-width:0;padding-bottom:60px;}
+.retained-workspace-layout .thread-header {display:flex;flex-wrap:wrap;padding-right:132px;gap:10px;}
+.retained-workspace-layout .thread-header-copy {flex:1;min-width:140px;}
+.retained-workspace-layout .thread-header .phrase-library-trigger {position:absolute;right:112px;bottom:8px;z-index:4;}
+.retained-workspace-layout .thread-header .message-readonly {position:absolute;left:20px;bottom:8px;z-index:4;}
+.retained-workspace-layout .customer-context-toggle {position:absolute;right:12px;top:16px;z-index:5;display:flex;align-items:center;gap:6px;min-height:44px;padding:8px 12px;}
+.retained-workspace-layout .thread-messages {height:calc(100dvh - 320px);min-height:320px;}
+.retained-workspace-layout .workspace-context:not([open]) {align-self:start;}
+.retained-workspace-layout .customer-focus>.customer-list-back {display:none;}
+.retained-workspace-layout .workspace-search {margin-left:auto;}
+@media(max-width:1250px) {
+  .retained-workspace-layout .customer-focus.context-visible .messages-workbench {grid-template-columns:240px minmax(0,1fr);}
+  .retained-workspace-layout .messages-workbench>.workspace-context {grid-column:1/-1;order:3;}
+}
+@media(max-width:1100px) {
+  .retained-workspace-layout .workspace-sidebar {width:235px;}
+  .retained-workspace-layout .dashboard-main {margin-left:0;width:100%;}
+}
+@media(max-width:700px) {
+  .retained-workspace-layout.liquid-glass-shell .top-header {margin:0;padding:8px 12px;}
+  .retained-workspace-layout .page-route-view {padding:16px 12px;}
+  .retained-workspace-layout .top-header {display:flex;gap:6px;flex-wrap:nowrap;}
+  .retained-workspace-layout .top-header .greeting {min-width:0;flex:1;}
+  .retained-workspace-layout .header-actions {gap:4px;}
+  .retained-workspace-layout .workspace-search {flex:0;min-width:44px;}
+  .retained-workspace-layout .workspace-search-toggle {display:block;min-width:44px;min-height:44px;}
+  .retained-workspace-layout .workspace-search .search-box {display:none;}
+  .retained-workspace-layout .workspace-search.is-open .search-box {display:flex;position:absolute;top:68px;left:12px;right:12px;width:auto;z-index:120;}
+  .retained-workspace-layout .customer-focus .messages-workbench {display:flex;flex-direction:column;}
+  .retained-workspace-layout .show-customer-list .messages-workbench>:not(.workspace-master),
+  .retained-workspace-layout .show-customer-detail .workspace-master {display:none;}
+  .retained-workspace-layout .workspace-master {width:100%;height:calc(100dvh - 150px);max-height:none;}
+  .retained-workspace-layout .message-thread {width:100%;height:auto;}
+  .retained-workspace-layout .thread-header {padding:64px 16px 16px;}
+  .retained-workspace-layout .thread-header-copy {flex-basis:calc(100% - 60px);min-width:0;}
+  .retained-workspace-layout .customer-focus.show-customer-detail>.customer-list-back {display:block;min-height:44px;margin-bottom:8px;}
+  .retained-workspace-layout .customer-context-toggle {top:60px;}
+  .retained-workspace-layout .show-customer-list .customer-context-toggle {display:none;}
+  .retained-workspace-layout .workspace-context {width:100%;}
+}

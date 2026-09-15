@@ -2,16 +2,32 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const pagePath = new URL("../src/pages/ProductIntelligencePage.tsx", import.meta.url);
-const servicePath = new URL("../src/data/localPlatformService.ts", import.meta.url);
-const stylesPath = new URL("../src/pages/product-intelligence.css", import.meta.url);
+const pagePaths = [
+  new URL("../src/pages/ProductIntelligencePage.tsx", import.meta.url),
+  new URL("../src/pages/ProductExposureWorkbench.tsx", import.meta.url),
+  new URL("../src/pages/ProductMarketWorkbench.tsx", import.meta.url),
+  new URL("../src/pages/ProductLaunchWorkbench.tsx", import.meta.url),
+];
+const servicePaths = [
+  new URL("../src/data/localPlatformService.ts", import.meta.url),
+  new URL("../src/data/productIntelligenceClient.ts", import.meta.url),
+];
+const stylesPaths = [
+  new URL("../src/pages/product-intelligence.css", import.meta.url),
+  new URL("../src/pages/product-exposure-workbench.css", import.meta.url),
+  new URL("../src/pages/product-planning-workbenches.css", import.meta.url),
+];
 const appPath = new URL("../src/App.tsx", import.meta.url);
 const trafficDateTimePath = new URL("../src/utils/trafficDateTime.ts", import.meta.url);
 const growthWorkbenchPath = new URL("../src/components/TrafficGrowthWorkbench.tsx", import.meta.url);
 
+async function readSources(paths) {
+  return (await Promise.all(paths.map((path) => readFile(path, "utf8")))).join("\n");
+}
+
 test("v2.4 start flow keeps T0 preparation, human purchase, and actual server time separate", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const service = await readFile(servicePath, "utf8");
+  const page = await readSources(pagePaths);
+  const service = await readSources(servicePaths);
 
   assert.match(page, /trafficStartPreview\(batch\.id\)/);
   assert.match(page, /prepareTrafficBaseline/);
@@ -30,10 +46,10 @@ test("v2.4 start flow keeps T0 preparation, human purchase, and actual server ti
 });
 
 test("growth workbench exposes the approved clean time matrix and manual-only budget ladder", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const service = await readFile(servicePath, "utf8");
+  const page = await readSources(pagePaths);
+  const service = await readSources(servicePaths);
   const workbench = await readFile(growthWorkbenchPath, "utf8");
-  const styles = await readFile(stylesPath, "utf8");
+  const styles = await readSources(stylesPaths);
 
   assert.match(page, /<TrafficGrowthWorkbench/);
   assert.match(page, /!trafficGrowth\?\.active_experiment && <section className="product-plan-shell"/);
@@ -62,7 +78,7 @@ test("growth workbench exposes the approved clean time matrix and manual-only bu
 
 test("commercial attribution review is a focus-trapped responsive manual drawer", async () => {
   const workbench = await readFile(growthWorkbenchPath, "utf8");
-  const styles = await readFile(stylesPath, "utf8");
+  const styles = await readSources(stylesPaths);
 
   assert.match(workbench, /role="dialog" aria-modal="true"/);
   assert.match(workbench, /event\.key === "Escape"/);
@@ -78,8 +94,8 @@ test("commercial attribution review is a focus-trapped responsive manual drawer"
 });
 
 test("v2.4 plan binding and replan remain explicit and confirmation gated", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const service = await readFile(servicePath, "utf8");
+  const page = await readSources(pagePaths);
+  const service = await readSources(servicePaths);
 
   assert.match(page, /activePlanSlot\.source_batch_id === activeObservationBatch\.id/);
   assert.match(page, /slot\.source_batch_id === activeObservationBatch\.id/);
@@ -94,7 +110,7 @@ test("v2.4 plan binding and replan remain explicit and confirmation gated", asyn
 });
 
 test("every real started batch can show true checkpoints without future interpolation", async () => {
-  const page = await readFile(pagePath, "utf8");
+  const page = await readSources(pagePaths);
 
   assert.match(page, /function ExposureBatchMiniChart/);
   assert.match(page, /尚未开始，没有真实曲线/);
@@ -108,7 +124,7 @@ test("every real started batch can show true checkpoints without future interpol
 });
 
 test("exposure layout uses the workspace container instead of squeezing by browser width", async () => {
-  const styles = await readFile(stylesPath, "utf8");
+  const styles = await readSources(stylesPaths);
 
   assert.match(styles, /container-name: product-intelligence-workspace/);
   assert.match(styles, /container-type: inline-size/);
@@ -120,9 +136,16 @@ test("exposure layout uses the workspace container instead of squeezing by brows
   assert.match(styles, /@media \(max-width: 560px\)[\s\S]*\.product-batch-mini-chart/);
 });
 
+test("narrow product planning controls keep practical touch targets", async () => {
+  const styles = await readSources(stylesPaths);
+
+  assert.match(styles, /@media \(max-width: 720px\)[\s\S]*\.market-reminder-banner button,[\s\S]*\.market-keyword-tabs button,[\s\S]*\.market-keyword-options > button,[\s\S]*min-height: 44px/);
+  assert.match(styles, /\.market-common-toggle \{ min-height: 44px; \}/);
+});
+
 test("batch history is fully searchable, date grouped, and only one batch is rendered", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const service = await readFile(servicePath, "utf8");
+  const page = await readSources(pagePaths);
+  const service = await readSources(servicePaths);
 
   assert.match(page, /trafficBatches\(\{[\s\S]*cursor,[\s\S]*limit: 100/);
   assert.match(page, /do \{[\s\S]*cursor = page\.has_more \? page\.next_cursor : null;[\s\S]*\} while \(cursor\)/);
@@ -143,9 +166,9 @@ test("batch history is fully searchable, date grouped, and only one batch is ren
 });
 
 test("new batch creation records an already completed purchase at server time", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const service = await readFile(servicePath, "utf8");
-  const styles = await readFile(stylesPath, "utf8");
+  const page = await readSources(pagePaths);
+  const service = await readSources(servicePaths);
+  const styles = await readSources(stylesPaths);
 
   assert.match(page, /const recorded = await localPlatformService\.recordTrafficBatch\(\{/);
   assert.match(page, /plan_slot_id: null/);
@@ -162,8 +185,8 @@ test("new batch creation records an already completed purchase at server time", 
 });
 
 test("executed plan slots show the real batch and cannot be scheduled twice", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const styles = await readFile(stylesPath, "utf8");
+  const page = await readSources(pagePaths);
+  const styles = await readSources(stylesPaths);
 
   assert.match(page, /const activePlanExecutedBatch = activePlanSlot\?\.status === "executed"/);
   assert.match(page, /已执行多商品曝光/);
@@ -179,9 +202,9 @@ test("executed plan slots show the real batch and cannot be scheduled twice", as
 });
 
 test("checkpoint collection exposes automatic and manual modes with safe recovery", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const service = await readFile(servicePath, "utf8");
-  const styles = await readFile(stylesPath, "utf8");
+  const page = await readSources(pagePaths);
+  const service = await readSources(servicePaths);
+  const styles = await readSources(stylesPaths);
 
   assert.match(page, /检查点采集方式/);
   assert.match(page, /自动采集（推荐）/);
@@ -205,8 +228,8 @@ test("checkpoint collection exposes automatic and manual modes with safe recover
 });
 
 test("compact exposure layout keeps the default page short and the current batch chart collapsed", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const styles = await readFile(stylesPath, "utf8");
+  const page = await readSources(pagePaths);
+  const styles = await readSources(stylesPaths);
   const currentBatchSection = page.slice(
     page.indexOf('className="exposure-current-batch"'),
     page.indexOf('className="exposure-future-plan"'),
@@ -223,9 +246,9 @@ test("compact exposure layout keeps the default page short and the current batch
 });
 
 test("the seven-day plan exposes products, exact stability semantics, and day actions", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const service = await readFile(servicePath, "utf8");
-  const styles = await readFile(stylesPath, "utf8");
+  const page = await readSources(pagePaths);
+  const service = await readSources(servicePaths);
+  const styles = await readSources(stylesPaths);
 
   assert.match(service, /lock_mode: "none" \| "stability" \| "manual" \| string/);
   assert.match(service, /cooldown_conflict_count: number/);
@@ -249,8 +272,8 @@ test("the seven-day plan exposes products, exact stability semantics, and day ac
 });
 
 test("actual overlap dialog is explicit, focus trapped, and never presented as a clean batch", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const styles = await readFile(stylesPath, "utf8");
+  const page = await readSources(pagePaths);
+  const styles = await readSources(stylesPaths);
 
   assert.match(page, /actualOverlapDialogRef/);
   assert.match(page, /actualOverlapCloseRef/);
@@ -271,7 +294,7 @@ test("actual overlap dialog is explicit, focus trapped, and never presented as a
 });
 
 test("long overview and modification lists are progressively disclosed without hiding routed targets", async () => {
-  const page = await readFile(pagePath, "utf8");
+  const page = await readSources(pagePaths);
 
   assert.match(page, /const \[priorityExpanded, setPriorityExpanded\] = useState\(false\)/);
   assert.match(page, /const \[inventoryExpanded, setInventoryExpanded\] = useState\(false\)/);
@@ -286,7 +309,7 @@ test("long overview and modification lists are progressively disclosed without h
 });
 
 test("observation plan copy distinguishes a due checkpoint from one still waiting", async () => {
-  const page = await readFile(pagePath, "utf8");
+  const page = await readSources(pagePaths);
 
   assert.match(page, /function observationPlanTitle\(batch: ProductTrafficBatchView\)/);
   assert.match(page, /if \(batch\.due_ready\)/);
@@ -296,8 +319,8 @@ test("observation plan copy distinguishes a due checkpoint from one still waitin
 });
 
 test("invalid baseline batches are terminal history and traffic time uses one Chinese formatter", async () => {
-  const page = await readFile(pagePath, "utf8");
-  const service = await readFile(servicePath, "utf8");
+  const page = await readSources(pagePaths);
+  const service = await readSources(servicePaths);
   const app = await readFile(appPath, "utf8");
   const trafficDateTime = await readFile(trafficDateTimePath, "utf8");
 

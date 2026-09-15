@@ -4,20 +4,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "npm run prepare:appica && vite",
+    "prepare:appica": "node scripts/prepare-appica-css.mjs",
     "backend": ".venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8877 --reload",
     "dev:local": ".venv/bin/python scripts/integration/start_local.py --dev",
     "local": ".venv/bin/python scripts/integration/start_local.py",
     "db:migrate": ".venv/bin/python scripts/integration/migrate.py",
     "xianyu:configure": ".venv/bin/python scripts/configure_xianyu.py",
     "test:backend": ".venv/bin/python -m pytest backend/tests",
-    "build": "vite build && node scripts/prepare-sites-build.mjs",
+    "build": "npm run prepare:appica && vite build && node scripts/prepare-sites-build.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "test:interactions": "node --test tests/project-cockpit-interactions.test.mjs tests/connection-alerts.test.mjs tests/xunying-decision-workbench.test.mjs tests/business-analysis-center.test.mjs tests/prediction-ui.test.mjs tests/conversation-history-import.test.mjs tests/requirement-product-intake.test.mjs tests/product-exposure-v24.test.mjs tests/traffic-date-time.test.mjs tests/customer-workbench-simplification.test.mjs tests/customer-image-library.test.mjs tests/codex-sync-workbench.test.mjs tests/codex-verification-workbench.test.mjs tests/global-agent.test.mjs tests/customer-intake.test.mjs tests/phrase-library.test.mjs",
+    "test:interactions": "node --test tests/project-cockpit-interactions.test.mjs tests/connection-alerts.test.mjs tests/xunying-decision-workbench.test.mjs tests/business-analysis-center.test.mjs tests/prediction-ui.test.mjs tests/conversation-history-import.test.mjs tests/requirement-product-intake.test.mjs tests/product-exposure-v24.test.mjs tests/traffic-date-time.test.mjs tests/customer-workbench-simplification.test.mjs tests/customer-image-library.test.mjs tests/global-agent.test.mjs tests/customer-intake.test.mjs tests/phrase-library.test.mjs tests/operating-records.test.mjs tests/navigation-actual-traffic.test.mjs tests/closure-regressions.test.mjs tests/project-task-draft.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {
+    "@appica/ui-react": "1.1.0",
     "@phosphor-icons/react": "^2.1.10",
     "@vitejs/plugin-react": "5.0.4",
     "react": "19.2.0",
@@ -28,6 +30,7 @@
   "devDependencies": {
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
+    "postcss": "8.5.6",
     "typescript": "^5.9.3"
   }
 }

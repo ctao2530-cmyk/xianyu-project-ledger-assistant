@@ -56,7 +56,7 @@ test("customer messages keep only conversation history while paused automation s
   const config = await readFile(configPath, "utf8");
   const processor = await readFile(processorPath, "utf8");
 
-  assert.match(page, /className="conversation-list"/);
+  assert.match(page, /<MasterList [^\n]*rows=\{conversations\}/);
   assert.match(page, /className="message-thread"/);
   assert.match(page, /消息只读/);
   assert.match(page, /mark_latest_pending: false/);
@@ -65,8 +65,9 @@ test("customer messages keep only conversation history while paused automation s
   assert.doesNotMatch(styles, /\.reply-inspector|\.requirements-panel|\.conversion-panel|\.sales-agent/);
   assert.match(config, /customer_reply_drafts_enabled: bool = False/);
   assert.match(config, /customer_quote_conversion_enabled: bool = False/);
-  assert.match(processor, /if self\.reply_drafts_enabled:/);
-  assert.match(processor, /if self\.sales_analysis_enabled and self\.sales_agent is not None:/);
+  assert.doesNotMatch(processor, /automatic=True/);
+  assert.doesNotMatch(processor, /self\.sales_agent\.schedule/);
+  assert.match(processor, /持续分析仅由已授权客户订阅消费/);
   assert.match(processor, /if not self\.reply_drafts_enabled:[\s\S]*return None/);
 });
 

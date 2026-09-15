@@ -119,13 +119,22 @@ export function ProjectChangeOrderModal({
   const baseContract = Math.max(0, (project?.totalAmount || 0) - additionTotal);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => titleInput.current?.focus({ preventScroll: true }), 80);
+    const frame = window.requestAnimationFrame(() => {
+      const input = titleInput.current;
+      const activeElement = document.activeElement;
+      const dialog = input?.closest('[role="dialog"]');
+      if (!input || (activeElement && dialog?.contains(activeElement))) return;
+      input.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !submitting) onClose();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => {
-      window.clearTimeout(timer);
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [onClose, submitting]);

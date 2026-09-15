@@ -14,6 +14,7 @@ from .global_agent_schemas import (
     AgentProfileUpdate,
     AgentProfileView,
     AgentRunCancel,
+    AgentRunTraceView,
     AgentRunView,
     AgentThreadCreate,
     AgentThreadContextUpdate,
@@ -221,6 +222,17 @@ async def run(run_id: str, request: Request) -> AgentRunView:
     _local_only(request)
     try:
         return request.app.state.runtime.global_agent.run(run_id)
+    except GlobalAgentServiceError as exc:
+        _raise(exc)
+
+
+@global_agent_router.get(
+    "/runs/{run_id}/trace", response_model=AgentRunTraceView
+)
+async def run_trace(run_id: str, request: Request) -> AgentRunTraceView:
+    _local_only(request)
+    try:
+        return request.app.state.runtime.global_agent.run_trace(run_id)
     except GlobalAgentServiceError as exc:
         _raise(exc)
 

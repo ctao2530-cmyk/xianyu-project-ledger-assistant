@@ -87,7 +87,9 @@ def conversation_event(
 
 
 @pytest.mark.asyncio
-async def test_reconcile_only_recovers_recent_inbound_messages(tmp_path) -> None:
+async def test_reconcile_only_recovers_recent_inbound_messages_without_legacy_ai(
+    tmp_path,
+) -> None:
     now = datetime.now(timezone.utc)
     adapter = ReconcileAdapter(
         [
@@ -110,7 +112,7 @@ async def test_reconcile_only_recovers_recent_inbound_messages(tmp_path) -> None
     recovered = await processor.reconcile_recent_conversations(50, 60)
 
     assert recovered == 1
-    assert len(queue.message_ids) == 1
+    assert queue.message_ids == []
     assert notifier.count == 1
     with database.session() as session:
         assert session.scalar(select(func.count()).select_from(Message)) == 1
@@ -120,7 +122,7 @@ async def test_reconcile_only_recovers_recent_inbound_messages(tmp_path) -> None
 
 
 @pytest.mark.asyncio
-async def test_slow_remote_context_does_not_block_ai_queue(tmp_path) -> None:
+async def test_slow_remote_context_does_not_block_message_ingestion(tmp_path) -> None:
     class SlowAdapter(ReconcileAdapter):
         async def fetch_recent_messages(
             self, _conversation_id: str, _limit: int
@@ -143,16 +145,17 @@ async def test_slow_remote_context_does_not_block_ai_queue(tmp_path) -> None:
         context_hydration_timeout_seconds=0.01,
     )
 
-    await processor.process(event("fast", now))
-    await asyncio.wait_for(queue.queued.wait(), timeout=0.2)
+    await asyncio.wait_for(processor.process(event("fast", now)), timeout=0.2)
 
-    assert len(queue.message_ids) == 1
+    assert queue.message_ids == []
     assert notifier.count == 1
     await processor.stop()
 
 
 @pytest.mark.asyncio
-async def test_burst_messages_in_same_conversation_generate_once_for_latest(tmp_path) -> None:
+async def test_burst_messages_stay_persisted_without_legacy_draft_generation(
+    tmp_path,
+) -> None:
     now = datetime.now(timezone.utc)
     database = Database(f"sqlite:///{tmp_path / 'coalesce.db'}")
     database.create_all()
@@ -164,26 +167,22 @@ async def test_burst_messages_in_same_conversation_generate_once_for_latest(tmp_
         queue,  # type: ignore[arg-type]
         notifier,  # type: ignore[arg-type]
         history_limit=20,
-        reply_burst_coalesce_seconds=0.03,
     )
 
     await processor.process(conversation_event("burst-1", "same", "你好", now))
     await processor.process(
         conversation_event("burst-2", "same", "网页制作多少钱", now)
     )
-    await asyncio.wait_for(queue.queued.wait(), timeout=0.2)
-
-    assert len(queue.message_ids) == 1
+    assert queue.message_ids == []
     with database.session() as session:
         rows = list(session.scalars(select(Message).order_by(Message.id.asc())))
         assert len(rows) == 2
-        assert rows[0].status == "superseded"
-        assert queue.message_ids == [rows[1].id]
+        assert [row.status for row in rows] == ["new", "new"]
     await processor.stop()
 
 
 @pytest.mark.asyncio
-async def test_burst_messages_in_different_conversations_remain_independent(tmp_path) -> None:
+async def test_different_conversations_do_not_enqueue_legacy_drafts(tmp_path) -> None:
     now = datetime.now(timezone.utc)
     database = Database(f"sqlite:///{tmp_path / 'coalesce-independent.db'}")
     database.create_all()
@@ -195,19 +194,18 @@ async def test_burst_messages_in_different_conversations_remain_independent(tmp_
         queue,  # type: ignore[arg-type]
         notifier,  # type: ignore[arg-type]
         history_limit=20,
-        reply_burst_coalesce_seconds=0.01,
     )
 
     await processor.process(conversation_event("a-1", "a", "消息 A", now))
     await processor.process(conversation_event("b-1", "b", "消息 B", now))
     await asyncio.sleep(0.05)
 
-    assert len(queue.message_ids) == 2
+    assert queue.message_ids == []
     await processor.stop()
 
 
 @pytest.mark.asyncio
-async def test_latest_inbound_message_schedules_independent_sales_analysis(tmp_path) -> None:
+async def test_inbound_messages_do_not_schedule_retired_sales_analysis(tmp_path) -> None:
     now = datetime.now(timezone.utc)
     database = Database(f"sqlite:///{tmp_path / 'sales-schedule.db'}")
     database.create_all()
@@ -219,8 +217,6 @@ async def test_latest_inbound_message_schedules_independent_sales_analysis(tmp_p
         queue,  # type: ignore[arg-type]
         RecordingNotifier(),  # type: ignore[arg-type]
         history_limit=20,
-        reply_burst_coalesce_seconds=0.02,
-        sales_agent=sales,
     )
 
     await processor.process(conversation_event("sales-1", "sales", "先问一下", now))
@@ -229,12 +225,6 @@ async def test_latest_inbound_message_schedules_independent_sales_analysis(tmp_p
     )
     await asyncio.sleep(0.06)
 
-    assert queue.message_ids == sales.message_ids
-    assert len(sales.message_ids) == 1
-    with database.session() as session:
-        latest = session.scalar(
-            select(Message).where(Message.external_id == "sales-2")
-        )
-        assert latest is not None
-        assert sales.message_ids == [latest.id]
+    assert queue.message_ids == []
+    assert sales.message_ids == []
     await processor.stop()

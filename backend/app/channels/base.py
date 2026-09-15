@@ -12,12 +12,17 @@ class UnsupportedChannelError(RuntimeError):
     pass
 
 
+class ChannelMediaTooLargeError(RuntimeError):
+    """A bounded media download exceeded the archive byte limit."""
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class ChannelMedia:
     """Ephemeral provider media reference.
 
-    ``locator`` may be a signed URL or provider media id, so it must stay in
-    memory only.  The archive service persists only the downloaded image facts.
+    ``locator`` may be a signed URL or provider media id. Only the archive
+    queue may persist it, encrypted with a private local key. Never expose it
+    in API responses, telemetry, logs, or exported customer context.
     """
 
     locator_type: str

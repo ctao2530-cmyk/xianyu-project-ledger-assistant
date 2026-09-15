@@ -55,7 +55,7 @@ test("home customer and finance retain prediction summaries while the simplified
     readFile(summaryPath, "utf8"),
   ]);
 
-  assert.match(app, /PredictionSummaryStrip context="home"/);
+  assert.match(app, /<ActionWorkbench/);
   assert.doesNotMatch(project, /PredictionSummaryStrip context="projects"/);
   assert.match(project, /所有项目，一眼掌握/);
   assert.match(project, /project-hub-list/);
@@ -106,26 +106,16 @@ test("estimate calibration workbench keeps truthful sample thresholds and explic
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.estimate-calibration-shell\.is-loading/);
 });
 
-test("project quote tab separates original suggestion and adopted hours without mutating quotes", async () => {
-  const [source, styles] = await Promise.all([
+test("project management no longer exposes the retired quote-calibration tab", async () => {
+  const [source, app] = await Promise.all([
     readFile(customerPath, "utf8"),
-    readFile(assistantStylesPath, "utf8"),
+    readFile(appPath, "utf8"),
   ]);
+  const start = source.indexOf("export function ProjectDetail");
+  const end = source.indexOf("\nexport function ", start + 1);
+  const projectDetail = source.slice(start, end === -1 ? source.length : end);
 
-  assert.match(source, /01 · 原始估算/);
-  assert.match(source, /02 · 校准建议/);
-  assert.match(source, /03 · 人工采用值/);
-  assert.match(source, /原始估算和决策审计均保留/);
-  assert.match(source, /<b>\{value\.formula\}<\/b>/);
-  assert.match(source, /不修改交付日期/);
-  assert.match(source, /predictionService\.projectCalibration\(projectId\)/);
-  assert.match(source, /window\.confirm\(`确认\$\{verb\}/);
-  assert.match(source, /expected_revision: estimateCalibration\.suggestion_revision/);
-  assert.match(source, /request_id: `calibration-decision-ui:/);
-  assert.match(source, /predictionService\.decideCalibration/);
-  assert.match(source, /不会创建或修改 QuoteProposal、项目、任务、交付日期或客户消息/);
-  assert.doesNotMatch(source, /decideEstimateCalibration[\s\S]{0,1800}onSnapshotChange/);
-  assert.match(styles, /\.project-estimate-decision input \{[\s\S]*min-height: 44px/);
-  assert.match(styles, /\.project-estimate-decision > button \{[\s\S]*min-height: 44px/);
-  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.project-estimate-calibration\.is-loading/);
+  assert.doesNotMatch(projectDetail, /01 · 原始估算|02 · 校准建议|03 · 人工采用值|projectCalibration\(|decideCalibration\(/);
+  assert.doesNotMatch(app, /"quote"/);
+  assert.match(app, /const projectDetailTabs: ProjectDetailTab\[\] = \["overview", "immersive", "edit"\]/);
 });

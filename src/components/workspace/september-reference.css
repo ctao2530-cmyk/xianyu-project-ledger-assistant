@@ -1,0 +1,246 @@
+/* September 15 selected references. Presentation only; existing domain flows remain authoritative. */
+.app-shell.reference-workspace {--reference-blue:#1670ff;--text-main:#14213b;--text-secondary:#667c9c;--reference-ink:#14213b;--reference-muted:#617590;background:#f5f8fd;color:var(--reference-ink);font-family:Inter,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;}
+.app-shell.reference-workspace .workspace-sidebar {width:230px;padding:18px 10px 24px;background:#fff;border-right:1px solid #edf2fa;color:#536989;}
+.app-shell.reference-workspace .workspace-sidebar .brand {padding:0 12px;height:75px;min-height:75px;gap:12px;margin:0 0 18px;}
+.app-shell.reference-workspace .workspace-sidebar .brand img {width:50px;height:50px;margin:0;}
+.reference-brand-copy {display:flex;flex-direction:column;gap:5px;}
+.app-shell.reference-workspace .workspace-sidebar .brand strong {color:#102039;font-size:27px;font-weight:700;letter-spacing:1px;}
+.reference-brand-copy small {font-size:11px;font-weight:400;color:#8293aa;white-space:nowrap;}
+.app-shell.reference-workspace .workspace-sidebar nav {gap:8px;}
+.app-shell.reference-workspace .workspace-sidebar nav button {color:#415877;font-size:16px;min-height:48px;border-radius:8px;padding:10px 22px;gap:22px;}
+.app-shell.reference-workspace .workspace-sidebar nav button svg {width:23px;height:23px;color:#62799a;}
+.app-shell.reference-workspace .workspace-sidebar nav button:hover {color:#176cff;background:#f3f7fe;}
+.app-shell.reference-workspace .workspace-sidebar nav button.active {background:#e9f1ff;color:#1670ff;box-shadow:inset 2px 0 #1670ff;}
+.app-shell.reference-workspace .workspace-sidebar nav button.active svg {color:#1670ff;}
+.app-shell.reference-workspace .workspace-sidebar .sidebar-subnav button {font-size:13px;min-height:44px;padding:8px 12px;}
+.app-shell.reference-workspace .reference-sidebar-footer {padding:24px 12px 0;}
+.reference-sidebar-promo {position:relative;min-height:145px;border-radius:10px;background:#f1f6ff;overflow:hidden;}
+.app-shell.reference-workspace .reference-sidebar-footer .reference-sidebar-promo p {position:relative;z-index:1;font-size:14px;color:#243f67;line-height:1.7;padding:16px;margin:0;}
+.app-shell.reference-workspace .reference-sidebar-footer img {position:absolute;right:0;bottom:0;display:block;width:118px;height:98px;max-width:100%;object-fit:contain;margin:0;opacity:1;}
+.reference-sidebar-footer>small {display:block;margin-top:24px;color:#889bb5;font-size:12px;}
+.app-shell.reference-workspace .dashboard-main {margin-left:230px;width:calc(100% - 230px);background:#f5f8fd;padding:0;}
+.app-shell.reference-workspace .compact-topbar {height:64px;min-height:64px;padding:8px 30px;gap:24px;background:#f8faff;border:0;}
+.app-shell.reference-workspace .compact-topbar .greeting {flex:1;}
+.app-shell.reference-workspace .compact-topbar .greeting h1 {display:none;}
+.app-shell.reference-workspace .compact-topbar .compact-global-search {width:355px;}
+.app-shell.reference-workspace .compact-global-search .workspace-search-toggle {width:100%;justify-content:flex-start;padding:0 12px;background:#fff;border:1px solid #dce5f3;color:#899ab4;min-height:42px;gap:10px;font-size:13px;}
+.workspace-search-toggle kbd {margin-left:auto;white-space:nowrap;color:#8293ae;background:#f5f8fc;border-radius:4px;padding:2px 4px;font-family:inherit;}
+.app-shell.reference-workspace .profile-button small {display:block;color:#8799b4;font-size:11px;margin-top:4px;}
+.app-shell.reference-workspace .profile-button .avatar {background:#e7f0ff;border-radius:50%;width:40px;height:40px;}
+.app-shell.reference-workspace .page-route-view {padding:0 26px 26px;background:#f5f8fd;min-height:calc(100dvh - 164px);}
+.reference-page-heading {padding:22px 26px 18px;background:#f5f8fd;}
+.reference-page-heading h1 {margin:0;font-size:26px;line-height:34px;font-weight:700;color:#122039;}
+.reference-page-heading p {font-size:14px;color:#7b8eab;line-height:22px;margin:4px 0 0;}
+.reference-home {padding-top:0;}
+.reference-welcome {position:relative;display:flex;align-items:center;gap:22px;padding:24px 22px;min-height:120px;overflow:hidden;margin:0 -26px;background:#eaf2ff;}
+.reference-welcome>svg {flex:none;color:#ffbb35;z-index:1;}
+.reference-welcome>div {z-index:1;}
+.reference-welcome h1 {font-size:27px;color:#122039;margin:0 0 6px;font-weight:700;}
+.reference-welcome p {font-size:14px;line-height:1.6;color:#6d84a6;margin:0;}
+.reference-welcome>img {position:absolute;right:-20px;bottom:-10px;width:60%;height:150px;object-fit:contain;object-position:right bottom;}
+.reference-welcome>span {position:relative;z-index:1;margin-left:auto;align-self:flex-start;color:#789dde;font-size:14px;padding-top:14px;white-space:nowrap;}
+.reference-home-metrics {display:grid;grid-template-columns:1fr 1fr 1fr 1.65fr;gap:16px;margin:0 0 18px;position:relative;}
+.reference-home-metric {display:grid;grid-template-columns:62px minmax(0,1fr);column-gap:16px;row-gap:12px;align-items:center;padding:18px;background:#fff;border:1px solid #eaf0f9;border-radius:12px;color:#596e8f;text-decoration:none;min-height:128px;transition:box-shadow .18s,transform .18s;}
+.reference-home-metric:hover {box-shadow:0 4px 16px #1b54a110;transform:translateY(-2px);}
+.reference-home-metric>i {width:60px;height:60px;display:grid;place-items:center;border-radius:22px;background:#eaf2ff;color:#1670ff;}
+.reference-home-metric.tone-green>i {background:#e9faf2;color:#05b777;}.reference-home-metric.tone-purple>i {background:#f2edff;color:#8658ff;}.reference-home-metric.tone-orange>i {background:#fff3e8;color:#ff941f;}
+.reference-home-metric>span {font-size:14px;min-width:0;}.reference-home-metric strong {display:block;font-size:28px;line-height:1.3;color:#122039;margin-top:7px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.reference-home-metric>small {grid-column:1/-1;color:#657995;font-size:12px;}
+.app-shell.reference-workspace .reference-workbench-grid {display:grid;grid-template-columns:minmax(0,2.65fr) minmax(290px,1fr);gap:16px;align-items:start;}
+.app-shell.reference-workspace .reference-workbench-grid .action-workbench {padding:20px;background:#fff;border:1px solid #e7eef8;border-radius:12px;min-width:0;}
+.app-shell.reference-workspace .action-workbench>header h2 {font-size:21px;color:#132139;}
+.app-shell.reference-workspace .action-workbench>header p {display:none;}
+.app-shell.reference-workspace .workbench-header-actions {gap:8px;}
+.app-shell.reference-workspace .workbench-header-actions select {max-width:130px;font-size:12px;}
+.app-shell.reference-workspace .action-workbench>nav {display:flex;gap:7px;margin:18px 0 14px;overflow-x:auto;flex-wrap:nowrap;}
+.app-shell.reference-workspace .action-workbench>nav button {min-height:42px;flex:none;padding:9px 10px;font-size:12px;background:#f5f7fb;border-radius:24px;color:#6a7e9e;white-space:nowrap;}
+.app-shell.reference-workspace .action-workbench>nav button[aria-current] {background:#eaf2ff;color:#1670ff;}
+.workbench-column-head {display:grid;grid-template-columns:minmax(150px,1fr) minmax(190px,1.6fr) 112px 78px;gap:16px;background:#f5f8fc;border-radius:8px;padding:14px 12px;color:#536887;font-size:12px;}
+.app-shell.reference-workspace .workbench-action-list article {display:grid;grid-template-columns:minmax(150px,1fr) minmax(190px,1.6fr) 112px 78px;gap:16px;align-items:center;padding:15px 8px;min-height:78px;border:0;border-bottom:1px solid #edf2f8;border-radius:0;background:#fff;}
+.workbench-object-cell {display:flex;gap:14px;align-items:center;min-width:0;}
+.app-shell.reference-workspace .workbench-category {width:44px;height:44px;min-height:44px;padding:0;border-radius:50%;flex:none;display:grid;place-items:center;}
+.app-shell.reference-workspace .workbench-action-object {font-size:14px;font-weight:600;color:#14213b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.app-shell.reference-workspace .workbench-action-list article>div {min-width:0;}
+.app-shell.reference-workspace .workbench-action-list h2 {font-size:14px;line-height:22px;}
+.app-shell.reference-workspace .workbench-action-list p {font-size:12px;color:#667b97;margin:4px 0 0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+.app-shell.reference-workspace .workbench-action-list time {font-size:12px;color:#657b99;white-space:nowrap;text-align:left;}
+.app-shell.reference-workspace .workbench-action-list article>a,.app-shell.reference-workspace .workbench-action-list article>button {padding:8px 10px;width:78px;min-height:40px;background:#1670ff;border-radius:7px;font-size:13px;color:#fff;}
+.app-shell.reference-workspace .workbench-context {display:grid;gap:16px;grid-template-columns:minmax(0,1fr);}
+.app-shell.reference-workspace .workbench-context>section {padding:18px;border:1px solid #e7eef8;border-radius:12px;box-shadow:none;background:#fff;}
+.app-shell.reference-workspace .workbench-context h2,.reference-cashflow h3 {font-size:18px;line-height:26px;margin:0;color:#14213b;}
+.reference-my-tasks>button {display:flex;align-items:center;gap:12px;width:100%;min-height:44px;background:#f5f8fc;border:0;border-radius:8px;margin-top:8px;padding:9px 12px;color:#1670ff;text-align:left;}
+.reference-my-tasks>button:first-of-type {margin-top:18px;}.reference-my-tasks>button span {color:#283c59;font-size:14px;}.reference-my-tasks>button b {margin-left:auto;font-size:20px;color:#14213b;}.reference-my-tasks>button:nth-of-type(3) {color:#f59417;}.reference-my-tasks>button:nth-of-type(4) {color:#ff5872;}
+.reference-cashflow {min-width:0;background:#fff;border:1px solid #e7eef8;border-radius:12px;padding:18px;}
+.reference-cashflow header {display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:20px;}
+.reference-cashflow header>span {font-size:12px;color:#8194b0;border:1px solid #e6edf8;border-radius:5px;padding:5px 8px;}
+.reference-cashflow-values {display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.reference-cashflow-values>span {font-size:13px;color:#8094b0;min-width:0;}.reference-cashflow-values>span+span {border-left:1px solid #edf2f8;padding-left:20px;}
+.reference-cashflow-values strong {display:block;margin-top:6px;font-size:22px;color:#00b87d;white-space:nowrap;}.reference-cashflow-values>span+span strong {color:#ff506b;}
+.reference-cashflow-chart {height:160px;margin-top:6px;}
+.reference-cashflow-ratio {display:flex;height:10px;border-radius:8px;overflow:hidden;background:#f3f6fb;margin-top:24px;}.reference-cashflow-ratio i:first-child {width:var(--income-share);background:#08b780;}.reference-cashflow-ratio i+i {flex:1;background:#ff5872;}
+.reference-cashflow-legend {display:flex;justify-content:space-between;gap:12px;font-size:12px;color:#6983a8;margin:16px 0 0!important;}
+.reference-analysis-link {display:flex;align-items:center;gap:16px;min-height:90px;background:#fff;border:1px solid #e7eef8;border-radius:12px;padding:16px;color:#1670ff;text-decoration:none;}.reference-analysis-link>svg:first-child {color:#ff991f;}.reference-analysis-link span {min-width:0;flex:1;}.reference-analysis-link b {display:block;font-size:16px;color:#14213b;}.reference-analysis-link small {display:block;margin-top:6px;color:#8396b2;font-size:12px;}
+/* Project table occupies the full workspace; reminders belong below it. */
+.app-shell.reference-workspace .project-hub-page {display:block;padding-top:20px;}
+.app-shell.reference-workspace .project-hub-shell {background:transparent;padding:0;border:0;border-radius:0;box-shadow:none;}
+.app-shell.reference-workspace .project-hub-head {display:grid;grid-template-columns:1fr auto;gap:20px;margin-bottom:16px;padding:0;background:transparent;}
+.app-shell.reference-workspace .project-hub-head>div:first-child {display:block;grid-column:1;grid-row:1;}
+.app-shell.reference-workspace .project-hub-head>div:first-child>small {display:none;}
+.app-shell.reference-workspace .project-hub-head h2 {display:block;font-size:26px;margin:0 0 6px;color:#14213b;}
+.app-shell.reference-workspace .project-hub-head p {display:block;font-size:14px;color:#617590;}
+.app-shell.reference-workspace .project-hub-kind {grid-column:1;grid-row:2;justify-self:start;min-width:328px;border:1px solid #dce7f5;border-radius:8px;background:#f9fbff;padding:3px;}
+.app-shell.reference-workspace .project-hub-kind button {min-width:155px;min-height:42px;font-size:14px;color:#7588a5;}.app-shell.reference-workspace .project-hub-kind button.active {background:#eaf2ff;color:#1670ff;box-shadow:0 1px 5px #236cec18;border-radius:6px;}
+.app-shell.reference-workspace .project-hub-create {grid-column:2;grid-row:1;align-self:start;min-height:46px;padding:10px 20px;background:#1670ff;border-radius:7px;font-size:15px;}
+.app-shell.reference-workspace .project-hub-toolbar {margin:0 0 20px;padding:0;gap:18px 14px;grid-template-columns:minmax(0,1fr) 200px 200px;background:transparent;border:0;}
+.app-shell.reference-workspace .project-hub-status {grid-row:1;grid-column:1/-1;gap:12px;padding:0;}
+.app-shell.reference-workspace .project-hub-status button {min-height:42px;background:#f0f4fa;border:0;border-radius:24px;padding:10px 18px;font-size:13px;}.app-shell.reference-workspace .project-hub-status button.active {background:#e6f0ff;color:#1670ff;}
+.app-shell.reference-workspace .project-hub-toolbar>label,.app-shell.reference-workspace .project-hub-toolbar>select {grid-row:2;min-height:46px;background:#fff;border:1px solid #dfe8f5;border-radius:7px;font-size:14px;}
+.app-shell.reference-workspace .project-hub-list {border:1px solid #e5edf7;border-radius:10px;overflow:hidden;background:#fff;}
+.app-shell.reference-workspace .project-hub-list>header {background:#f3f7fc;padding:16px 22px;min-height:52px;font-size:13px;color:#6d82a5;}
+.app-shell.reference-workspace .project-hub-list>article {padding:14px 22px;min-height:74px;border-bottom:1px solid #eaf0f8;gap:18px;}
+.app-shell.reference-workspace .project-hub-list :is(b,strong) {font-size:14px;color:#14213b;}.app-shell.reference-workspace .project-hub-list small {font-size:12px;color:#657b99;margin-top:5px;}
+.app-shell.reference-workspace .project-list-pagination {padding:16px 0;}
+.app-shell.reference-workspace .reference-project-context {display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:0;}
+.app-shell.reference-workspace .reference-project-context>section {padding:20px;border:1px solid #e7eef8;border-radius:10px;background:#fff;}
+.app-shell.reference-workspace .reference-project-context h3 {font-size:19px;}.app-shell.reference-workspace .reference-project-context .workbench-focus-note {display:none;}
+/* Customer workspace retains its resize handle, read-only timeline and scoped actions. */
+.app-shell.reference-workspace .customer-focus {--customer-workspace-height:calc(100dvh - 176px);}
+.app-shell.reference-workspace .customer-focus .messages-workbench {border:1px solid #e5edf7;border-radius:10px;overflow:hidden;background:#fff;}
+.app-shell.reference-workspace .customer-focus .workspace-master {background:#fff;border-right:1px solid #e7edf7;}
+.app-shell.reference-workspace .customer-focus .workspace-master-rows>button {min-height:82px;padding:14px 16px;}
+.app-shell.reference-workspace .customer-focus .workspace-master-rows>button.active {background:#eaf2ff;box-shadow:none;}
+.app-shell.reference-workspace .customer-focus .workspace-master-rows strong {font-size:15px;color:#192a47;}.app-shell.reference-workspace .customer-focus .workspace-master-rows small {font-size:13px;color:#687e9d;}
+.app-shell.reference-workspace .customer-focus .thread-header {min-height:92px;padding:16px 20px;gap:16px;}
+.app-shell.reference-workspace .customer-focus .thread-header h2 {font-size:22px;}
+.app-shell.reference-workspace .customer-focus .channel-avatar.large {height:54px;width:54px;border-radius:50%;background:#f0eaff;color:#9d82e6;}
+.app-shell.reference-workspace .customer-focus .thread-messages {background:#f7f9fd;padding:22px 24px;}
+.app-shell.reference-workspace .customer-focus .chat-message-bubble {border:1px solid #e6edf7!important;box-shadow:0 1px 2px #203d6510!important;border-radius:10px!important;background:#fff!important;color:#3b506f!important;}
+.app-shell.reference-workspace .customer-focus .outbound>.chat-message-bubble {background:#e8f0ff!important;border-color:#dae7ff!important;}
+.app-shell.reference-workspace .customer-focus .thread-messages p {font-size:14px;line-height:1.7;}
+.app-shell.reference-workspace .customer-focus .customer-hub-tabs {gap:30px;min-height:48px;}
+.app-shell.reference-workspace .customer-focus .customer-master-heading>h2 {display:none;}
+/* Receipts, expenses and analysis share the selected light panels. */
+.app-shell.reference-workspace .operating-records-page {grid-template-columns:minmax(0,2.8fr) minmax(300px,1fr);gap:18px;}
+.app-shell.reference-workspace .operating-period-overview {padding:0;background:transparent;border:0;}
+.app-shell.reference-workspace .operating-period-toolbar {margin-bottom:14px;}
+.app-shell.reference-workspace .operating-summary-strip {gap:10px;background:transparent;border:0;}
+.app-shell.reference-workspace .operating-summary-strip>span {background:#fff;border:1px solid #e5edf8;border-radius:10px;padding:18px 16px;min-height:116px;}
+.app-shell.reference-workspace .operating-summary-strip b {font-size:27px;color:#102040;}
+.app-shell.reference-workspace .record-summary-icon {width:58px;height:58px;border-radius:50%;}
+.app-shell.reference-workspace .operating-period-note {font-size:12px;color:#617590;line-height:1.6;}
+.app-shell.reference-workspace .operating-record-list {background:transparent;border:0;padding:0;}
+.app-shell.reference-workspace .operating-record-groups {border:1px solid #e5edf7;border-radius:9px;overflow:hidden;background:#fff;}
+.app-shell.reference-workspace .operating-record-row {padding:14px 18px;min-height:70px;border-bottom:1px solid #edf2f8;}
+.app-shell.reference-workspace .operating-record-row small {font-size:12px;}.app-shell.reference-workspace .operating-record-row strong {font-size:16px;}
+.app-shell.reference-workspace .reference-records-context {gap:14px;}
+.app-shell.reference-workspace .reference-records-context>section,.app-shell.reference-workspace .operating-record-actions {padding:20px;border:1px solid #e6edf7;background:#fff;border-radius:11px;}
+.app-shell.reference-workspace .reference-records-context>section:not([class]) {order:-2;}.app-shell.reference-workspace .reference-records-context>.reference-cashflow {order:-1;}
+.app-shell.reference-workspace .reference-records-context h3 {margin:0 0 16px;font-size:19px;color:#14213b;}
+.app-shell.reference-workspace .operating-record-actions {display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.operating-record-actions>h3 {grid-column:1/-1;}
+.app-shell.reference-workspace .operating-record-actions button {min-height:44px;padding:8px;font-size:13px;white-space:nowrap;}
+.app-shell.reference-workspace nav[aria-label="经营分析视图"] {margin:0 0 18px;padding:0;background:transparent;gap:22px;}
+.app-shell.reference-workspace nav[aria-label="经营分析视图"] button {font-size:16px;min-height:52px;padding:12px 18px;}
+.app-shell.reference-workspace .analysis-command-bar {grid-template-columns:minmax(0,2.2fr) minmax(315px,1fr);padding:0;background:transparent;border:0;gap:18px;}
+.app-shell.reference-workspace .analysis-command-copy {position:relative;background:#eaf2ff;border:1px solid #dbe7ff;border-radius:9px;padding:28px 22px;min-height:245px;grid-template-columns:78px minmax(0,1fr);gap:18px;}
+.reference-judgment-icon {width:78px;height:78px;background:#dceaff;}.reference-judgment-icon svg {width:38px;height:38px;}
+.app-shell.reference-workspace .reference-judgment-heading {align-self:start;gap:10px;}.reference-judgment-heading>small {background:#e0ebfc;border-radius:20px;padding:4px 10px;}
+.app-shell.reference-workspace .analysis-command-copy p {font-size:19px;margin-top:0;line-height:1.75;align-self:start;}
+.app-shell.reference-workspace .analysis-command-actions {padding:20px;background:#fff;border:1px solid #e4ecf8;border-radius:9px;gap:14px;justify-content:flex-start;}
+.app-shell.reference-workspace .analysis-command-actions>div {order:-1;}.app-shell.reference-workspace .analysis-run-button {min-height:58px;font-size:17px;}
+.app-shell.reference-workspace .analysis-command-actions>p {font-size:13px;line-height:1.8;}
+.app-shell.reference-workspace .analysis-overview-layout {grid-template-columns:minmax(0,2.2fr) minmax(315px,1fr);gap:18px;}
+.app-shell.reference-workspace .reference-analysis-data {padding:20px;border-radius:9px;}.app-shell.reference-workspace .reference-analysis-data>h2 {font-size:20px;margin-bottom:20px;}
+.app-shell.reference-workspace .analysis-metric-card {min-height:170px;padding:18px;column-gap:16px;grid-template-columns:58px minmax(0,1fr);}.app-shell.reference-workspace .reference-metric-icon {width:58px;height:58px;}.app-shell.reference-workspace .analysis-metric-card strong {font-size:26px;}.app-shell.reference-workspace .analysis-metric-card footer {margin-top:12px;font-size:12px;}
+.app-shell.reference-workspace .analysis-model-panel {padding:20px;border-radius:9px;}.app-shell.reference-workspace .analysis-model-panel h2 {font-size:20px;}.app-shell.reference-workspace .analysis-provider-options button {min-height:84px;padding:14px;}.app-shell.reference-workspace .analysis-provider-options b {font-size:15px;}
+@media (max-width:1300px) and (min-width:1101px) {
+ .app-shell.reference-workspace .reference-workbench-grid {grid-template-columns:minmax(0,1fr) 290px;}.workbench-column-head,.app-shell.reference-workspace .workbench-action-list article {grid-template-columns:minmax(115px,1fr) minmax(160px,1.3fr) 72px;}.workbench-column-head>span:nth-child(3),.app-shell.reference-workspace .workbench-action-list time {display:none;}
+ .reference-home-metric {padding:18px 12px;grid-template-columns:46px 1fr;column-gap:10px;}.reference-home-metric>i {width:46px;height:46px;border-radius:16px;}.reference-home-metric strong {font-size:23px;}
+}
+@media (max-width:1100px) {
+ .app-shell.reference-workspace .dashboard-main {margin-left:0;width:100%;}.app-shell.reference-workspace .workspace-sidebar {width:230px;}.app-shell.reference-workspace .compact-topbar .greeting h1 {display:block;font-size:18px;}.reference-page-heading {padding-top:16px;}
+ .app-shell.reference-workspace .reference-workbench-grid {grid-template-columns:minmax(0,1fr);}.app-shell.reference-workspace .workbench-context {grid-template-columns:1fr 1fr;}.reference-analysis-link {grid-column:1/-1;}
+ .app-shell.reference-workspace .analysis-command-bar,.app-shell.reference-workspace .analysis-overview-layout {grid-template-columns:minmax(0,1.6fr) minmax(280px,1fr);}.app-shell.reference-workspace .analysis-command-copy {grid-template-columns:48px minmax(0,1fr);padding:20px 16px;}.reference-judgment-icon {width:48px;height:48px;}
+ .app-shell.reference-workspace .operating-records-page {grid-template-columns:minmax(0,1fr);}.app-shell.reference-workspace .reference-records-context {grid-template-columns:1fr 1fr;}.app-shell.reference-workspace .customer-focus {--customer-workspace-height:calc(100dvh - 176px);}
+}
+@media (max-width:700px) {
+ .app-shell.reference-workspace .compact-topbar {padding:8px 12px;gap:8px;}.app-shell.reference-workspace .compact-topbar .compact-global-search {width:44px;}.app-shell.reference-workspace .compact-global-search .workspace-search-toggle {padding:0;justify-content:center;}.workspace-search-toggle span,.workspace-search-toggle kbd {display:none;}.app-shell.reference-workspace .compact-topbar .header-actions {gap:4px;}
+ .app-shell.reference-workspace .page-route-view {padding:0 12px 16px;}.reference-page-heading {padding:14px 12px;}.reference-page-heading h1 {font-size:24px;}.reference-page-heading p {font-size:12px;}
+ .reference-welcome {margin:0 -12px;gap:12px;padding:20px 16px;min-height:115px;}.reference-welcome>svg {width:30px;}.reference-welcome h1 {font-size:21px;}.reference-welcome p {font-size:12px;max-width:235px;}.reference-welcome>span {display:none;}.reference-welcome>img {width:65%;height:90px;opacity:.45;}
+ .reference-home-metrics {grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;}.reference-home-metric {padding:12px;min-height:104px;grid-template-columns:40px 1fr;gap:10px;}.reference-home-metric>i {width:40px;height:40px;border-radius:14px;}.reference-home-metric>i svg {width:23px;}.reference-home-metric>span {font-size:12px;}.reference-home-metric strong {font-size:20px;}.reference-home-metric>small {font-size:11px;line-height:16px;}
+ .app-shell.reference-workspace .reference-workbench-grid .action-workbench {padding:14px;}.app-shell.reference-workspace .action-workbench>header {gap:8px;}.app-shell.reference-workspace .action-workbench>header h2 {font-size:19px;}.workbench-column-head {display:none;}
+ .app-shell.reference-workspace .workbench-action-list article {grid-template-columns:minmax(0,1fr) 78px;gap:8px 12px;padding:14px 0;}.workbench-object-cell {grid-column:1;gap:10px;}.app-shell.reference-workspace .workbench-action-object {grid-column:auto;}.app-shell.reference-workspace .workbench-action-list article>div {grid-row:2;grid-column:1/-1;}.app-shell.reference-workspace .workbench-action-list article>time {grid-row:3;grid-column:1;}.app-shell.reference-workspace .workbench-action-list article>a,.app-shell.reference-workspace .workbench-action-list article>button {grid-column:2;grid-row:1;min-height:44px;}.app-shell.reference-workspace .workbench-context {grid-template-columns:minmax(0,1fr);}
+ .app-shell.reference-workspace .project-hub-head {gap:14px;}.app-shell.reference-workspace .project-hub-head h2 {font-size:24px;}.app-shell.reference-workspace .project-hub-head p {font-size:12px;}.app-shell.reference-workspace .project-hub-create {padding:8px 12px;font-size:13px;}.app-shell.reference-workspace .project-hub-kind {min-width:0;grid-column:1/-1;width:100%;}.app-shell.reference-workspace .project-hub-kind button {min-width:0;flex:1;}
+ .app-shell.reference-workspace .project-hub-toolbar {display:flex;flex-wrap:wrap;gap:10px;}.app-shell.reference-workspace .project-hub-status {width:100%;overflow-x:auto;flex-wrap:nowrap;gap:6px;}.app-shell.reference-workspace .project-hub-status button {white-space:nowrap;flex:none;padding:8px 12px;}.app-shell.reference-workspace .project-hub-toolbar>label {flex-basis:100%;}.app-shell.reference-workspace .project-hub-toolbar>select {flex:1;min-width:0;}.app-shell.reference-workspace .project-hub-list>header {display:none;}.app-shell.reference-workspace .project-hub-list>article {padding:16px;}.app-shell.reference-workspace .reference-project-context {grid-template-columns:minmax(0,1fr);}
+ .app-shell.reference-workspace .customer-focus .messages-workbench {border-radius:8px;}.app-shell.reference-workspace .customer-focus .thread-header {padding:12px;gap:10px;min-height:90px;}.app-shell.reference-workspace .customer-focus .thread-header h2 {font-size:18px;}.app-shell.reference-workspace .customer-focus .channel-avatar.large {width:40px;height:40px;}.app-shell.reference-workspace .customer-focus .thread-messages {padding:16px 12px;}.app-shell.reference-workspace .customer-focus .customer-hub-tabs {gap:16px;padding:0 12px;}
+ .app-shell.reference-workspace .reference-records-context {grid-template-columns:minmax(0,1fr);}.app-shell.reference-workspace .operating-summary-strip {gap:8px;}.app-shell.reference-workspace .operating-summary-strip>span {padding:12px;min-height:105px;}.app-shell.reference-workspace .operating-summary-strip b {font-size:19px;}.app-shell.reference-workspace .record-summary-icon {width:36px;height:36px;}
+ .app-shell.reference-workspace .analysis-command-bar,.app-shell.reference-workspace .analysis-overview-layout {grid-template-columns:minmax(0,1fr);}.app-shell.reference-workspace .analysis-command-copy {min-height:180px;}.app-shell.reference-workspace .analysis-command-copy p {font-size:16px;}.app-shell.reference-workspace .analysis-metrics-grid {grid-template-columns:minmax(0,1fr);}.app-shell.reference-workspace .analysis-metric-card {min-height:145px;}.app-shell.reference-workspace nav[aria-label="经营分析视图"] {gap:6px;}.app-shell.reference-workspace nav[aria-label="经营分析视图"] button {font-size:14px;padding:10px 12px;}
+}
+@media (prefers-reduced-motion:reduce) {.reference-home-metric {transition:none;}.reference-home-metric:hover {transform:none;}}
+.app-shell.reference-workspace .reference-workbench-grid {padding:0;background:transparent;}
+.app-shell.reference-workspace .workbench-object-cell .workbench-category {min-width:44px;max-width:44px;width:44px;height:44px;}
+.app-shell.reference-workspace .operating-summary-strip {padding:0;margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));}
+.app-shell.reference-workspace .operating-summary-strip>i {display:none;}
+.app-shell.reference-workspace .operating-summary-strip>span {display:grid;grid-template-columns:58px minmax(0,1fr);grid-template-rows:auto auto;column-gap:12px;align-content:center;align-items:center;}
+.app-shell.reference-workspace .operating-summary-strip .record-summary-icon {grid-column:1;grid-row:1/3;}.app-shell.reference-workspace .operating-summary-strip small,.app-shell.reference-workspace .operating-summary-strip b {grid-column:2;}
+.app-shell.reference-workspace .operating-record-actions>h3 {grid-column:1/-1;margin-bottom:2px;}
+.app-shell.reference-workspace .operating-record-actions>button {grid-column:auto;}
+.app-shell.reference-workspace .analysis-command-actions {align-self:stretch;}
+.reference-analysis-benefits {order:3;list-style:none;padding:0;margin:2px 0 0;display:grid;gap:10px;color:#7b90af;font-size:13px;}.reference-analysis-benefits li {display:flex;gap:10px;align-items:center;}.reference-analysis-benefits svg {flex:none;}
+.reference-analysis-art {position:absolute;width:140px;height:155px;object-fit:contain;right:6px;bottom:15px;}
+.app-shell.reference-workspace .analysis-command-copy {padding-right:148px;grid-template-columns:70px minmax(0,1fr);column-gap:18px;row-gap:12px;}.reference-judgment-note {grid-column:2;font-size:13px;line-height:1.8;color:#728bad;align-self:start;}.app-shell.reference-workspace .analysis-command-copy>p {font-size:18px;}
+.app-shell.reference-workspace .profile-button small {background:transparent;border:0;padding:0;}
+@media(max-width:1250px) {.reference-analysis-art {display:none;}.app-shell.reference-workspace .analysis-command-copy {padding-right:20px;}}
+@media(max-width:700px) {.app-shell.reference-workspace .operating-summary-strip>span {grid-template-columns:36px minmax(0,1fr);}.app-shell.reference-workspace .operating-summary-strip {grid-template-columns:minmax(0,1fr);}.app-shell.reference-workspace .analysis-command-copy {grid-template-columns:48px minmax(0,1fr);}.reference-judgment-note {font-size:12px;}}
+.app-shell.reference-workspace .page-route-view:has(.customer-focus) {padding:0 20px 18px;}
+.app-shell.reference-workspace .customer-focus .messages-workbench {height:calc(100dvh - 184px);min-height:480px;}
+.app-shell.reference-workspace .customer-focus .thread-messages .reference-message-sender {display:flex;align-items:center;gap:8px;background:transparent;border:0;box-shadow:none;padding:0;color:#637a99;font-size:12px;min-height:32px;}
+.reference-message-sender>svg {color:#ac98ed;flex:none;}.reference-message-sender time {font-size:12px;}.app-shell.reference-workspace .customer-focus .chat-message:has(.reference-message-sender) {position:relative;padding-left:50px;}.app-shell.reference-workspace .customer-focus .chat-message.outbound:has(.reference-message-sender) {padding-left:0;padding-right:50px;}.reference-message-sender>svg {position:absolute;left:0;top:0;}.outbound>.reference-message-sender>svg {left:auto;right:0;color:#6aa9e4;}
+@media(max-width:700px) {.app-shell.reference-workspace .page-route-view:has(.customer-focus) {padding:0 8px 12px;}.app-shell.reference-workspace .customer-focus .messages-workbench {height:calc(100dvh - 202px);min-height:430px;}.app-shell.reference-workspace .customer-focus .chat-message:has(.reference-message-sender) {padding-left:38px;}.app-shell.reference-workspace .customer-focus .chat-message.outbound:has(.reference-message-sender) {padding-right:38px;}.reference-message-sender>svg {width:28px;height:28px;}}
+.reference-page-heading h1 {display:flex;align-items:center;gap:12px;}.reference-page-heading h1 svg {color:#1670ff;}
+.reference-page-heading[data-page="经营记录"] {display:flex;align-items:center;gap:16px;padding-block:16px;}.reference-page-heading[data-page="经营记录"] p {margin:0;}
+.app-shell.reference-workspace .project-hub-list>header,.app-shell.reference-workspace .project-hub-list>article {grid-template-columns:minmax(150px,1.3fr) minmax(100px,.8fr) minmax(135px,1.2fr) minmax(75px,.65fr) minmax(90px,.8fr) minmax(90px,.75fr) 140px;}
+.app-shell.reference-workspace .project-hub-toolbar {margin-bottom:18px;padding-top:0;}.app-shell.reference-workspace .project-hub-status {border:0;margin:0;}.app-shell.reference-workspace .project-hub-head {margin-bottom:12px;}
+@media(max-width:1100px) {.app-shell.reference-workspace .project-hub-list>header,.app-shell.reference-workspace .project-hub-list>article {grid-template-columns:minmax(150px,1.3fr) minmax(90px,.8fr) minmax(110px,1fr) minmax(75px,.65fr) minmax(90px,.8fr) minmax(90px,.75fr) 120px;}}
+@media(max-width:700px) {.app-shell.reference-workspace .project-hub-list>article {grid-template-columns:minmax(0,1fr) minmax(0,1fr);}.reference-page-heading[data-page="经营记录"] {display:block;}.reference-page-heading[data-page="经营记录"] p {margin-top:4px;}.reference-page-heading h1 svg {width:27px;height:27px;}}
+.reference-cashflow-ratio[data-empty="true"]>i {background:transparent;}
+.app-shell.reference-workspace .project-hub-shell {gap:16px;}
+.app-shell.reference-workspace .project-hub-head {gap:12px;margin-bottom:0;}
+.app-shell.reference-workspace .project-hub-toolbar {margin-bottom:0;}
+.app-shell.reference-workspace .thread-messages .reference-message-sender time,.app-shell.reference-workspace .thread-messages .outbound .reference-message-sender time {color:#637a99;}
+.app-shell.reference-workspace .customer-focus .thread-messages .reference-message-sender {min-height:20px;}
+.app-shell.reference-workspace .customer-focus .chat-message-bubble {padding:8px 14px;}
+
+/* Refinement: one page heading, readable metadata and compact phone summaries. */
+.app-shell.reference-workspace :is(.reference-home-metric,.reference-cashflow-values,.operating-summary-strip,.operating-record-row) strong,
+.app-shell.reference-workspace .operating-summary-strip b {font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
+.app-shell.reference-workspace .workbench-action-list article:hover,
+.app-shell.reference-workspace .project-hub-list>article:hover {background:#f8faff;}
+.app-shell.reference-workspace .reference-home-metric:focus-visible {outline:2px solid #1670ff;outline-offset:3px;}
+.app-shell.reference-workspace :is(.action-workbench>nav,.project-hub-status) {scrollbar-width:thin;scrollbar-color:#c5d3e7 transparent;padding-bottom:4px;}
+@media(max-width:1100px) {
+ .app-shell.reference-workspace:has(.reference-page-heading) .compact-topbar .greeting h1,
+ .app-shell.reference-workspace:has(.project-hub-head) .compact-topbar .greeting h1 {display:none;}
+}
+@media(max-width:700px) {
+ .app-shell.reference-workspace .operating-summary-strip {grid-template-columns:repeat(2,minmax(0,1fr));}
+ .app-shell.reference-workspace .operating-summary-strip>span {min-height:96px;grid-template-columns:minmax(0,1fr);gap:6px;padding:14px;}
+ .app-shell.reference-workspace .operating-summary-strip .record-summary-icon {display:none;}
+ .app-shell.reference-workspace .operating-summary-strip :is(small,b) {grid-column:1;}
+ .app-shell.reference-workspace .operating-summary-strip>span:last-child {grid-column:1/-1;min-height:72px;grid-template-columns:minmax(0,1fr) auto;}
+ .app-shell.reference-workspace .operating-summary-strip>span:last-child b {grid-column:2;grid-row:1;font-size:21px;}
+ .app-shell.reference-workspace .operating-summary-strip .record-summary-heading button {min-width:44px;min-height:44px;}
+ .app-shell.reference-workspace .reference-home-metric strong {font-size:clamp(17px,5vw,20px);}
+ .app-shell.reference-workspace .customer-focus .thread-header {min-height:0;gap:8px;}
+ .app-shell.reference-workspace .customer-focus .thread-header h2 {line-height:24px;}
+ .app-shell.reference-workspace .customer-focus .thread-header-copy {flex-basis:calc(100% - 52px);}
+ .app-shell.reference-workspace .customer-focus .thread-header-actions {margin-top:0;}
+ .reference-page-heading {padding-top:8px;padding-bottom:14px;}
+ .app-shell.reference-workspace .project-hub-page {padding-top:8px;}
+}
+@media(max-width:700px) {
+ .app-shell.reference-workspace .compact-global-search.is-open .search-box,
+ .app-shell.reference-workspace .compact-global-search.is-open .workspace-search-results {position:fixed;left:12px;right:12px;width:auto;max-width:none;}
+ .app-shell.reference-workspace .compact-global-search.is-open .search-box {top:68px;z-index:120;visibility:visible;pointer-events:auto;}
+ .app-shell.reference-workspace .compact-global-search.is-open .workspace-search-results {top:120px;z-index:120;}
+}

@@ -35,6 +35,10 @@ import type { ProjectRouteMode } from "./BusinessAssistantPages";
 import { CodexPlanWorkbench } from "../components/CodexPlanWorkbench";
 import "./customer-requirement-blueprint.css";
 import "./customer-requirement-editor.css";
+import {RequirementProposalReview} from '../components/RequirementProposalReview';
+import { CustomerWorkflowDialog } from '../components/CustomerWorkflowDialog';
+import { RequirementReadingView } from '../components/RequirementReadingView';
+import './project-formal-requirement.css';
 
 
 type LayerKey = "objectives" | "capabilities" | "stages" | "acceptance";
@@ -115,8 +119,10 @@ export function CustomerRequirementBlueprintPage({
   route,
   onRouteChange,
   onSnapshotChange,
+  embedded = false,
 }: {
   customer: Customer;
+  embedded?: boolean;
   route: CustomerRequirementRoute;
   onRouteChange: (route: CustomerRequirementRoute | null, mode?: ProjectRouteMode) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
@@ -125,6 +131,7 @@ export function CustomerRequirementBlueprintPage({
   const [detail, setDetail] = useState<RequirementCaseDetail | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
   const routeChangeRef = useRef(onRouteChange);
 
@@ -156,22 +163,24 @@ export function CustomerRequirementBlueprintPage({
       return;
     }
     let active = true;
-    setLoading(true);
+    setDetailLoading(true);
+    setDetail(null);
+    setError('');
     void localPlatformService.requirementCase(route.caseId, selectedVersion || undefined)
       .then((value) => active && setDetail(value))
       .catch((reason) => active && setError(reason instanceof Error ? reason.message : "蓝图加载失败"))
-      .finally(() => active && setLoading(false));
+      .finally(() => active && setDetailLoading(false));
     return () => { active = false; };
   }, [route.caseId, selectedVersion]);
 
-  if (!route.caseId) {
-    return <div className="requirement-center-page">
+  const caseList = <div className="requirement-center-page requirement-compact-list">
+      <RequirementProposalReview customerId={customer.id} onConfirmed={caseId=>onRouteChange({customerId:customer.id,caseId},'push')}/>
       <header className="requirement-center-hero">
-        <button className="blueprint-back" onClick={() => onRouteChange(null, "back")}><ArrowLeft size={16} />返回客户列表</button>
-        <div><span>REQUIREMENT CENTER</span><h2>{customer.name}的需求蓝图</h2><p>每个业务诉求独立建档，保留来源会话、版本演进和后续项目关联。</p></div>
+        {!embedded && <button className="blueprint-back" onClick={() => onRouteChange(null, "back")}><ArrowLeft size={16} />{window.history.state?.xunyingReturnTo ? '返回来源页面' : '返回客户列表'}</button>}
+        <div><h2>{embedded ? '正式需求' : `${customer.name}的需求蓝图`}</h2><p>每个业务诉求独立建档，保留来源会话、版本演进和后续项目关联。</p></div>
         <aside><strong>{cases.length}</strong><small>个需求案例</small></aside>
       </header>
-      {loading ? <div className="blueprint-loading"><Sparkle className="spin" size={22} />正在读取需求案例…</div> : error ? <div className="blueprint-empty error"><WarningCircle size={30} /><h3>无法读取需求案例</h3><p>{error}</p></div> : cases.length ? <section className="requirement-case-grid">
+      {loading && !cases.length ? <div className="blueprint-loading"><Sparkle className="spin" size={22} />正在读取需求案例…</div> : error && !route.caseId ? <div className="blueprint-empty error"><WarningCircle size={30} /><h3>无法读取需求案例</h3><p>{error}</p></div> : cases.length ? <section className="requirement-case-grid">
         {cases.map((item, index) => <button key={item.id} onClick={() => onRouteChange({ customerId: customer.id, caseId: item.id }, "push")}>
           <i>{String(index + 1).padStart(2, "0")}</i>
           <span className={`case-status status-${item.status}`}>{statusLabel(item.status)}</span>
@@ -180,14 +189,15 @@ export function CustomerRequirementBlueprintPage({
           <p><FileText size={15} />V{item.current_version} · {item.source_count} 个来源会话</p>
           <footer><span><Clock size={15} />{item.estimated_hours || "待补"} 小时</span><span className={item.open_question_count ? "warn" : "ok"}><Question size={15} />{item.open_question_count} 个待确认</span><ArrowRight size={18} /></footer>
         </button>)}
-      </section> : <div className="blueprint-empty"><FileText size={34} /><h3>还没有正式需求案例</h3><p>可在全局“小策”对话框中选择客户会话，补充你的判断后要求生成需求分析或四层蓝图；聊天结果不会自动保存为正式需求案例。</p></div>}
+      </section> : <div className="blueprint-empty"><FileText size={34} /><h3>还没有正式需求案例</h3><p>可让已授权 GPT 生成拟写入蓝图，在本页核对完整差异后确认保存。全局“小策”聊天结果不会自动保存为正式需求案例。</p></div>}
     </div>;
-  }
+  if (!route.caseId) return caseList;
+  const wrapDetail = (content: React.ReactNode) => embedded ? <>{caseList}<CustomerWorkflowDialog title="需求详情" className="requirement-reading-dialog" onClose={() => onRouteChange({ customerId: customer.id, caseId: null }, 'back')}>{content}</CustomerWorkflowDialog></> : content;
 
-  if (loading && !detail) return <div className="blueprint-loading"><Sparkle className="spin" size={22} />正在构建需求蓝图…</div>;
-  if (!detail) return <div className="blueprint-empty error"><WarningCircle size={30} /><h3>蓝图无法打开</h3><p>{error || "需求案例不存在"}</p><button onClick={() => onRouteChange({ customerId: customer.id, caseId: null }, "replace")}>返回需求中心</button></div>;
+  if (detailLoading && (!detail || detail.id !== route.caseId)) return wrapDetail(<div className="blueprint-loading"><Sparkle className="spin" size={22} />正在构建需求蓝图…</div>);
+  if (!detail || detail.id !== route.caseId) return wrapDetail(<div className="blueprint-empty error"><WarningCircle size={30} /><h3>蓝图无法打开</h3><p>{error || "需求案例不存在"}</p><button onClick={() => onRouteChange({ customerId: customer.id, caseId: null }, "replace")}>返回需求中心</button></div>);
 
-  return <RequirementBlueprintDetail
+  return wrapDetail(<RequirementBlueprintDetail
     customer={customer}
     detail={detail}
     selectedVersion={selectedVersion}
@@ -204,7 +214,7 @@ export function CustomerRequirementBlueprintPage({
       onSnapshotChange(value.snapshot);
       onRouteChange({ customerId: value.target_customer_id, caseId: value.case.id }, "replace");
     }}
-  />;
+  />);
 }
 
 function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersion, onBack, onDetailChange, onTransferred, onSnapshotChange }: { customer: Customer; detail: RequirementCaseDetail; selectedVersion: number | null; onVersion: (version: number | null) => void; onBack: () => void; onDetailChange: (detail: RequirementCaseDetail) => void; onTransferred: (result: { revision: number; snapshot: LedgerSnapshot; target_customer_id: string; case: RequirementCaseDetail }) => void; onSnapshotChange: (snapshot: LedgerSnapshot) => void }) {
@@ -218,6 +228,22 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
   const nodeRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [editing, setEditing] = useState(false);
   const [transferring, setTransferring] = useState(false);
+  const [view, setView] = useState<'reading' | 'graph'>('reading');
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+
+  useEffect(() => {
+    if (!editing && !transferring) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = document.querySelector<HTMLElement>(editing ? '.blueprint-drawer-layer' : '.blueprint-modal-layer');
+    const controls = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),a[href]') || []).filter(element=>element.getClientRects().length>0);
+    controls()[0]?.focus();
+    const key = (event: KeyboardEvent) => {
+      if(event.key==='Escape'){event.preventDefault();setEditing(false);setTransferring(false);}
+      if(event.key==='Tab'){const items=controls();if(event.shiftKey&&document.activeElement===items[0]){event.preventDefault();items.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===items.at(-1)){event.preventDefault();items[0]?.focus();}}
+    };
+    document.addEventListener('keydown',key);
+    return()=>{document.removeEventListener('keydown',key);previous?.focus();};
+  },[editing,transferring]);
 
   useEffect(() => { setSelectedId(defaultNode?.id || ""); }, [defaultNode?.id]);
 
@@ -239,7 +265,7 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
     Object.values(nodeRefs.current).forEach((node) => node && observer.observe(node));
     measure();
     return () => observer.disconnect();
-  }, [visual]);
+  }, [visual, view]);
 
   const related = useMemo(() => {
     if (!selectedId) return new Set<string>();
@@ -285,6 +311,7 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
       <button className="blueprint-back" onClick={onBack}><ArrowLeft size={16} />需求中心</button>
       <div className="blueprint-title"><span>REQUIREMENT BLUEPRINT</span><h2>{detail.title}</h2><p>{customer.name} · {detail.item_title || "未关联商品"} · {blueprint?.project_type || "历史需求文档"}</p></div>
       <div className="blueprint-command-actions">
+        {detail.project_id&&<a className="blueprint-secondary-action" href={`#${encodeURIComponent(`项目管理/${detail.project_id}/overview`)}`}>查看关联项目</a>}
         <span className={`blueprint-status status-${detail.status}`}><i />{statusLabel(detail.status)}</span>
         <label>版本<select value={selectedVersion || detail.selected_version?.version || detail.current_version} onChange={(event) => onVersion(Number(event.target.value))}>{detail.versions.map((version) => <option value={version.version} key={version.id}>V{version.version} · {version.source_label}</option>)}</select></label>
         <button type="button" className="blueprint-secondary-action" onClick={() => setTransferring(true)}><UserSwitch size={15} />转移客户</button>
@@ -302,7 +329,9 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
 
     {visual.isLegacy && <div className="legacy-blueprint-notice"><WarningCircle size={17} /><span><b>旧版需求只读适配</b>该版本缺少稳定节点引用与阶段工时；现有历史继续保留，小策中的新蓝图不会自动覆盖正式需求案例。</span></div>}
 
-    <section className="blueprint-workspace">
+    {blueprint && <nav className="blueprint-reading-tabs" aria-label="需求查看方式"><button type="button" aria-pressed={view === 'reading'} onClick={() => setView('reading')}>阅读需求</button><button type="button" aria-pressed={view === 'graph'} onClick={() => setView('graph')}>关系蓝图</button>{view === 'graph' && <button type="button" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(value => !value)}>{inspectorOpen ? '收起节点详情' : '节点详情'}</button>}</nav>}
+    {blueprint && view === 'reading' && <RequirementReadingView blueprint={blueprint}/>}
+    <section className={`blueprint-workspace ${inspectorOpen ? 'inspector-open' : 'inspector-closed'}`} hidden={Boolean(blueprint && view === 'reading')}>
       <div className="blueprint-scroll-shell">
         <div className="blueprint-canvas" ref={canvasRef}>
           <svg className="blueprint-connectors" aria-hidden="true">
@@ -324,7 +353,7 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
                 type="button"
                 className={`${selectedId === node.id ? "selected" : ""} ${selectedId && !related.has(node.id) ? "unrelated" : ""}`}
                 aria-current={selectedId === node.id ? "true" : undefined}
-                onClick={() => setSelectedId(node.id)}
+                onClick={() => { setSelectedId(node.id); setInspectorOpen(true); }}
                 onKeyDown={(event) => moveFocus(event, node)}
                 key={node.id}
               ><small>{node.eyebrow}</small><h3>{node.title}</h3><p>{node.description}</p>{node.meta && <em>{node.meta}</em>}<ArrowRight className="node-arrow" size={15} /></button>)}</div>
@@ -333,21 +362,22 @@ function RequirementBlueprintDetail({ customer, detail, selectedVersion, onVersi
         </div>
       </div>
 
-      <aside className="blueprint-inspector" key={selectedNode?.id}>
+      <aside className="blueprint-inspector" key={selectedNode?.id} hidden={!inspectorOpen}>
         {selectedNode ? <>
           <header><span>{layerMeta[selectedNode.layer].label}</span><h3>{selectedNode.title}</h3><p>{selectedNode.description}</p></header>
           {typeof selectedNode.raw.implementation === "string" && <InspectorSection title="实现说明" items={[selectedNode.raw.implementation]} />}
           <InspectorSection title="工作项" items={asStringArray(selectedNode.raw.work_items)} />
           <InspectorSection title="交付物" items={asStringArray(selectedNode.raw.deliverables)} />
-          <InspectorSection title="验收细则" items={asStringArray(selectedNode.raw.criteria)} />
+          <InspectorSection title="交付 Checklist" items={asStringArray(selectedNode.raw.criteria)} />
+          {selectedNode.layer==='stages'&&<><InspectorSection title="任务与工作区" items={[selectedNode.raw.task_key,selectedNode.raw.workspace_key].filter((v):v is string=>typeof v==='string')} /><InspectorSection title="过程测试" items={asStringArray(selectedNode.raw.process_tests)} /></>}
           <InspectorSection title="依赖关系" items={[...asStringArray(selectedNode.raw.dependency_ids), ...asStringArray(selectedNode.raw.capability_ids), ...asStringArray(selectedNode.raw.objective_ids)]} empty="当前节点无前置依赖" />
-          {evidence.length > 0 && <section className="inspector-evidence"><h4>对话证据</h4>{evidence.map((item) => <blockquote key={item.id}><span>消息 #{item.message_number}</span>{item.quote}</blockquote>)}</section>}
+          {evidence.length > 0 && <section className="inspector-evidence"><h4>对话证据</h4>{evidence.map((item) => <blockquote key={item.id}><span>{item.archive_id?`图片 #${item.archive_id}`:`消息 #${item.message_id||item.message_number||'未知'}`}{item.conversation_id?` · 来源会话 ${item.conversation_id}`:''}</span>{item.quote}</blockquote>)}</section>}
           {selectedNode.layer === "stages" && typeof selectedNode.raw.estimated_hours === "number" && <div className="inspector-hours"><Clock size={18} /><span><small>阶段预计工时</small><b>{String(selectedNode.raw.estimated_hours)} 小时</b></span></div>}
         </> : <div className="inspector-empty"><Sparkle size={26} /><p>选择任一节点查看实现、证据与验收细节。</p></div>}
       </aside>
     </section>
 
-    {blueprint && <section className="blueprint-bottom-grid">
+    {blueprint && view === 'graph' && <section className="blueprint-bottom-grid">
       <article className="blueprint-timeline"><header><span><FlowArrow size={18} />实施时间线</span><b>{totalHours} 小时</b></header><div>{blueprint.stages.map((stage, index) => <button onClick={() => setSelectedId(stage.id)} key={stage.id}><i>{index + 1}</i><span><b>{stage.title}</b><small>{stage.estimated_hours}h · {stage.deliverables.length} 项交付</small></span><em style={{ flexGrow: Math.max(stage.estimated_hours, 1) }} /></button>)}</div></article>
       <article className="blueprint-checklist"><header><span><CheckCircle size={18} />交付 Checklist</span><b>{blueprint.acceptance_gates.reduce((sum, gate) => sum + gate.criteria.length, 0)} 项</b></header>{blueprint.acceptance_gates.flatMap((gate) => gate.criteria.map((criterion) => <p key={`${gate.id}-${criterion}`}><CheckCircle size={16} weight="duotone" /><span>{criterion}</span><small>{gate.title}</small></p>))}</article>
     </section>}

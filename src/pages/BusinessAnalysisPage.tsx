@@ -19,6 +19,7 @@ import {
   Gauge,
   Info,
   Lightning,
+  Lightbulb,
   Play,
   ShieldCheck,
   Sparkle,
@@ -115,6 +116,7 @@ const navigablePages = new Set([
   "客户消息",
   "商品经营",
   "项目管理",
+  "经营记录",
   "收入记录",
   "支出记录",
   "客户管理",
@@ -175,7 +177,7 @@ type RecommendationQueueFilter =
   | "ignored";
 
 const queueFilterLabels: Record<RecommendationQueueFilter, string> = {
-  active: "执行中",
+  active: "未完成",
   pending: "待处理",
   accepted: "已采纳",
   observing: "观察中",
@@ -324,8 +326,9 @@ function MetricCard({
   footer: string;
 }) {
   return <article className={`analysis-metric-card tone-${tone}`}>
-    <header><i><Icon size={22} weight="duotone" /></i><span><b>{label}</b><small>当前经营事实</small></span></header>
-    <div><span><strong>{value}</strong><small>{label}</small></span><span><strong>{secondaryValue}</strong><small>{secondaryLabel}</small></span></div>
+    <i className="reference-metric-icon"><Icon size={28} weight="duotone" /></i>
+    <header><b>{label}</b></header>
+    <div className="reference-metric-values"><span><strong>{value}</strong></span><span><small>{secondaryLabel}</small><strong>{secondaryValue}</strong></span></div>
     <footer>{footer}</footer>
   </article>;
 }
@@ -710,7 +713,7 @@ function EstimateCalibrationWorkbench({
           <span><i>3</i><b>实际工时已冻结</b><small>保存 finalized_at 时间切点</small></span>
           <span><i>4</i><b>结果状态可用</b><small>取消 / 终止合作不污染样本</small></span>
         </div>
-        {excluded.slice(0, 3).map((item) => <div className="estimate-calibration-candidate" key={item.project_id}><span><b>{item.project_name}</b><small>预计 {item.estimated_hours}h · 实际 {item.actual_hours}h · verified {item.verified_progress}% · {item.freeze_version ? `冻结 v${item.freeze_version}${item.freeze_stale ? " 已过期" : ""}` : "尚未冻结"}</small>{item.readiness_actions[0] && <small>下一步：{item.readiness_actions[0]}</small>}</span><em>{item.exclusion_reason || "暂不可纳入"}</em><button type="button" onClick={() => { window.location.hash = encodeURIComponent(`项目管理/${item.project_id}/codex`); }}>打开项目</button></div>)}
+        {excluded.slice(0, 3).map((item) => <div className="estimate-calibration-candidate" key={item.project_id}><span><b>{item.project_name}</b><small>预计 {item.estimated_hours}h · 实际 {item.actual_hours}h · verified {item.verified_progress}% · {item.freeze_version ? `冻结 v${item.freeze_version}${item.freeze_stale ? " 已过期" : ""}` : "尚未冻结"}</small>{item.readiness_actions[0] && <small>下一步：{item.readiness_actions[0]}</small>}</span><em>{item.exclusion_reason || "暂不可纳入"}</em><button type="button" onClick={() => { window.location.hash = encodeURIComponent(`项目管理/${item.project_id}/overview`); }}>打开项目</button></div>)}
       </main>
       <aside>
         <span>CALIBRATION SNAPSHOT</span><h3>冻结一次可重放快照</h3><p>这是显式分析写入，不会改变项目、报价、任务或交付日期。</p>
@@ -1180,32 +1183,22 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
   ];
 
   return <div className="business-analysis-page">
-    <PredictionForecastWorkbench
-      predictions={analysis.predictions?.length || viewingHistory ? analysis.predictions || [] : latestPredictions?.run.results || []}
-      generatedAt={analysis.predictions?.length || viewingHistory ? analysis.snapshot_time || analysis.generated_at : latestPredictions?.run.generated_at || analysis.snapshot_time || analysis.generated_at}
-      onNavigate={onNavigate}
-    />
-
-    <EstimateCalibrationWorkbench
-      summary={estimateCalibration}
-      running={calibrationRunning}
-      error={calibrationError}
-      onRun={() => void runEstimateCalibration()}
-    />
 
     <section className="analysis-command-bar">
       <div className="analysis-command-copy">
-        <span><ChartLineUp size={18} weight="duotone" />主动经营分析</span>
-        <p>{analysis.summary}</p>
+        <i className="reference-judgment-icon"><Lightbulb size={32} weight="duotone" /></i>
+        <div className="reference-judgment-heading"><span>当前经营判断</span><small>分析快照：{formatAnalysisTime(analysis.snapshot_time || analysis.generated_at)}</small></div>
+        <p>{analysis.summary}</p><small className="reference-judgment-note">基于已有业务数据与分析快照，核对事实来源后再采取行动。</small><img className="reference-analysis-art" src="/assets/xunying/reference-analysis-report.png" alt=""/>
       </div>
       <div className="analysis-command-actions">
-        <p>分析快照：<b>{formatAnalysisTime(analysis.snapshot_time || analysis.generated_at)}</b>{analysis.provider && <span className="analysis-used-model">{analysis.provider === "codex_cli" ? "GPT" : "DeepSeek"} · {analysis.model || "模型未知"}</span>}<AnalysisStateBadge overview={analysis} /></p>
+        <p>{analysis.provider && <span className="analysis-used-model">{analysis.provider === "codex_cli" ? "GPT" : "DeepSeek"} · {analysis.model || "模型未知"}</span>}<AnalysisStateBadge overview={analysis} /></p>
         <div>
           {viewingHistory && <button className="analysis-return-latest" type="button" disabled={historyLoadingId === "latest"} onClick={() => void returnToLatest()}><ArrowClockwise size={15} />返回最新分析</button>}
           <button className="analysis-run-button" type="button" disabled={running || modelLoading || !selectionReady} onClick={() => void generateAnalysis()}>
-            {running ? <><ArrowClockwise className="analysis-spin" size={17} />正在分析</> : <><Sparkle size={17} weight="fill" />使用{selectedProvider === "codex_cli" ? " GPT" : " DeepSeek"}生成</>}
+            {running ? <><ArrowClockwise className="analysis-spin" size={17} />正在分析</> : <><Sparkle size={17} weight="fill" />使用{selectedProvider === "codex_cli" ? " GPT" : " DeepSeek"}生成分析报告</>}
           </button>
         </div>
+        <ul className="reference-analysis-benefits"><li><CheckCircle size={16} weight="fill"/>基于你的业务数据进行分析</li><li><CheckCircle size={16} weight="fill"/>输出关键问题与人工行动建议</li><li><CheckCircle size={16} weight="fill"/>保留证据来源与分析历史</li></ul>
       </div>
     </section>
 
@@ -1215,9 +1208,9 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
     </aside>}
 
     <section className="analysis-overview-layout">
-      <div className="analysis-metrics-grid" aria-label="经营概览">
+      <section className="reference-analysis-data"><h2>经营关键数据</h2><div className="analysis-metrics-grid" aria-label="经营概览">
         {metricCards.map((card) => <MetricCard key={card.label} {...card} />)}
-      </div>
+      </div></section>
       <aside className="analysis-model-panel" aria-label="分析模型选择">
         <header><div><span>MODEL SELECTION</span><h2>选择分析模型</h2></div><small className={selectionReady ? "is-ready" : "is-attention"}>{modelLoading ? "读取中" : selectionReady ? "已连接" : "需检查"}</small></header>
         <div className="analysis-provider-options">
@@ -1234,35 +1227,30 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
         <label className="analysis-model-field"><span>具体模型</span><select aria-label="经营分析具体模型" value={selectedModel} disabled={modelLoading || modelOptions.length === 0} onChange={(event) => setSelectedModel(event.target.value)}>{modelOptions.map((option) => <option value={option.model} key={option.model}>{option.model}{option.model === modelSettings?.selected_model || option.model === deepseekModel ? " · 当前配置" : ""}</option>)}</select></label>
         <p className="analysis-model-policy"><ShieldCheck size={16} weight="fill" />实际 provider 与 model 会写入历史；失败直接显示，只保留规则结果，不切换模型。</p>
         {modelError && <p className="analysis-model-error"><WarningCircle size={15} />{modelError}</p>}
-        <button className="analysis-model-run" type="button" disabled={running || modelLoading || !selectionReady} onClick={() => void generateAnalysis()}>{running ? <><ArrowClockwise className="analysis-spin" size={16} />正在分析</> : <><Sparkle size={16} weight="fill" />使用 {selectedProvider === "codex_cli" ? "GPT" : "DeepSeek"} · {selectedModel || "未选择"} 生成</>}</button>
       </aside>
     </section>
 
-    <section className="analysis-execution-shell" id="business-recommendation-queue">
+    <div className="reference-execution-layout"><section className="analysis-execution-shell" id="business-recommendation-queue">
       <header className="analysis-execution-heading">
         <div><span><ClipboardText size={17} weight="duotone" />EXECUTION & REVIEW</span><h2>执行与复盘</h2><p>跨历史跟踪每条建议：先人工采纳，再观察真实指标，最后保存结果。</p></div>
-        <div className="analysis-execution-summary">
-          <span><b>{(recommendationQueue?.counts.accepted || 0) + (recommendationQueue?.counts.observing || 0)}</b><small>执行中</small></span>
-          <span className={(recommendationQueue?.counts.review_due || 0) > 0 ? "is-due" : ""}><b>{recommendationQueue?.counts.review_due || 0}</b><small>待复盘</small></span>
-          <span><b>{recommendationQueue?.counts.completed || 0}</b><small>已完成</small></span>
-        </div>
-      </header>
-      <nav className="analysis-queue-filters" aria-label="建议生命周期筛选">
+      <select className="reference-queue-filter" aria-label="建议生命周期筛选" value={queueFilter} onChange={event=>setQueueFilter(event.target.value as RecommendationQueueFilter)}>
         {(Object.keys(queueFilterLabels) as RecommendationQueueFilter[]).map((filter) => {
           const count = filter === "active"
             ? (recommendationQueue?.counts.pending || 0) + (recommendationQueue?.counts.accepted || 0) + (recommendationQueue?.counts.observing || 0) + (recommendationQueue?.counts.review_due || 0)
             : recommendationQueue?.counts[filter] || 0;
-          return <button type="button" className={queueFilter === filter ? "is-active" : ""} aria-pressed={queueFilter === filter} onClick={() => setQueueFilter(filter)} key={filter}>{queueFilterLabels[filter]}<i>{count}</i></button>;
+          return <option value={filter} key={filter}>{queueFilterLabels[filter]} · {count}</option>;
         })}
-      </nav>
+      </select>
+      </header>
       {queuedRecommendations.length > 0 ? <div className="analysis-queue-list">
-        {queuedRecommendations.slice(0, 8).map((recommendation) => <article className={`analysis-queue-card state-${recommendation.lifecycle_status}${recommendation.stale ? " is-stale" : ""}`} key={recommendation.id}>
-          <div className="analysis-queue-marker"><i /><span>{formatAnalysisTime(recommendation.analysis_snapshot_time)}</span></div>
+        {queuedRecommendations.slice(0, 8).map((recommendation) => <details className={`analysis-queue-card reference-queue-row state-${recommendation.lifecycle_status}${recommendation.stale ? " is-stale" : ""}`} key={recommendation.id}>
+          <summary><CaretRight size={16} aria-hidden="true"/><strong>{recommendation.title}</strong><span className={`reference-queue-priority priority-${recommendation.priority}`}>{recommendation.priority === "high" ? "高优先级" : recommendation.priority === "medium" ? "中优先级" : "低优先级"}</span><span className="reference-queue-period">{observePeriodLabel(recommendation.observe_period)}</span></summary>
+          <div className="reference-queue-expanded">
           <div className="analysis-queue-content">
             <div className="analysis-queue-tags"><em>{domainLabels[recommendation.domain]}</em><span className={`analysis-lifecycle-pill state-${recommendation.lifecycle_status}`}>{statusLabels[recommendation.lifecycle_status]}</span>{recommendation.stale && <span className="analysis-stale-pill"><WarningCircle size={13} weight="fill" />分析已过期</span>}</div>
-            <h3>{recommendation.title}</h3>
             <p>{recommendation.action}</p>
             <div className="analysis-queue-meta">
+              <span><small>分析时间</small><b>{formatAnalysisTime(recommendation.analysis_snapshot_time)}</b></span>
               <span><small>业务目标</small><b>{recommendationTarget(recommendation)}</b></span>
               <span><small>{recommendation.status === "observing" ? "观察截止" : "观察周期"}</small><b>{recommendation.status === "observing" ? formatDeadline(recommendation.observe_until) : observePeriodLabel(recommendation.observe_period)}</b></span>
               <span><small>数据依据</small><b>{recommendation.data_source.join("、") || "经营事实指标"}</b></span>
@@ -1279,10 +1267,11 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
             />
             {(["accepted", "observing"] as RecommendationStatus[]).includes(recommendation.status) && navigablePages.has(recommendation.target_page) && <button className="analysis-queue-target-link" type="button" onClick={() => onNavigate(recommendation.target_page)}>前往人工处理 <CaretRight size={13} /></button>}
           </div>
-        </article>)}
+          </div>
+        </details>)}
       </div> : <div className="analysis-queue-empty"><CheckCircle size={32} weight="duotone" /><span><b>{queueFilter === "active" ? "当前没有待执行建议" : `没有“${queueFilterLabels[queueFilter]}”建议`}</b><small>建议只有经过人工采纳和真实观察，才会进入结果复盘。</small></span></div>}
       {queuedRecommendations.length > 8 && <p className="analysis-queue-more">当前筛选还有 {queuedRecommendations.length - 8} 条较早记录，可通过历史分析查看来源。</p>}
-    </section>
+    </section><AnalysisExecutionProgress executing={(recommendationQueue?.counts.accepted||0)+(recommendationQueue?.counts.observing||0)} reviewDue={recommendationQueue?.counts.review_due||0} completed={recommendationQueue?.counts.completed||0}/></div>
 
     <section className="analysis-chain-shell">
       <header className="analysis-chain-heading">
@@ -1344,6 +1333,21 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
       {recommendations.length > 3 && <button className="analysis-show-all" type="button" onClick={() => setShowAll((value) => !value)}>{showAll ? "收起次要建议" : `展开其余 ${recommendations.length - 3} 条建议`}<CaretDown className={showAll ? "is-open" : ""} size={15} /></button>}
     </section>
 
+    <details className="analysis-advanced"><summary>预测与校准</summary>
+    <PredictionForecastWorkbench
+      predictions={analysis.predictions?.length || viewingHistory ? analysis.predictions || [] : latestPredictions?.run.results || []}
+      generatedAt={analysis.predictions?.length || viewingHistory ? analysis.snapshot_time || analysis.generated_at : latestPredictions?.run.generated_at || analysis.snapshot_time || analysis.generated_at}
+      onNavigate={onNavigate}
+    />
+
+    <EstimateCalibrationWorkbench
+      summary={estimateCalibration}
+      running={calibrationRunning}
+      error={calibrationError}
+      onRun={() => void runEstimateCalibration()}
+    />
+    </details>
+    <details className="analysis-advanced"><summary>历史分析记录</summary>
     <section className="analysis-history-shell">
       <header><div><h2>历史分析记录</h2><p>保存每次分析快照与建议反馈，不把建议直接沉淀为永久规则。</p></div><span>共 {historyTotal} 次</span></header>
       {history.length > 0 ? <div className="analysis-history-table-wrap"><table>
@@ -1363,6 +1367,7 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
 
     <aside className="analysis-safety-boundary"><ShieldCheck size={18} weight="fill" /><span><b>人工执行边界</b><small>AI只分析、解释和排序建议；不会自动修改商品、发布内容、发送客户消息、变更项目或购买推广。</small></span></aside>
 
+    </details>
     {acceptTarget && <div className="analysis-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setAcceptTarget(null); }}>
       <section className="analysis-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="analysis-accept-title">
         <header><span><CheckCircle size={21} weight="duotone" /></span><div><small>MANUAL DECISION</small><h2 id="analysis-accept-title">确认采纳这条建议？</h2></div><button type="button" aria-label="关闭采纳确认" onClick={() => setAcceptTarget(null)}><X size={18} /></button></header>
@@ -1387,3 +1392,4 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
     {notice && <div className={`analysis-toast is-${notice.tone}`} role="status">{notice.tone === "success" ? <CheckCircle size={18} weight="fill" /> : <WarningCircle size={18} weight="fill" />}{notice.message}</div>}
   </div>;
 }
+import { AnalysisExecutionProgress } from '../components/workspace/AnalysisExecutionProgress';

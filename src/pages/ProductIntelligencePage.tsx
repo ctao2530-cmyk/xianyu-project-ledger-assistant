@@ -1,3 +1,6 @@
+import { ProductOverviewWorkspace } from '../components/workspace/ProductOverviewWorkspace';
+import { ProductMetricSummary } from '../components/workspace/ProductMetricSummary';
+import { ProductLinkedProjects } from '../components/workspace/ProductLinkedProjects';
 import {
   ArrowClockwise,
   ArrowCounterClockwise,
@@ -75,6 +78,9 @@ import {
   type ProductView,
 } from "../data/localPlatformService";
 import { TrafficGrowthWorkbench } from "../components/TrafficGrowthWorkbench";
+import { ExposureAnalytics } from "./ProductExposureWorkbench";
+import { MarketReferenceWorkbench } from "./ProductMarketWorkbench";
+import { ProductLaunchWorkbench } from "./ProductLaunchWorkbench";
 import {
   formatTrafficDateTime,
   formatTrafficPlanDate,
@@ -409,15 +415,15 @@ function ProductTrend({ product }: { product: ProductView }) {
       <AreaChart data={product.history} margin={{ top: 12, right: 8, left: -22, bottom: 0 }}>
         <defs>
           <linearGradient id="productBrowseArea" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#684df4" stopOpacity={0.22} />
-            <stop offset="100%" stopColor="#684df4" stopOpacity={0.02} />
+            <stop offset="0%" stopColor="#1670ff" stopOpacity={0.22} />
+            <stop offset="100%" stopColor="#1670ff" stopOpacity={0.02} />
           </linearGradient>
         </defs>
         <CartesianGrid vertical={false} stroke="#e9eaf4" strokeDasharray="3 3" />
         <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#8c91a5" }} />
         <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#8c91a5" }} />
         <Tooltip formatter={(value) => [`${value} 次`, "经营浏览"]} />
-        <Area type="monotone" dataKey="browse_count" stroke="#6544f4" strokeWidth={2.5} fill="url(#productBrowseArea)" />
+        <Area type="monotone" dataKey="browse_count" stroke="#1670ff" strokeWidth={2.5} fill="url(#productBrowseArea)" />
       </AreaChart>
     </ResponsiveContainer>
   </div>;
@@ -440,13 +446,15 @@ const exposureDeltaMetrics: ExposureDeltaMetricConfig[] = [
   { key: "inquiry", label: "咨询", baselineKey: "baseline_inquiry_count", checkpointValueKey: "inquiry_count", checkpointDeltaKey: "inquiry_delta" },
 ];
 
-const exposureDeltaStages = [
-  { key: "t0", label: "T0" },
-  { key: "h1", label: "+1h" },
-  { key: "h6", label: "+6h" },
-  { key: "h24", label: "+24h" },
-  { key: "h72", label: "+72h" },
-] as const;
+function exposureDeltaStagesForBatch(batch: ProductTrafficBatchView) {
+  return [
+    { key: "t0", label: "T0" },
+    ...batch.checkpoint_sequence.map((checkpoint) => ({
+      key: checkpoint,
+      label: checkpointShortLabels[checkpoint] || compactCheckpointLabel(checkpoint),
+    })),
+  ];
+}
 
 const exposureLineColors = ["#5f3df5", "#2f89ed", "#3fb562", "#f26b18", "#8a63f5"];
 
@@ -516,7 +524,7 @@ function ExposureDeltaTooltip({
   compact: boolean;
 }) {
   if (!active) return null;
-  const stage = exposureDeltaStages.find((value) => value.label === label);
+  const stage = exposureDeltaStagesForBatch(batch).find((value) => value.label === label);
   if (!stage) return null;
   const products = compact && selectedProductId
     ? batch.products.filter((product) => product.external_id === selectedProductId)
@@ -576,6 +584,7 @@ function ExposureProductDelta({
   }, [selectedBatch, selectedProductId]);
 
   if (!selectedBatch) return null;
+  const exposureDeltaStages = exposureDeltaStagesForBatch(selectedBatch);
 
   if (!selectedBatch.has_reliable_baseline && !selectedBatch.exploratory_available) {
     return <section className={`exposure-delta-card ${embedded ? "is-embedded" : ""} exposure-delta-unavailable`}>
@@ -743,7 +752,7 @@ function ExposureProductDelta({
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 18, right: 18, left: -14, bottom: 2 }}>
               <ReferenceArea x1="T0" x2="+6h" fill="#f2efff" fillOpacity={0.64} stroke="none" />
-              <ReferenceArea x1="+24h" x2="+72h" fill="#f7f8fc" fillOpacity={0.88} stroke="none" />
+              <ReferenceArea x1="+24h" x2={checkpointShortLabels[selectedBatch.terminal_checkpoint] || compactCheckpointLabel(selectedBatch.terminal_checkpoint)} fill="#f7f8fc" fillOpacity={0.88} stroke="none" />
               <CartesianGrid vertical={false} stroke="#e8e9f2" strokeDasharray="4 4" />
               <XAxis dataKey="stage" axisLine={{ stroke: "#dfe1eb" }} tickLine={false} tick={{ fontSize: 11, fill: "#777e96", fontWeight: 650 }} />
               <YAxis allowDecimals={false} axisLine={false} tickFormatter={(value) => value === 0 ? "0" : `+${value}`} tickLine={false} tick={{ fontSize: 10, fill: "#8b90a5" }} width={42} />
@@ -798,7 +807,7 @@ function ExposureProductDelta({
         </div>
         <p>{excludedFromBusinessConclusion
           ? `${selectedBatch.baseline_quality_label}：真实检查点继续展示，但只作批次内观察，不进入时段、预算或商品优先级结论。`
-          : "1h / 6h 仅作早期观察；24h / 72h 才进入经营判断。曲线表示观察增量，不等同于平台因果归因。"}</p>
+          : `1h / 6h 仅作早期观察；24h / ${selectedBatch.observation_window_hours}h 才进入经营判断。曲线表示观察增量，不等同于平台因果归因。`}</p>
       </div>
 
       <aside className="exposure-delta-ranking" aria-labelledby="exposure-ranking-title">
@@ -826,7 +835,7 @@ function ExposureProductDelta({
 }
 
 function batchAggregateSeries(batch: ProductTrafficBatchView) {
-  return exposureDeltaStages.map((stage) => ({
+  return exposureDeltaStagesForBatch(batch).map((stage) => ({
     stage: stage.label,
     browse: stage.key === "t0"
       ? 0
@@ -869,108 +878,8 @@ function ExposureBatchMiniChart({ batch }: { batch: ProductTrafficBatchView }) {
   </div>;
 }
 
-function ExposureAnalytics({ data }: { data: ProductIntelligenceView }) {
-  const analytics = data.exposure_analytics;
-  const [expanded, setExpanded] = useState(false);
-  const maxCheckpointBrowse = Math.max(
-    1,
-    ...analytics.checkpoints.map((checkpoint) => checkpoint.average_browse_delta),
-  );
-  const recent = data.traffic_batches
-    .filter((batch) => batch.started_at)
-    .slice(0, 3);
-  const hasObservedData = analytics.eligible_batch_count > 0;
-  const invalidatedBatchCount = data.traffic_batches.filter((batch) => batch.status === "invalidated").length;
-  const exploratoryBatches = data.traffic_batches.filter((batch) => batch.exploratory_available);
-  const compactNextStep = data.traffic_summary.observation_batch_count > 0
-    ? "按实际开始时间完成当前观察"
-    : invalidatedBatchCount > 0
-      ? "下次投放前准备可靠 T0"
-      : "建立带可靠 T0 的新批次";
-  const compactNextStepDetail = invalidatedBatchCount > 0
-    ? "已终止批次无需继续补录"
-    : "不使用旧快照作为投放基线";
-  const recordedButExcludedCheckpoints = new Set(
-    recent
-      .filter((batch) => !batch.analysis_eligible)
-      .flatMap((batch) => batch.completed_checkpoints),
-  );
-
-  if (!hasObservedData) {
-    return <section className="product-exposure-analytics is-compact" aria-labelledby="exposure-analytics-title">
-      <header className="product-exposure-head">
-        <div><span className="product-eyebrow"><ChartLineUp size={14} weight="fill" /> EXPOSURE PERFORMANCE</span><h3 id="exposure-analytics-title">曝光效果分析</h3></div>
-        <span className={`confidence-${analytics.confidence}`}><ShieldCheck size={14} weight="fill" />{confidenceLabels[analytics.confidence] || "低置信"} · 近 {analytics.window_days} 天</span>
-      </header>
-      <div className="product-exposure-compact-status">
-        <span><i><Clock size={18} /></i><small>成熟有效批次（≥+24h）</small><b>{analytics.eligible_batch_count}</b><em>暂无可用</em></span>
-        <span><i><Flask size={18} /></i><small>可做探索分析</small><b>{exploratoryBatches.length}</b><em>展示实测变化 · 不作因果归因</em></span>
-        <span><i><ShieldWarning size={18} /></i><small>决策级已排除</small><b>{analytics.excluded_batch_count}</b><em>不进入预算 / 时段 / 复投</em></span>
-        <span><i><ClipboardText size={18} /></i><small>下一步建议</small><b>{compactNextStep}</b><em>{compactNextStepDetail}</em></span>
-      </div>
-      {exploratoryBatches.length > 0 && <div className="product-exposure-exploratory-summary"><Flask size={18} weight="duotone" /><span><b>仍有真实分析数据</b><small>{exploratoryBatches.map((batch) => `${formatTrafficDateTime(batch.started_at)}：浏览 ${signedInteger(batch.observed_browse_change)}、咨询 ${signedInteger(batch.observed_inquiry_change)}`).join("；")}。展开下方批次可查看真实曲线、自然增长范围和失效条件。</small></span></div>}
-    </section>;
-  }
-
-  return <section className={`product-exposure-analytics ${expanded ? "is-expanded" : ""}`} aria-labelledby="exposure-analytics-title">
-    <header className="product-exposure-head">
-      <div>
-        <span className="product-eyebrow"><ChartLineUp size={14} weight="fill" /> EXPOSURE PERFORMANCE</span>
-        <h3 id="exposure-analytics-title">曝光效果分析</h3>
-        <p>{analytics.summary}</p>
-      </div>
-      <span className="product-exposure-head-actions"><em className={`confidence-${analytics.confidence}`}><ShieldCheck size={14} weight="fill" />{confidenceLabels[analytics.confidence] || "低置信"} · 近 {analytics.window_days} 天</em><button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "收起成熟分析" : "展开成熟分析"}</button></span>
-    </header>
-
-    {expanded && <><div className="product-exposure-kpis">
-      <article><i><Coins size={18} weight="duotone" /></i><span><small>累计真实投入</small><b>{moneyExact.format(analytics.total_spent)}</b><em>开始批次后自动进入支出</em></span></article>
-      <article><i><Eye size={18} weight="duotone" /></i><span><small>成熟浏览增量</small><b>+{integer.format(analytics.browse_delta)}</b><em>平均每批 +{integer.format(analytics.average_browse_delta)}</em></span></article>
-      <article><i><ChatCircleDots size={18} weight="duotone" /></i><span><small>成熟咨询增量</small><b>+{integer.format(analytics.inquiry_delta)}</b><em>平均每批 +{analytics.average_inquiry_delta}</em></span></article>
-      <article><i><TrendUp size={18} weight="duotone" /></i><span><small>浏览 → 咨询</small><b>{analytics.inquiry_conversion_rate === null ? "—" : `${analytics.inquiry_conversion_rate}%`}</b><em>仅统计可比较成熟批次</em></span></article>
-      <article><i><Gauge size={18} weight="duotone" /></i><span><small>每新增咨询成本</small><b>{analytics.cost_per_inquiry === null ? "—" : moneyExact.format(analytics.cost_per_inquiry)}</b><em>{analytics.cost_per_browse === null ? "暂无浏览成本" : `每浏览 ${moneyExact.format(analytics.cost_per_browse)}`}</em></span></article>
-      <article><i><Clock size={18} weight="duotone" /></i><span><small>当前优先时段</small><b>{analytics.best_time_bucket || "样本不足"}</b><em>{analytics.eligible_batch_count} 批纳入 · {analytics.excluded_batch_count} 批排除</em></span></article>
-    </div>
-
-    <div className="product-exposure-body">
-      <section className="exposure-checkpoint-card" aria-labelledby="checkpoint-growth-title">
-        <header><span><small>LONG-TAIL GROWTH</small><h4 id="checkpoint-growth-title">套餐结束后的增长轨迹</h4></span><em>不同检查点按各自有效批次数求平均</em></header>
-        <div className="exposure-checkpoint-list">
-          {(["h1", "h6", "h24", "h72"] as const).map((checkpointName) => {
-            const checkpoint = analytics.checkpoints.find((value) => value.checkpoint === checkpointName);
-            const width = checkpoint ? Math.max(5, checkpoint.average_browse_delta / maxCheckpointBrowse * 100) : 0;
-            return <article className={checkpointName === "h24" || checkpointName === "h72" ? "mature" : ""} key={checkpointName}>
-              <span><b>{checkpointLabels[checkpointName]}</b><small>{checkpoint
-                ? `${checkpoint.batch_count} 个有效数据点`
-                : recordedButExcludedCheckpoints.has(checkpointName)
-                  ? "已有记录 · 因 T0 或归因质量未纳入"
-                  : "等待记录"}</small></span>
-              <div><i style={{ width: `${width}%` }} /></div>
-              <strong>{checkpoint ? `+${integer.format(checkpoint.average_browse_delta)}` : "—"}<small>平均浏览</small></strong>
-              <strong>{checkpoint ? `+${checkpoint.average_inquiry_delta}` : "—"}<small>平均咨询</small></strong>
-            </article>;
-          })}
-        </div>
-        <p><Timer size={15} weight="duotone" />1h / 6h 只看过程，24h / 72h 才进入经营结论；这些是 T0 后观察增量，不等同于平台因果归因，因此还会结合自然基线、重叠批次和样本量审查。</p>
-      </section>
-
-      <section className="exposure-time-card" aria-labelledby="time-comparison-title">
-        <header><span><small>BEIJING TIME WINDOWS</small><h4 id="time-comparison-title">投放时段对比</h4></span><em>按开始时间归入 2 小时窗口</em></header>
-        {analytics.time_buckets.length ? <div className="exposure-time-list">
-          {analytics.time_buckets.slice(0, 5).map((bucket, index) => <article className={bucket.recommended ? "recommended" : ""} key={bucket.bucket}>
-            <i>{index + 1}</i>
-            <span><b>{bucket.time_range}{bucket.recommended && <em>当前优先</em>}</b><small>{bucket.batch_count} 批 · 投入 {moneyExact.format(bucket.total_cost)}</small></span>
-            <strong>+{bucket.average_browse_delta}<small>平均浏览</small></strong>
-            <strong>+{bucket.average_inquiry_delta}<small>平均咨询</small></strong>
-            <strong>{bucket.cost_per_inquiry === null ? "—" : moneyExact.format(bucket.cost_per_inquiry)}<small>每咨询成本</small></strong>
-          </article>)}
-        </div> : <div className="exposure-time-empty"><Clock size={28} weight="duotone" /><span><b>还不能比较时段</b><small>至少需要 2 个无重叠且达到 24h / 72h 的批次；同一时段重复验证后才会标记优先。</small></span></div>}
-      </section>
-    </div></>}
-
-  </section>;
-}
-
 interface BatchDraftState {
+  requestId: string;
   selectedIds: string[];
   cost: string;
   note: string;
@@ -1499,6 +1408,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
       .slice(0, 3)
       .map((product) => product.external_id);
     setBatchDraft({
+      requestId: crypto.randomUUID(),
       selectedIds: plannedIds.length ? plannedIds : fallbackIds,
       cost: "5.9",
       note: "",
@@ -1660,7 +1570,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
         return;
       }
       const recorded = await localPlatformService.recordTrafficBatch({
-        request_id: crypto.randomUUID(),
+        request_id: batchDraft.requestId,
         item_external_ids: batchDraft.selectedIds,
         actual_cost: Math.max(0, Number(batchDraft.cost) || 0),
         plan_slot_id: null,
@@ -1672,7 +1582,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
       setSelectedBatchId(recorded.id);
       setExpandedBatchId(null);
       navigateWorkspace("exposure", "batch", recorded.id);
-      notify(recorded.status === "invalidated" ? "真实投流已记录；因缺少可靠 T0，仅保留事实，不生成误导性结论" : "真实投流已按服务端北京时间记录，48 小时观察已开始");
+      notify(recorded.status === "invalidated" ? "真实投流与批次费用已记录；T0 证据不足，仅保留事实，不生成检查点或经营结论" : "真实投流已按服务端北京时间记录，48 小时观察已开始");
       await load(true);
     } catch (caught) {
       notify(caught instanceof Error ? caught.message : "真实投流记录失败");
@@ -1949,7 +1859,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
           total_exposure: batchOperation.totalExposure ? Math.max(0, Number(batchOperation.totalExposure) || 0) : null,
           note: batchOperation.note.trim(),
         });
-        notify("套餐完成信息已记录；后续浏览和咨询仍会归入 24h / 72h 观察");
+        notify(`套餐完成信息已记录；后续浏览和咨询仍会归入 ${batchOperation.batch.observation_window_hours}h 观察`);
       } else {
         await localPlatformService.recordTrafficCheckpoint(batchOperation.batch.id, {
           checkpoint: batchOperation.checkpoint,
@@ -2475,6 +2385,12 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
   const managedProducts = data.products.filter(
     (product) => product.ownership_status === "owned" && product.monitoring_enabled,
   );
+  const verifiedOwnedProducts = data.products.filter(
+    (product) => product.ownership_status === "owned",
+  );
+  const inactiveOwnedProducts = verifiedOwnedProducts.filter(
+    (product) => !product.monitoring_enabled,
+  );
   // Kept only for historical API/audit compatibility. New exposure records
   // are actual-time-only, so the plan/recommended-time workspace is not shown.
   const legacyTrafficPlanningVisible: boolean = false;
@@ -2537,81 +2453,54 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
     plannedBatchCount ? `${plannedBatchCount} 个待开始` : "",
   ].filter(Boolean).join(" · ") || "当前无待处理批次";
 
-  const renderMarketReference = (expanded = false) => <section id={expanded ? "product-market-reference" : undefined} className={`product-market-reference-card ${expanded ? "is-expanded" : ""}`}>
-    <header>
-      <span><small>MARKET REFERENCE</small><h3>市场参考</h3></span>
-      <em className={`market-stability status-${data.market_reference.stability.status}`}>{data.market_reference.stability.label}</em>
-    </header>
-    {!data.market_reference.update_completed && data.market_reference.reminder.status !== "skipped" && <div className="market-reminder-banner">
-      <BellRinging size={23} weight="duotone" />
-      <span><b>{data.market_reference.reminder.status === "snoozed" ? "提醒已延后" : "今日市场参考未更新"}</b><small>{data.market_reference.reminder.status === "snoozed" && data.market_reference.reminder.snoozed_until ? `将在 ${formatDate(data.market_reference.reminder.snoozed_until)} 再提醒` : "北京时间 20:00 检查；更新任一关键词后自动清除"}</small><em>只提醒，不会自动搜索或打开新网站</em></span>
-      <div><button type="button" onClick={() => setMarketImportOpen(true)}>现在更新</button><button type="button" onClick={() => void snoozeMarketReminder()}>今晚稍后</button><button type="button" onClick={() => void skipMarketReminder()}>今日不再提醒</button></div>
-    </div>}
-    {data.market_reference.update_completed && <div className="market-reminder-banner is-complete"><CheckCircle size={23} weight="fill" /><span><b>今日市场参考已更新</b><small>{data.market_reference.current_sample?.result_count || 0} 条公开结果 · {formatDate(data.market_reference.last_updated_at)}</small><em>同一关键词同一天只保留一个样本</em></span></div>}
+  const renderMarketReference = (expanded = false) => <MarketReferenceWorkbench
+    busy={busy}
+    chooseRecommendedKeyword={chooseRecommendedKeyword}
+    customKeyword={customKeyword}
+    data={data}
+    expanded={expanded}
+    keywordMode={keywordMode}
+    returnToRecommendedKeyword={returnToRecommendedKeyword}
+    saveCommonKeyword={saveCommonKeyword}
+    setCustomKeyword={setCustomKeyword}
+    setKeywordMode={setKeywordMode}
+    setMarketImportOpen={setMarketImportOpen}
+    setSaveCommonKeyword={setSaveCommonKeyword}
+    skipMarketReminder={skipMarketReminder}
+    snoozeMarketReminder={snoozeMarketReminder}
+    useCustomMarketKeyword={useCustomMarketKeyword}
+  />;
 
-    <div className="market-keyword-tabs" role="tablist" aria-label="关键词来源">
-      <button type="button" role="tab" aria-selected={keywordMode === "recommended"} className={keywordMode === "recommended" ? "active" : ""} onClick={() => setKeywordMode("recommended")}>系统推荐</button>
-      <button type="button" role="tab" aria-selected={keywordMode === "custom"} className={keywordMode === "custom" ? "active" : ""} onClick={() => setKeywordMode("custom")}>我的关键词</button>
-    </div>
 
-    {keywordMode === "recommended" ? <div className="market-keyword-editor">
-      <div className="market-editor-title"><span><b>今日推荐搜索词</b><small>根据咨询需求、商品缺口、历史参考和交付容量生成</small></span><Info size={17} /></div>
-      <div className="market-keyword-options">
-        {data.market_reference.recommendations.map((candidate) => {
-          const selectedKeyword = data.market_reference.mode === "recommended" && data.market_reference.selected_keyword === candidate.keyword;
-          return <button type="button" className={selectedKeyword ? "selected" : ""} aria-pressed={selectedKeyword} disabled={busy} onClick={() => void chooseRecommendedKeyword(candidate.keyword)} key={candidate.keyword}>
-            <i>{selectedKeyword ? <CheckCircle size={18} weight="fill" /> : <span />}</i><span><b>{candidate.keyword}</b><small>{candidate.reason}</small></span><em>{confidenceLabels[candidate.confidence] || candidate.confidence}</em>
-          </button>;
-        })}
-      </div>
-      <div className="market-editor-actions"><button type="button" className="product-primary-button" disabled={busy || data.market_reference.mode !== "recommended"} onClick={() => setMarketImportOpen(true)}><MagnifyingGlass size={16} />使用选中关键词更新</button><button type="button" className="product-outline-button" onClick={() => setKeywordMode("custom")}>我有自己的关键词</button></div>
-    </div> : <div className="market-keyword-editor custom-mode">
-      <div className="market-editor-title"><span><b>今天用我的关键词</b><small>有明确方向时，可临时替代系统推荐</small></span><PencilSimple size={17} /></div>
-      <input value={customKeyword} onChange={(event) => setCustomKeyword(event.target.value)} placeholder="例如：uni-app 页面修改" maxLength={80} />
-      <label className="market-common-toggle"><input type="checkbox" checked={saveCommonKeyword} onChange={(event) => setSaveCommonKeyword(event.target.checked)} /><span>加入常用关键词</span><small>不勾选时仅本次验证</small></label>
-      {data.market_reference.common_keywords.length > 0 && <div className="market-common-keywords">{data.market_reference.common_keywords.map((keyword) => <button type="button" onClick={() => setCustomKeyword(keyword)} key={keyword}>{keyword}</button>)}</div>}
-      <div className="market-editor-actions"><button type="button" className="product-primary-button" disabled={busy || !customKeyword.trim()} onClick={() => void useCustomMarketKeyword()}>使用我的关键词更新</button><button type="button" className="product-outline-button" onClick={() => { setKeywordMode("recommended"); void returnToRecommendedKeyword(); }}>返回系统推荐</button></div>
-    </div>}
-
-    <div className="market-import-row">
-      <FolderOpen size={24} weight="duotone" />
-      <span><b>{data.market_reference.current_sample ? "已导入今天的市场参考" : "尚未导入市场参考"}</b><small>使用现有 Ego Lite 搜索，由 Codex 整理公开字段后粘贴导入；不会打开第二个网站</small></span>
-      <button type="button" onClick={() => setMarketImportOpen(true)}><UploadSimple size={16} />{data.market_reference.current_sample ? "修正导入" : "导入参考"}</button>
-    </div>
-
-    {expanded && <div className="market-sample-detail">
-      <div className="market-sample-summary">
-        <span><small>当前关键词</small><b>{data.market_reference.selected_keyword || "尚未选择"}</b></span>
-        <span><small>近 30 天样本</small><b>{data.market_reference.benchmark.sample_days} 天</b></span>
-        <span><small>前 10 位公开结果</small><b>{data.market_reference.benchmark.high_visibility_result_count} 条</b></span>
-        <span><small>多日重复结构</small><b>{data.market_reference.benchmark.repeated_result_count} 个</b></span>
-      </div>
-      <div className="market-benchmark-panel">
-        <header><span><TrendUp size={18} weight="duotone" /><b>高可见市场基准</b></span><em className={`confidence-${data.market_reference.benchmark.confidence}`}>{confidenceLabels[data.market_reference.benchmark.confidence] || data.market_reference.benchmark.confidence}</em></header>
-        <div className="market-benchmark-grid">
-          <span><small>公开标价中位数</small><b>{data.market_reference.benchmark.median_price === null ? "—" : moneyExact.format(data.market_reference.benchmark.median_price)}</b><em>{data.market_reference.benchmark.price_low === null || data.market_reference.benchmark.price_high === null ? "等待更多标价" : `${moneyExact.format(data.market_reference.benchmark.price_low)}–${moneyExact.format(data.market_reference.benchmark.price_high)}`}</em></span>
-          <span><small>标题长度中位数</small><b>{data.market_reference.benchmark.median_title_length === null ? "—" : `${data.market_reference.benchmark.median_title_length} 字`}</b><em>只用于结构参考</em></span>
-          <span><small>常见能力词</small><b>{data.market_reference.benchmark.common_title_terms.slice(0, 4).join(" · ") || "等待多日样本"}</b><em>不会复制完整标题</em></span>
-          <span><small>常见公开标签</small><b>{data.market_reference.benchmark.common_tags.slice(0, 4).join(" · ") || "暂无稳定标签"}</b><em>仅来自人工导入字段</em></span>
+  const overviewControls = <details className="product-command-card reference-product-controls"><summary>商品管理与采集设置</summary>
+      <details className="product-command-copy"><summary>采集安全说明</summary>
+        <div className="product-safety-note"><ShieldCheck size={18} weight="fill" /><span><b>只读安全边界</b>{data.collection.safety_note}</span></div>
+      </details>
+      <div className="product-collection-panel" id="product-collection">
+        <div><small>采集计划 · 北京时间</small><strong>{data.collection.schedule}</strong><span>{data.collection.configured ? `下次计划 ${formatDate(data.collection.next_collection_at)}（北京时间）` : "等待配置闲鱼连接"}</span></div>
+        {(data.collection.latest_attempt || data.collection.last_run) && runPresentation && <p className={`collection-result collection-${(data.collection.latest_attempt || data.collection.last_run)!.status}`}><CheckCircle size={16} weight="fill" />{runPresentation.label}<small>{runPresentation.detail}</small></p>}
+        {data.collection.attempts.length > 0 && <div className="collection-log-shell">
+          <button type="button" className="collection-log-toggle" aria-expanded={collectionLogOpen} onClick={() => setCollectionLogOpen((value) => !value)}><span><Clock size={15} />采集日志</span><small>{data.collection.attempts.length} 次记录</small><CaretRight className={collectionLogOpen ? "expanded" : ""} size={14} /></button>
+          {collectionLogOpen && <div className="collection-log-list">{data.collection.attempts.map((attempt) => <CollectionAttemptLog attempt={attempt} key={attempt.id} />)}</div>}
+        </div>}
+        <div className="product-command-actions">
+          <button className="product-outline-button" onClick={openManagement}><Package size={16} />商品管理</button>
+          {!selected && <button className="product-outline-button" onClick={openRegistration}><Plus size={16} />添加商品</button>}
+          <button className="product-primary-button" disabled={busy || !data.collection.configured} onClick={() => void collectManually()}>{collectingScope === "all" ? <ArrowClockwise className="spin" size={16} /> : <ArrowClockwise size={16} />}{data.collection.configured ? "手动采集全部" : "等待渠道配置"}</button>
         </div>
-        <ul>{data.market_reference.benchmark.evidence.map((line) => <li key={line}>{line}</li>)}</ul>
       </div>
-      {data.market_reference.current_sample ? <div className="market-result-table" role="table" aria-label="今天导入的公开搜索结果">
-        <div role="row"><span>位置</span><span>标题</span><span>价格</span><span>公开标签</span></div>
-        {data.market_reference.current_sample.results.map((result) => <div role="row" key={`${result.position}-${result.title}`}><span>#{result.position}</span><span>{result.title}</span><span>{result.price === null ? "—" : moneyExact.format(result.price)}</span><span>{result.tags.join("、") || "—"}</span></div>)}
-      </div> : <div className="product-empty-state compact-market-empty"><MagnifyingGlass size={34} weight="duotone" /><h4>还没有今天的真实搜索参考</h4><p>先在已登录的 Ego Lite 中搜索当前关键词，再把 Codex 整理出的 JSON 导入。</p></div>}
-    </div>}
-    <footer><Info size={14} />推荐词只用于搜索验证；连续多日稳定后才判断高可见，不会称为“闲鱼官方热门”。</footer>
-  </section>;
+    </details>;
 
-  return <div className="product-intelligence-page">
-    <section className="product-metrics-grid product-metrics-first" aria-label="商品经营指标">
-      <ProductMetric icon={Package} label="我的商品" value={`${data.summary.monitored_products}`} detail={`${data.summary.active_products} 个可经营 · ${data.summary.excluded_products} 个已排除`} tone="purple" />
+  const overviewFacts = <details className="product-overview-facts"><summary>经营概况 · {managedProducts.length} 个启用商品</summary><section className="product-metrics-grid product-metrics-first" aria-label="商品经营指标">
+      <ProductMetric icon={Package} label="已验证本人商品" value={`${verifiedOwnedProducts.length}`} detail={`${managedProducts.length} 个启用 · ${inactiveOwnedProducts.length} 个历史停用 · ${data.summary.pending_products} 个待确认 · ${data.summary.excluded_products} 个他人排除`} tone="purple" />
       <ProductMetric icon={BellRinging} label="待补全信息" value={`${data.products.filter((product) => product.data_gaps.length > 0).length}`} detail="商品快照、咨询与实验基线" tone="orange" />
       <ProductMetric icon={Coins} label="本周曝光投入" value={moneyExact.format(data.traffic_summary.spent_this_week)} detail={`初始周上限 ${moneyExact.format(data.operating_plan.weekly_budget)}`} tone="green" />
       <ProductMetric icon={CalendarCheck} label="有效批次" value={`${data.traffic_summary.effective_batch_count}`} detail={`${data.summary.snapshot_days} 个快照日 · ${analysisStageLabels[data.traffic_summary.analysis_stage] || "学习中"}`} tone="blue" />
       <ProductMetric icon={Gauge} label="交付负载" value={`${data.summary.active_projects}/${data.summary.delivery_capacity}`} detail="满载时自动建议收缩流量" tone="red" />
-    </section>
+    </section></details>;
+
+  return <div className="product-intelligence-page">
+    {activeView === 'overview' && !selected && <>{overviewFacts}{overviewControls}</>}
 
     {activeView === "exposure" && <section className="actual-traffic-observation-hero" aria-labelledby="actual-traffic-observation-title">
       <div>
@@ -2656,27 +2545,6 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
       </div>}
     </section>}
 
-    {activeView === "overview" && <section className="product-command-card">
-      <div className="product-command-copy">
-        <span className="product-eyebrow"><Sparkle size={14} weight="fill" /> PRODUCT INTELLIGENCE</span>
-        <h2>今天只做最值得做的商品动作</h2>
-        <p>系统每天自动读取一次商品与经营数据，也支持你手动刷新全部或指定商品。</p>
-        <div className="product-safety-note"><ShieldCheck size={18} weight="fill" /><span><b>只读安全边界</b>{data.collection.safety_note}</span></div>
-      </div>
-      <div className="product-collection-panel" id="product-collection">
-        <div><small>采集计划 · 北京时间</small><strong>{data.collection.schedule}</strong><span>{data.collection.configured ? `下次计划 ${formatDate(data.collection.next_collection_at)}（北京时间）` : "等待配置闲鱼连接"}</span></div>
-        {(data.collection.latest_attempt || data.collection.last_run) && runPresentation && <p className={`collection-result collection-${(data.collection.latest_attempt || data.collection.last_run)!.status}`}><CheckCircle size={16} weight="fill" />{runPresentation.label}<small>{runPresentation.detail}</small></p>}
-        {data.collection.attempts.length > 0 && <div className="collection-log-shell">
-          <button type="button" className="collection-log-toggle" aria-expanded={collectionLogOpen} onClick={() => setCollectionLogOpen((value) => !value)}><span><Clock size={15} />采集日志</span><small>{data.collection.attempts.length} 次记录</small><CaretRight className={collectionLogOpen ? "expanded" : ""} size={14} /></button>
-          {collectionLogOpen && <div className="collection-log-list">{data.collection.attempts.map((attempt) => <CollectionAttemptLog attempt={attempt} key={attempt.id} />)}</div>}
-        </div>}
-        <div className="product-command-actions">
-          <button className="product-outline-button" onClick={openManagement}><Package size={16} />商品管理</button>
-          <button className="product-outline-button" onClick={openRegistration}><Plus size={16} />添加商品</button>
-          <button className="product-primary-button" disabled={busy || !data.collection.configured} onClick={() => void collectManually()}>{collectingScope === "all" ? <ArrowClockwise className="spin" size={16} /> : <ArrowClockwise size={16} />}{data.collection.configured ? "手动采集全部" : "等待渠道配置"}</button>
-        </div>
-      </div>
-    </section>}
 
     {activeView === "exposure" && legacyTrafficPlanningVisible && trafficGrowth && <TrafficGrowthWorkbench
       overview={trafficGrowth}
@@ -2804,7 +2672,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
           <header><small>EARLY SIGNALS</small><h4 id="early-observation-title">早期观察</h4></header>
           <div><Clock size={19} weight="duotone" /><span><small>下一检查点</small><b>{activeObservationBatch?.due_checkpoint ? `${observationCheckpointLabel}${activeObservationBatch.due_ready ? " · 已到期" : " · 未到期"}` : "暂无进行中批次"}</b>{activeObservationBatch?.due_at && <em>{formatTrafficDateTime(activeObservationBatch.due_at)}（北京时间）</em>}</span></div>
           <div><Gauge size={19} weight="duotone" /><span><small>成熟度</small><b>{activeObservationBatch ? `${activeObservationBatch.checkpoint_progress}/4` : "0/4"}</b><em>+1h / +6h 仅作过程观察</em></span></div>
-          <div className="is-warning"><Warning size={19} weight="duotone" /><span><small>当前结论边界</small><b>{activeObservationBatch.attribution_status === "exploratory" ? "低置信探索，不进入时段或预算" : "不能用于时段或预算结论"}</b><em>{activeObservationBatch.attribution_status === "exploratory" ? "早间参考只支持方向性变化，永久排除复投和正式商品优先级" : "+24h / +72h 且 T0 合格后才进入比较"}</em></span></div>
+          <div className="is-warning"><Warning size={19} weight="duotone" /><span><small>当前结论边界</small><b>{activeObservationBatch.attribution_status === "exploratory" ? "低置信探索，不进入时段或预算" : "不能用于时段或预算结论"}</b><em>{activeObservationBatch.attribution_status === "exploratory" ? "早间参考只支持方向性变化，永久排除复投和正式商品优先级" : `+24h / ${checkpointShortLabels[activeObservationBatch.terminal_checkpoint]} 且 T0 合格后才进入比较`}</em></span></div>
           <div><ShieldCheck size={19} weight="duotone" /><span><small>成熟有效批次</small><b>{data.operating_plan.effective_batch_count} 个</b><em>不会用旧 T0 或重叠批次排名</em></span></div>
         </aside>}
       </div>
@@ -2867,30 +2735,20 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
 
     {activeView === "launch" && <>
       <section className="product-launch-layout">
-        <section className="product-launch-radar-card" id="product-launch-recommendation">
-          <header><span><small>LAUNCH RADAR</small><h3>上新雷达</h3></span><em className={`confidence-${data.launch_recommendation.confidence}`}>{confidenceLabels[data.launch_recommendation.confidence] || data.launch_recommendation.confidence}</em></header>
-          <div className="launch-radar-hero">
-            <span className="launch-radar-icon"><Target size={28} weight="duotone" /></span>
-            <div><em className={`launch-action-pill action-${data.launch_recommendation.recommended_action}`}>{launchActionLabels[data.launch_recommendation.recommended_action] || data.launch_recommendation.recommended_action}</em><h2>{data.launch_recommendation.recommended_action === "launch" ? "证据已达到上新阈值" : data.launch_recommendation.recommended_action === "modify_existing" ? "已有同类商品，先优化再决定" : "先补市场证据，再确认上新"}</h2><p>{data.launch_recommendation.rationale[data.launch_recommendation.rationale.length - 1]}</p></div>
-          </div>
-          <div className="launch-signal-strip">
-            <span><ChatCircleDots size={21} weight="duotone" /><small>近 90 天</small><b>{data.launch_recommendation.demand_conversations} 个相关咨询</b></span>
-            <span><Storefront size={21} weight="duotone" /><small>供给覆盖</small><b>{data.launch_recommendation.theme} · {data.launch_recommendation.matching_product_count} 个商品</b></span>
-            <span><ListChecks size={21} weight="duotone" /><small>高可见市场基准</small><b>{data.launch_recommendation.benchmark.sample_days ? `${data.launch_recommendation.benchmark.sample_days} 天 · ${data.launch_recommendation.benchmark.high_visibility_result_count} 条` : "参考待导入"}</b></span>
-          </div>
-          <div className="launch-decision-grid">
-            <article><small>建议商品类型</small><b>{data.launch_recommendation.suggested_product_type}</b><em>来自需求主题与供给缺口</em></article>
-            <article><small>标题方向</small><b>{data.launch_recommendation.title_direction}</b><em>只提取通用词，不复制竞品标题</em></article>
-            <article><small>公开价格参考</small><b>{data.launch_recommendation.price_reference}</b><em>最终报价仍由工时与风险决定</em></article>
-            <article><small>差异化重点</small><b>{data.launch_recommendation.market_differentiation}</b><em>强调交付、验收和边界</em></article>
-          </div>
-          <div className="launch-recommendation-row">
-            <Clock size={24} weight="duotone" />
-            <span><small>建议发布窗口</small><b>{data.launch_recommendation.recommended_window}</b><em>{data.launch_recommendation.timing_basis}</em></span>
-            {data.launch_recommendation.recommended_action === "launch" ? <button type="button" className="product-primary-button" disabled={busy || !data.launch_recommendation.keyword || data.launch_plans.some((plan) => plan.keyword === data.launch_recommendation.keyword && ["proposed", "planned"].includes(plan.status))} onClick={() => void createLaunchPlan()}><Plus size={17} />{data.launch_plans.some((plan) => plan.keyword === data.launch_recommendation.keyword && ["proposed", "planned"].includes(plan.status)) ? "方案已建立" : "建立上新方案"}</button> : data.launch_recommendation.recommended_action === "modify_existing" ? <button type="button" className="product-outline-button" onClick={() => document.getElementById("product-modification-lab")?.scrollIntoView({ behavior: "smooth", block: "start" })}><PencilSimple size={17} />查看修改建议</button> : <button type="button" className="product-outline-button" disabled><Timer size={17} />继续积累证据</button>}
-          </div>
-          {data.launch_plans.length > 0 && <div className="launch-plan-list"><h4>我的手动上新方案</h4>{data.launch_plans.slice(0, 3).map((plan) => <article id={`product-launch-plan-${plan.id}`} key={plan.id}><i><FolderOpen size={17} /></i><span><b>{plan.title}</b><small>{plan.keyword} · {plan.recommended_window}</small></span><em>{plan.status === "planned" ? "待手动发布" : plan.status === "completed" ? "已完成" : plan.status === "cancelled" ? "已取消" : "待规划"}</em>{plan.status === "planned" && <button type="button" disabled={busy} onClick={() => void localPlatformService.updateLaunchPlan(plan.id, "completed").then(() => load(true)).catch((caught) => notify(caught instanceof Error ? caught.message : "状态更新失败"))}>标记完成</button>}</article>)}</div>}
-        </section>
+        <ProductLaunchWorkbench
+          busy={busy}
+          data={data}
+          onCompleteLaunchPlan={async (planId) => {
+            try {
+              await localPlatformService.updateLaunchPlan(planId, "completed");
+              await load(true);
+            } catch (caught) {
+              notify(caught instanceof Error ? caught.message : "状态更新失败");
+            }
+          }}
+          onCreateLaunchPlan={createLaunchPlan}
+          onShowModification={() => document.getElementById("product-modification-lab")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        />
 
         {renderMarketReference(false)}
       </section>
@@ -2952,6 +2810,26 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
 
     {activeView === "market" && <section className="product-market-page">{renderMarketReference(true)}</section>}
 
+    {activeView === "overview" && selected && <ProductOverviewWorkspace management={overviewControls} overview={overviewFacts} onAdd={openRegistration} products={products} selectedId={selected.external_id} onSelect={id=>navigateWorkspace("overview", "product", id)} context={<>        <div className="product-strategy-evidence"><h4>当前建议与证据</h4><div className="product-window-summary"><span className={`quality-${selected.data_quality}`}>{confidenceLabels[selected.data_quality] || selected.data_quality}</span>{selected.recent_windows.map((window) => <small key={window.days}>{window.days === 1 ? "24h" : `${window.days}d`}：{window.browse_delta === null ? "待积累" : `+${window.browse_delta} 浏览 / +${window.inquiry_delta || 0} 咨询`}</small>)}</div>{selected.recommendation && selected.recommendation.status !== "dismissed" ? <><p><AttentionBadge value={selected.recommendation.attention} /><b>{selected.recommendation.title}</b></p><ul>{selected.recommendation.actions.map((action) => <li key={action}><CheckCircle size={15} />{action}</li>)}</ul></> : <div className="compact-empty"><PauseCircle size={26} /><span><b>{selected.recommendation?.status === "dismissed" ? "今日建议已暂不处理" : selected.snapshot_count > 0 ? "当前暂无待处理建议" : "等待首个快照"}</b><small>{selected.recommendation?.status === "dismissed" ? "明日数据变化后会重新评估。" : selected.snapshot_count > 0 ? "可继续查看现有采集记录与经营趋势。" : "系统不会在没有数据时生成策略。"}</small></span></div>}</div>      {selected.actions.length > 0 && <div className="product-action-history"><h4>最近人工动作</h4>{selected.actions.slice(0, 5).map((action) => <p key={action.id}><i><CheckCircle size={15} weight="fill" /></i><span><b>{actionLabels[action.action_type] || action.action_type}</b><small>{action.note || "未填写备注"}</small></span><time>{formatDate(action.happened_at)}{action.cost > 0 && ` · ${money.format(action.cost)}`}</time></p>)}</div>}</>}><section className="product-panel product-detail-panel" id="product-detail">
+      <header className="product-detail-head"><div><span><Storefront size={20} weight="duotone" /></span><div className="product-detail-title"><small>SELECTED PRODUCT</small><h3>{selected.title}</h3><ProductCollectionBadge product={selected} /></div></div><div><button className="product-outline-button" disabled={busy} onClick={() => void collectManually(selected.external_id)}>{collectingScope === selected.external_id ? <ArrowClockwise className="spin" size={16} /> : <ArrowClockwise size={16} />}采集此商品</button><button className="product-outline-button" disabled={busy} onClick={() => void toggleMonitor(selected)}>{selected.monitoring_enabled ? <EyeSlash size={16} /> : <Eye size={16} />}{selected.monitoring_enabled ? "暂停监测" : "恢复监测"}</button><button className="product-outline-button" onClick={() => openBatchDraft(activePlanSlot, [selected.external_id])}><Megaphone size={16} />记录真实投流</button><button className="product-primary-button" onClick={() => openAction(selected, selected.recommendation)}><CheckCircle size={16} />记录商品修改</button></div></header>
+      {selected.last_error_detail && <div className="product-item-diagnostic"><Warning size={17} weight="fill" /><span><b>{selected.last_error_code === "access_verification" ? "今日正式采集未取得数据" : selected.last_error_code === "item_unavailable" ? "商品详情不可读取" : "最近一次采集未完成"}</b><small>{productDiagnosticDetail(selected)}</small><em>最近尝试 {formatDate(selected.last_attempt_at)}（北京时间） · 当前展示 {selected.last_collected_at ? `${formatDate(selected.last_collected_at)} 的历史快照` : "的不是今日商品数据"}</em></span></div>}
+      <ProductMetricSummary product={selected}/>
+      <div className="product-detail-grid">
+        <div className="product-detail-trend"><h4>经营浏览趋势</h4><ProductTrend product={selected} /></div>
+        <div className="product-funnel"><h4>从经营浏览到成交</h4><div><span><small>经营浏览</small><b>{integer.format(selected.browse_count)}</b><em>原始 {integer.format(selected.raw_browse_count)}</em></span><CaretRight size={17} /><span><small>咨询</small><b>{selected.inquiry_count}</b><em>{selected.inquiry_rate === null ? "—" : `${selected.inquiry_rate}%`}</em></span><CaretRight size={17} /><span><small>项目</small><b>{selected.converted_project_count}</b><em>{selected.deal_rate === null ? "—" : `${selected.deal_rate}%`}</em></span></div></div>
+
+      </div>
+      <section className="product-profit-detail" aria-label="商品实际利润构成">
+        <details className="product-profit-formula">
+          <summary><span>实际利润构成</span><b>{money.format(selected.profit_total)}</b><small>{selected.profit_is_realtime ? "统一账本实时派生" : "商品快照口径"}</small></summary>
+          <div><span><small>净确认到账</small><b>{money.format(selected.revenue_total)}</b></span><i>−</i><span><small>项目支出</small><b>{money.format(selected.project_expense_total)}</b></span><i>−</i><span><small>退款</small><b>{money.format(selected.project_refund_total)}</b></span><i>=</i><span className="profit-total"><small>实际利润</small><b>{money.format(selected.profit_total)}</b></span></div>
+          <p><Info size={15} />当前利润会随项目确认到账实时更新；下方历史商品快照仍保留采集当时的数据，不追溯改写。</p>
+        </details>
+        <ProductLinkedProjects projects={selected.linked_projects}/>
+      </section>
+
+    </section></ProductOverviewWorkspace>}
+
     {(activeView === "overview" || activeView === "exposure") && <section className={`product-workspace-grid workspace-${activeView}`}>
       <main className="product-main-column">
         {activeView === "exposure" && <section className="product-panel product-batch-panel">
@@ -3007,16 +2885,16 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
             <div className="product-batch-actions">
               {batch.total_exposure !== null && <span>套餐总曝光 <b>{integer.format(batch.total_exposure)}</b></span>}
               {batch.started_at && (batch.status !== "invalidated" || batch.exploratory_available) && <button type="button" aria-expanded={expandedBatchId === batch.id} onClick={() => setExpandedBatchId((current) => current === batch.id ? null : batch.id)}>{expandedBatchId === batch.id ? "收起分析" : batch.analysis_tier === "exploratory" ? "展开探索分析" : "展开完整曲线"}</button>}
-              {batch.status === "planned" && <><button type="button" disabled={busy} onClick={() => void cancelBatch(batch)}>取消计划</button>{batch.needs_replan && <button type="button" disabled={busy} onClick={() => void openReplan(batch)}><ArrowClockwise size={14} />预览重排</button>}{batch.start_blocked && <button type="button" className="actual-overlap-button" disabled={busy} onClick={(event) => void openActualOverlap(batch, event.currentTarget)}><ClipboardText size={14} />补记已发生投放</button>}<button type="button" className="primary" disabled={busy || batch.start_blocked} title={batch.start_blocked_reason || undefined} onClick={() => void openStartBatch(batch)}><Play size={14} weight="fill" />{batch.baseline_status === "ready" ? "确认投放并开始计时" : batch.start_blocked ? "等待冷却" : "准备 T0 并开始"}</button></>}
-              {batch.status === "running" && <button type="button" className="primary" disabled={busy} onClick={() => openBatchOperation(batch, "complete")}><CheckCircle size={14} />记录套餐完成</button>}
-              {["observing", "closed"].includes(batch.status) && batch.due_checkpoint && <button type="button" className="primary" disabled={busy || !batch.due_ready} title={batch.due_ready ? undefined : `最早 ${formatTrafficDateTime(batch.due_at)}（北京时间）`} onClick={() => openBatchOperation(batch, "checkpoint")}><ClipboardText size={14} />{batch.due_ready ? `记录 ${checkpointLabels[batch.due_checkpoint]}` : `${checkpointShortLabels[batch.due_checkpoint]} 未到期`}</button>}
+              {batch.is_legacy_protocol && <span>历史 72h 批次仅供查看</span>}
+              {!batch.is_legacy_protocol && batch.status === "running" && <button type="button" className="primary" disabled={busy} onClick={() => openBatchOperation(batch, "complete")}><CheckCircle size={14} />记录套餐完成</button>}
+              {!batch.is_legacy_protocol && ["observing", "closed"].includes(batch.status) && batch.due_checkpoint && <button type="button" className="primary" disabled={busy || !batch.due_ready} title={batch.due_ready ? undefined : `最早 ${formatTrafficDateTime(batch.due_at)}（北京时间）`} onClick={() => openBatchOperation(batch, "checkpoint")}><ClipboardText size={14} />{batch.due_ready ? `记录 ${checkpointLabels[batch.due_checkpoint]}` : `${checkpointShortLabels[batch.due_checkpoint]} 未到期`}</button>}
             </div>
             {expandedBatchId === batch.id && batch.started_at && (batch.status !== "invalidated" || batch.exploratory_available) && <ExposureProductDelta batches={[batch]} initialBatchId={batch.id} embedded />}
           </article>)}</div>
           </> : batchHistoryLoading ? <div className="product-batch-history-loading"><ArrowClockwise className="spin" size={20} />正在读取完整批次历史…</div> : <div className="product-empty-state product-batch-empty"><Megaphone size={38} weight="duotone" /><h4>还没有真实投流记录</h4><p>完成闲鱼人工投流后再来记录；系统以确认分钟开始 48 小时观察并记入批次总费用。</p><button onClick={() => openBatchDraft()}><Plus size={16} />记录第一笔真实投流</button></div>}
         </section>}
 
-        {activeView === "overview" && <><section className="product-panel product-priority-panel">
+        {activeView === "overview" && <><details className="workspace-secondary"><summary>全部商品建议与经营明细</summary><section className="product-panel product-priority-panel">
           <header><span><small>DAILY PRIORITIES</small><h3>今日优先策略</h3></span><em>{data.recommendations.length} 条有依据的建议</em></header>
           {data.recommendations.length ? <div className="product-priority-list">
             {visiblePriorityRecommendations.map((recommendation, index) => {
@@ -3033,7 +2911,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
                 <div className="priority-actions">
                   <strong>{recommendation.priority_score}<small>优先分</small></strong>
                   <button onClick={() => navigateWorkspace("overview", "product", recommendation.item_external_id)}>查看商品 <CaretRight size={14} /></button>
-                  {product && (recommendation.strategy_code === "scale_candidate" ? <button className="priority-primary" onClick={() => openBatchDraft(activePlanSlot, [product.external_id])}>加入多商品批次</button> : <button className="priority-primary" onClick={() => openAction(product, recommendation)}>记录商品修改</button>)}
+                  {product && (recommendation.strategy_code === "scale_candidate" ? <button className="priority-primary" onClick={() => openBatchDraft(activePlanSlot, [product.external_id])}>记录这组真实投流</button> : <button className="priority-primary" onClick={() => openAction(product, recommendation)}>记录商品修改</button>)}
                   <button className="priority-dismiss" disabled={busy} onClick={() => void dismissRecommendation(recommendation)}>暂不处理</button>
                 </div>
               </article>;
@@ -3056,19 +2934,19 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
             </button>)}
           </div> : <div className="product-empty-state"><MagnifyingGlass size={40} weight="duotone" /><h4>{normalizedSearch ? "没有匹配的商品" : "还没有监测商品"}</h4><p>{normalizedSearch ? "可以调整顶部搜索关键词。" : "添加闲鱼商品 ID 或链接，系统会在下一次每日采集中读取数据。"}</p>{!normalizedSearch && <button onClick={() => setRegisterOpen(true)}><Plus size={16} />添加第一个商品</button>}</div>}
           {products.length > 8 && !normalizedSearch && !focusedProductId && <button type="button" className="product-section-expand" aria-expanded={inventoryExpanded} onClick={() => setInventoryExpanded((value) => !value)}>{inventoryExpanded ? "收起商品列表" : `展开全部 ${products.length} 件商品`}<CaretRight className={inventoryExpanded ? "expanded" : ""} size={15} /></button>}
-        </section></>}
+        </section></details></>}
       </main>
 
-      {activeView === "overview" && <aside className="product-insight-column">
+      {activeView === "overview" && <details className="workspace-secondary"><summary>全局经营依据与市场机会</summary><aside className="product-insight-column">
         <section className="product-panel product-rule-engine-card">
           <header><span><small>LOCAL RULE ENGINE</small><h3>决策依据</h3></span><ShieldCheck size={22} weight="duotone" /></header>
           <div className="product-rule-stage"><i><Gauge size={18} /></i><span><small>当前阶段</small><b>{analysisStageLabels[data.traffic_summary.analysis_stage] || data.traffic_summary.analysis_stage}</b></span><em>{confidenceLabels[data.operating_plan.data_quality] || "低置信"}</em></div>
           <ul>
             <li><b>一次一批</b><span>约 ¥5.9～¥6 可包含 3–5 件商品</span></li>
-            <li><b>长尾观察</b><span>1 小时套餐结束后继续看 24h / 72h</span></li>
+            <li><b>长尾观察</b><span>新记录持续观察到 48h，旧 72h 批次只读保留</span></li>
             <li><b>时段排序</b><span>只用成熟批次比较北京时间 2 小时窗口</span></li>
             <li><b>防止重叠</b><span>同一商品尽量间隔 72 小时</span></li>
-            <li><b>真实成本</b><span>开始批次后自动计入流量曝光支出</span></li>
+            <li><b>真实成本</b><span>确认已完成真实投流后计入唯一批次支出</span></li>
             <li><b>全局保护</b><span>交付满载或预算用完时暂停全部新增曝光</span></li>
           </ul>
           <p>{data.operating_plan.change_summary}</p>
@@ -3085,34 +2963,9 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
           <header><span><small>DEMAND GAPS</small><h3>可以发布什么</h3></span><Lightbulb size={22} weight="duotone" /></header>
           {data.demand_opportunities.length ? <div className="demand-list">{data.demand_opportunities.map((opportunity) => <article key={opportunity.theme}><i className={opportunity.posture === "已验证" ? "verified" : opportunity.posture === "供给缺口" ? "gap" : "observe"}><Target size={17} /></i><span><p><b>{opportunity.theme}</b><em>{opportunity.posture}</em></p><small>{opportunity.suggestion}</small><strong>{opportunity.conversation_count} 个会话 · {opportunity.converted_project_count} 个项目</strong></span></article>)}</div> : <div className="compact-empty"><Lightbulb size={28} /><span><b>等待需求信号</b><small>系统只从真实客户咨询中发现机会。</small></span></div>}
         </section>
-      </aside>}
+      </aside></details>}
     </section>}
 
-    {activeView === "overview" && selected && <section className="product-panel product-detail-panel" id="product-detail">
-      <header className="product-detail-head"><div><span><Storefront size={20} weight="duotone" /></span><div className="product-detail-title"><small>SELECTED PRODUCT</small><h3>{selected.title}</h3><em>商品 ID {selected.external_id} · 最近数据 {formatDate(selected.last_collected_at)}</em><ProductCollectionBadge product={selected} /></div></div><div><button className="product-outline-button" disabled={busy} onClick={() => void collectManually(selected.external_id)}>{collectingScope === selected.external_id ? <ArrowClockwise className="spin" size={16} /> : <ArrowClockwise size={16} />}采集此商品</button><button className="product-outline-button" disabled={busy} onClick={() => void toggleMonitor(selected)}>{selected.monitoring_enabled ? <EyeSlash size={16} /> : <Eye size={16} />}{selected.monitoring_enabled ? "暂停监测" : "恢复监测"}</button><button className="product-outline-button" onClick={() => openBatchDraft(activePlanSlot, [selected.external_id])}><Megaphone size={16} />加入曝光批次</button><button className="product-primary-button" onClick={() => openAction(selected, selected.recommendation)}><CheckCircle size={16} />记录商品修改</button></div></header>
-      {selected.last_error_detail && <div className="product-item-diagnostic"><Warning size={17} weight="fill" /><span><b>{selected.last_error_code === "access_verification" ? "今日正式采集未取得数据" : selected.last_error_code === "item_unavailable" ? "商品详情不可读取" : "最近一次采集未完成"}</b><small>{productDiagnosticDetail(selected)}</small><em>最近尝试 {formatDate(selected.last_attempt_at)}（北京时间） · 当前展示 {selected.last_collected_at ? `${formatDate(selected.last_collected_at)} 的历史快照` : "的不是今日商品数据"}</em></span></div>}
-      <div className="product-browse-accounting" aria-label="浏览量口径说明"><Eye size={18} weight="duotone" /><span><b>经营浏览 {integer.format(selected.browse_count)}</b><small>平台原始 {integer.format(selected.raw_browse_count)}，已排除 {selected.collection_views_excluded} 次成功采集自访问；经营策略只使用排除后的数据。</small></span></div>
-      <div className="product-detail-grid">
-        <div className="product-detail-trend"><h4>经营浏览趋势</h4><ProductTrend product={selected} /></div>
-        <div className="product-funnel"><h4>从经营浏览到成交</h4><div><span><small>经营浏览</small><b>{integer.format(selected.browse_count)}</b><em>原始 {integer.format(selected.raw_browse_count)}</em></span><CaretRight size={17} /><span><small>咨询</small><b>{selected.inquiry_count}</b><em>{selected.inquiry_rate === null ? "—" : `${selected.inquiry_rate}%`}</em></span><CaretRight size={17} /><span><small>项目</small><b>{selected.converted_project_count}</b><em>{selected.deal_rate === null ? "—" : `${selected.deal_rate}%`}</em></span></div><p><TrendUp size={16} />关联收入 {money.format(selected.revenue_total)} · 实际利润 {money.format(selected.profit_total)}</p></div>
-        <div className="product-strategy-evidence"><h4>当前建议与证据</h4><div className="product-window-summary"><span className={`quality-${selected.data_quality}`}>{confidenceLabels[selected.data_quality] || selected.data_quality}</span>{selected.recent_windows.map((window) => <small key={window.days}>{window.days === 1 ? "24h" : `${window.days}d`}：{window.browse_delta === null ? "待积累" : `+${window.browse_delta} 浏览 / +${window.inquiry_delta || 0} 咨询`}</small>)}</div>{selected.recommendation && selected.recommendation.status !== "dismissed" ? <><p><AttentionBadge value={selected.recommendation.attention} /><b>{selected.recommendation.title}</b></p><ul>{selected.recommendation.actions.map((action) => <li key={action}><CheckCircle size={15} />{action}</li>)}</ul></> : <div className="compact-empty"><PauseCircle size={26} /><span><b>{selected.recommendation?.status === "dismissed" ? "今日建议已暂不处理" : "等待首个快照"}</b><small>{selected.recommendation?.status === "dismissed" ? "明日数据变化后会重新评估。" : "系统不会在没有数据时生成策略。"}</small></span></div>}</div>
-      </div>
-      <section className="product-profit-detail" aria-label="商品实际利润构成">
-        <div className="product-profit-formula">
-          <header><span><small>REALIZED PROFIT</small><h4>实际利润构成</h4></span><em>{selected.profit_is_realtime ? "统一账本实时派生" : "商品快照口径"}</em></header>
-          <div><span><small>净确认到账</small><b>{money.format(selected.revenue_total)}</b></span><i>−</i><span><small>项目支出</small><b>{money.format(selected.project_expense_total)}</b></span><i>−</i><span><small>退款</small><b>{money.format(selected.project_refund_total)}</b></span><i>=</i><span className="profit-total"><small>实际利润</small><b>{money.format(selected.profit_total)}</b></span></div>
-          <p><Info size={15} />当前利润会随项目确认到账实时更新；下方历史商品快照仍保留采集当时的数据，不追溯改写。</p>
-        </div>
-        <div className="product-linked-projects">
-          <header><h4>关联项目 <span>{selected.linked_projects.length}</span></h4><small>一个商品可汇总多个项目</small></header>
-          {selected.linked_projects.length ? <div>{selected.linked_projects.map((project) => <article key={project.project_id}>
-            <span><i /><b>{project.project_name}</b><small>{project.relation_source === "project_binding" ? "项目绑定" : "会话兼容归属"}{project.latest_confirmed_at ? ` · 最近到账 ${formatDate(project.latest_confirmed_at)}` : " · 暂无确认到账"}</small></span>
-            <dl><div><dt>净到账</dt><dd>{money.format(project.net_confirmed_total)}</dd></div><div><dt>支出</dt><dd>{money.format(project.expense_total)}</dd></div><div><dt>退款</dt><dd>{money.format(project.refund_total)}</dd></div><div><dt>利润</dt><dd>{money.format(project.profit_total)}</dd></div></dl>
-          </article>)}</div> : <div className="product-profit-empty"><LinkSimple size={22} weight="duotone" /><span><b>尚未关联项目</b><small>可在项目驾驶舱为接单项目选择来源商品。</small></span></div>}
-        </div>
-      </section>
-      {selected.actions.length > 0 && <div className="product-action-history"><h4>最近人工动作</h4>{selected.actions.slice(0, 5).map((action) => <p key={action.id}><i><CheckCircle size={15} weight="fill" /></i><span><b>{actionLabels[action.action_type] || action.action_type}</b><small>{action.note || "未填写备注"}</small></span><time>{formatDate(action.happened_at)}{action.cost > 0 && ` · ${money.format(action.cost)}`}</time></p>)}</div>}
-    </section>}
 
     {managementOpen && <div className="product-modal-backdrop product-management-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setManagementBulkConfirm(false); setManagementOpen(false); } }}><section ref={managementDialogRef} className={`product-modal product-management-modal ${managementBulkConfirm ? "has-bulk-confirm" : ""}`} role="dialog" aria-modal="true" aria-labelledby="product-management-title">
       <header><span><Package size={20} /></span><div><h3 id="product-management-title">商品管理</h3><p>这里只显示当前正在采集的本人商品。</p></div><button type="button" aria-label="关闭" onClick={() => { setManagementBulkConfirm(false); setManagementOpen(false); }}><X size={18} /></button></header>
@@ -3162,8 +3015,8 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
         return <label className={checked ? "selected" : ""} key={product.external_id}><input type="checkbox" checked={checked} onChange={() => toggleBatchProduct(product.external_id)} /><i><Storefront size={16} weight="duotone" /></i><span><b>{product.title}</b><small>{product.data_quality === "low" ? "探索数据" : `${confidenceLabels[product.data_quality] || product.data_quality} · ${product.browse_count} 浏览`}</small></span><em>{checked ? <CheckCircle size={17} weight="fill" /> : <Plus size={16} />}</em></label>;
       })}</div></fieldset>
       <label><span>可选备注</span><textarea rows={3} value={batchDraft.note} onChange={(event) => setBatchDraft({ ...batchDraft, note: event.target.value })} placeholder="例如：本批次轮换测试数据库、前端和小程序服务商品" /></label>
-      <label className="actual-traffic-confirm"><input type="checkbox" checked={batchDraft.confirmedAlreadyPurchased} onChange={(event) => setBatchDraft({ ...batchDraft, confirmedAlreadyPurchased: event.target.checked })} /><span><b>我确认已经在闲鱼完成这批真实投流</b><small>系统不会代买曝光；确认后先实时采集整批 T0，全部成功才记录费用并开始观察。</small></span></label>
-      <div className="product-modal-note"><ShieldCheck size={17} /><span>点击确认后，服务端会串行只读采集全部所选商品作为本次 T0；整批成功后才创建批次和费用，失败时不创建记录且不会自动重试。</span></div>
+      <label className="actual-traffic-confirm"><input type="checkbox" checked={batchDraft.confirmedAlreadyPurchased} onChange={(event) => setBatchDraft({ ...batchDraft, confirmedAlreadyPurchased: event.target.checked })} /><span><b>我确认已经在闲鱼完成这批真实投流</b><small>系统不会代买曝光；确认后先保存真实投流与唯一批次费用，再尝试实时采集整批 T0。</small></span></label>
+      <div className="product-modal-note"><ShieldCheck size={17} /><span>整批 T0 全部可靠才开始 48 小时观察；失败则仅保留事实和费用，标记为证据不足，不生成检查点或经营结论，也不会自动重试。</span></div>
       <div className="product-modal-note warning"><Warning size={17} /><span>套餐曝光量只记录批次总数，不会虚构分摊到每件商品；单品效果看后续浏览、想要和咨询变化。</span></div>
       <footer><button type="button" onClick={() => setBatchDraft(null)}>取消</button><button className="product-primary-button" disabled={busy || batchDraft.selectedIds.length === 0 || !batchDraft.confirmedAlreadyPurchased}>{busy ? <ArrowClockwise className="spin" size={16} /> : <CheckCircle size={16} />}确认记录真实投流</button></footer>
     </form></div>}
@@ -3186,7 +3039,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
       </>}
       {batchStart.step === "confirm" && <>
         <div className="product-start-confirm-summary"><span><small>T0 准备时间</small><b>{formatTrafficDateTime(batchStart.preview.batch.baseline_prepared_at)}</b><em>{batchStart.preview.batch.baseline_status_label}</em></span><ArrowRight size={18} /><span><small>实际开始时间</small><b>点击确认时由服务端写入</b><em>不沿用计划时间，也不接受浏览器自填时间</em></span></div>
-        <div className="product-modal-note"><Timer size={17} /><span>我已在闲鱼人工完成这批商品的曝光购买。点击后，T0、+1h、+6h、+24h、+72h 都从当前实际操作时间计算。</span></div>
+        <div className="product-modal-note"><Timer size={17} /><span>这是历史计划批次；当前版本仅允许查看，不再支持从计划启动投流。</span></div>
         <div className="product-modal-note warning"><Coins size={17} /><span>确认会创建或更新唯一批次级曝光支出 {moneyExact.format(batchStart.preview.batch.actual_cost)}；不会拆分到单件商品，也不会自动修改或投放商品。</span></div>
       </>}
       <footer>

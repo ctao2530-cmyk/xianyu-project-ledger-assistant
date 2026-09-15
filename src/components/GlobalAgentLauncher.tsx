@@ -10,11 +10,11 @@ import type { GlobalAgentTargetPage } from "../data/localPlatformService";
 import { GlobalAgentPanel } from "./GlobalAgentPanel";
 
 
-interface Point { x: number; y: number }
+interface Point { x: number; y: number; viewportWidth?: number; viewportHeight?: number; size?: number }
 const POSITION_KEY = "xunying.global-agent.launcher.v1";
 
 function launcherSize() {
-  return window.matchMedia("(max-width: 680px)").matches ? 58 : 64;
+  return window.matchMedia("(max-width: 680px)").matches ? 48 : 64;
 }
 
 function defaultPosition(): Point {
@@ -39,7 +39,23 @@ function clampPosition(point: Point): Point {
 function readPosition(): Point {
   try {
     const parsed = JSON.parse(localStorage.getItem(POSITION_KEY) || "null") as Point | null;
-    if (parsed && Number.isFinite(parsed.x) && Number.isFinite(parsed.y)) return clampPosition(parsed);
+    if (parsed && Number.isFinite(parsed.x) && Number.isFinite(parsed.y)) {
+      const size = launcherSize();
+      const leftEdge = window.matchMedia("(max-width: 680px)").matches ? 16 : 30;
+      const rightEdge = window.innerWidth - size - leftEdge;
+      const staleAbsolutePosition = parsed.x > 48 && parsed.x < window.innerWidth - size - 48;
+      const wasOnRight = Number.isFinite(parsed.viewportWidth) && (parsed.viewportWidth as number) > 0
+        ? parsed.x + size / 2 >= (parsed.viewportWidth as number) / 2
+        : staleAbsolutePosition && parsed.x > 160;
+      const previousSize = parsed.size === 48 || parsed.size === 64 ? parsed.size : (parsed.viewportWidth as number) <= 680 ? 58 : 64;
+      const previousBottomGap = Number.isFinite(parsed.viewportHeight)
+        ? (parsed.viewportHeight as number) - parsed.y - previousSize
+        : null;
+      const nextY = previousBottomGap === null
+        ? (staleAbsolutePosition ? defaultPosition().y : parsed.y)
+        : window.innerHeight - size - Math.max(12, previousBottomGap);
+      return clampPosition({ x: staleAbsolutePosition ? (wasOnRight ? rightEdge : leftEdge) : parsed.x, y: nextY });
+    }
   } catch {
     // Device-only launcher position is optional.
   }
@@ -52,7 +68,13 @@ function overlaps(left: DOMRect, right: DOMRect, gap = 8) {
 
 function avoidFixedControls(point: Point): Point {
   const size = launcherSize();
+  const mobile = window.matchMedia("(max-width: 680px)").matches;
   let next = clampPosition(point);
+  const keyMetrics = mobile ? document.querySelector<HTMLElement>(".liquid-home-metrics") : null;
+  if (keyMetrics) {
+    const launcher = new DOMRect(next.x, next.y, size, size);
+    if (overlaps(launcher, keyMetrics.getBoundingClientRect(), 12)) next = clampPosition(defaultPosition());
+  }
   const selectors = [".floating-add", ".xunying-mobile-nav"];
   for (const selector of selectors) {
     const element = document.querySelector<HTMLElement>(selector);
@@ -90,7 +112,7 @@ export function GlobalAgentLauncher({ onNavigate }: {
   const [hasMobileNav, setHasMobileNav] = useState(false);
 
   const persist = (next: Point) => {
-    const safe = avoidFixedControls(next);
+    const safe = { ...avoidFixedControls(next), viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, size: launcherSize() };
     setPosition(safe);
     try {
       localStorage.setItem(POSITION_KEY, JSON.stringify(safe));
@@ -100,7 +122,18 @@ export function GlobalAgentLauncher({ onNavigate }: {
   };
 
   useEffect(() => {
-    const reposition = () => persist(position);
+    const safe = { ...avoidFixedControls(position), viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, size: launcherSize() };
+    const changed = safe.x !== position.x || safe.y !== position.y || safe.viewportWidth !== position.viewportWidth || safe.viewportHeight !== position.viewportHeight;
+    try {
+      if (changed) localStorage.setItem(POSITION_KEY, JSON.stringify(safe));
+    } catch {
+      // Position persistence must never block the Agent.
+    }
+    if (changed) setPosition(safe);
+  }, []);
+
+  useEffect(() => {
+    const reposition = () => persist(readPosition());
     window.addEventListener("resize", reposition);
     return () => window.removeEventListener("resize", reposition);
   }, [position.x, position.y]);

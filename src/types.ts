@@ -233,6 +233,10 @@ export interface ProjectTask {
   actualHours: number;
   taskKey?: string;
   stageKey?: string;
+  workspaceKey?: string;
+  dependencyTaskKeys?: string[];
+  deliverables?: string[];
+  requirementVersionId?: number;
   codexExecutionStatus?: "todo" | "in_progress" | "blocked" | "implemented";
   codexImplementedAt?: string | null;
   stage?: {

@@ -179,7 +179,7 @@ async def test_wecom_sync_reuses_existing_storage_and_ai_pipeline(tmp_path) -> N
             assert [message.direction for message in messages] == ["inbound", "outbound"]
             assert cursor is not None and cursor.cursor == "cursor-2"
             assert len(samples) == 1
-        assert len(queue.message_ids) == 1
+        assert queue.message_ids == []
         assert calls.count("/cgi-bin/gettoken") == 1
         await processor.stop()
         await service.stop()

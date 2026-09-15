@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import secrets
 import struct
@@ -16,7 +17,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ..config import Settings
-from .base import ChannelMedia, ChannelMediaContent
+from .base import ChannelMedia, ChannelMediaContent, ChannelMediaTooLargeError
 
 
 logger = logging.getLogger(__name__)
@@ -299,14 +300,25 @@ class WeComAPIClient:
         if media.locator_type != "wecom_media_id" or not media.locator:
             raise WeComAPIError(-1, "图片媒体引用无效")
         token = await self.get_access_token()
-        response = await self._client.get(
+        request = self._client.build_request(
+            "GET",
             f"{self.base_url}/cgi-bin/media/get",
             params={"access_token": token, "media_id": media.locator},
         )
-        content_type = (response.headers.get("content-type") or "").lower()
+        response = await self._client.send(request, stream=True)
+        try:
+            response.raise_for_status()
+            content_type = (response.headers.get("content-type") or "").lower()
+            raw = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(raw) + len(chunk) > 25 * 1024 * 1024:
+                    raise ChannelMediaTooLargeError("企业微信原图超过本地保存上限")
+                raw.extend(chunk)
+        finally:
+            await response.aclose()
         if "json" in content_type:
             try:
-                data = response.json()
+                data = json.loads(raw)
             except ValueError as exc:
                 raise WeComAPIError(-1, "图片接口返回内容无效") from exc
             code = int(data.get("errcode") or 0) if isinstance(data, dict) else -1
@@ -314,11 +326,8 @@ class WeComAPIClient:
                 await self.get_access_token(force_refresh=True)
                 return await self.fetch_media(media, retry_token=False)
             raise WeComAPIError(code, str(data.get("errmsg") or "图片读取失败"))
-        response.raise_for_status()
-        if len(response.content) > 25 * 1024 * 1024:
-            raise WeComAPIError(-1, "企业微信原图超过本地保存上限")
         return ChannelMediaContent(
-            data=response.content,
+            data=bytes(raw),
             mime_type=response.headers.get("content-type"),
             original_name=media.original_name,
         )

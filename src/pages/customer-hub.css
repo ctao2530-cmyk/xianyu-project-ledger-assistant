@@ -1,0 +1,18 @@
+.customer-messages-page .message-thread:has(.customer-hub-tabs){display:flex;flex-direction:column}
+.customer-messages-page .message-thread>.thread-header{flex-shrink:0}
+.customer-messages-page .message-thread>.thread-messages{flex:1;min-height:0}
+.customer-hub-tabs{display:flex;gap:8px;padding:8px 20px;border-bottom:1px solid #e8e5f0;background:#fff;flex-shrink:0}
+.customer-hub-tabs button,.customer-hub-more button,.customer-hub-empty button{min-height:44px;border:0;border-radius:8px;padding:8px 18px;background:transparent;color:#655d79;font-size:14px;cursor:pointer}
+.customer-hub-tabs button[aria-current]{background:#f0ebff;color:#6743ca;font-weight:650}
+.customer-hub-more{position:relative;margin-left:auto;font-size:13px}
+.customer-hub-more summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 16px}
+.customer-hub-more>div{position:absolute;right:0;top:100%;z-index:8;display:grid;min-width:180px;padding:8px;background:white;border:1px solid #e8e5f0;border-radius:12px;box-shadow:0 8px 24px #30205018}
+.customer-hub-more a{display:flex;align-items:center;min-height:44px;padding:8px 16px;color:#655d79;text-decoration:none}
+.customer-hub-content{padding:20px;overflow:auto;min-height:0;background:#fff;flex:1}
+.customer-hub-empty{padding:32px;line-height:1.7;font-size:14px}
+.customer-hub-projects>a{display:flex;justify-content:space-between;gap:16px;padding:18px;border-bottom:1px solid #eee8f5;color:#514268;text-decoration:none;min-height:44px}
+.customer-hub-content .customer-requirement-page{padding:0}
+.customer-create-fields.is-quick-intake .customer-create-grid>label:not(:nth-child(1)):not(:nth-child(6)){display:none}
+.customer-intake-more{min-height:44px;border:1px solid #e6def4;border-radius:8px;padding:8px 14px;background:white;color:#6847c8;cursor:pointer}
+.customer-hub-tabs button:focus-visible,.customer-hub-more summary:focus-visible{outline:2px solid #7350db;outline-offset:2px}
+@media(max-width:720px){.customer-hub-content{padding:10px}.customer-hub-tabs{gap:2px;padding:6px}.customer-hub-tabs button{flex:1;padding:8px}.thread-header{flex-wrap:wrap}.customer-hub-projects>a{flex-direction:column}}

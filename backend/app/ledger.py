@@ -113,6 +113,14 @@ def _safe_json_object(value: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _safe_json_list(value: str) -> list[Any]:
+    try:
+        parsed = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def _same(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return canonical_json(left) == canonical_json(right)
 
@@ -192,6 +200,12 @@ TERMINAL_SETTLEMENT_ISSUE_TYPES = {
     "cooperation_terminated",
 }
 
+FOLLOWING_CUSTOMER_STATUSES = {
+    "new",
+    "contacted",
+    "proposal",
+}
+
 
 class LedgerService:
     def __init__(self, database: Database, project_root: Path) -> None:
@@ -212,18 +226,33 @@ class LedgerService:
     def get(self) -> tuple[int, dict[str, Any]]:
         with self.database.session() as session:
             state = self._state(session)
+            snapshot = normalize_snapshot(json.loads(state.snapshot_json))
+            self._enrich_task_trace_fields(session, snapshot)
             session.commit()
-            return state.revision, normalize_snapshot(json.loads(state.snapshot_json))
+            return state.revision, snapshot
 
     def get_in_session(self, session: Session) -> tuple[int, dict[str, Any]]:
         """Read the canonical snapshot inside a caller-owned transaction."""
 
         state = self._state(session)
-        return state.revision, normalize_snapshot(json.loads(state.snapshot_json))
+        snapshot = normalize_snapshot(json.loads(state.snapshot_json))
+        self._enrich_task_trace_fields(session, snapshot)
+        return state.revision, snapshot
 
-    def save(self, snapshot: dict[str, Any], expected_revision: int) -> tuple[int, dict[str, Any]]:
+    def save(
+        self,
+        snapshot: dict[str, Any],
+        expected_revision: int,
+        *,
+        sync_customer_lifecycle: bool = False,
+    ) -> tuple[int, dict[str, Any]]:
         with self.database.session() as session:
-            revision, normalized = self.save_in_session(session, snapshot, expected_revision)
+            revision, normalized = self.save_in_session(
+                session,
+                snapshot,
+                expected_revision,
+                sync_customer_lifecycle=sync_customer_lifecycle,
+            )
             session.commit()
             return revision, normalized
 
@@ -945,13 +974,24 @@ class LedgerService:
         expected_revision: int,
         *,
         trusted_delivery_sync: bool = False,
+        trusted_task_trace_sync: bool = False,
+        sync_customer_lifecycle: bool = False,
     ) -> tuple[int, dict[str, Any]]:
         state = self._state(session)
         if state.revision != expected_revision:
             raise RevisionConflict(state.revision)
+        previous = normalize_snapshot(json.loads(state.snapshot_json))
         normalized = normalize_snapshot(snapshot)
+        if sync_customer_lifecycle:
+            self._promote_customers_for_completed_projects(previous, normalized)
         if not trusted_delivery_sync:
-            self._preserve_derived_delivery_fields(session, normalized)
+            self._preserve_derived_delivery_fields(
+                session,
+                normalized,
+                preserve_task_trace=not trusted_task_trace_sync,
+            )
+        elif not trusted_task_trace_sync:
+            self._enrich_task_trace_fields(session, normalized)
         state.revision += 1
         state.snapshot_json = canonical_json(normalized)
         state.updated_at = utcnow()
@@ -960,9 +1000,59 @@ class LedgerService:
         return state.revision, normalized
 
     @staticmethod
+    def _promote_customers_for_completed_projects(
+        previous: dict[str, Any],
+        current: dict[str, Any],
+    ) -> None:
+        """Promote following customers when a real client project completes.
+
+        This rule is intentionally limited to an explicit project transition
+        into ``completed`` during an ordinary ledger save. Delivery progress,
+        task completion and ``delivered`` are not completion signals. Existing
+        ``inactive`` (lost) decisions are preserved, and terminal settlement
+        issues always block promotion.
+        """
+
+        previous_projects = {
+            _row_id(row): row
+            for row in previous.get("projects", [])
+            if _row_id(row)
+        }
+        customers = {
+            _row_id(row): row
+            for row in current.get("customers", [])
+            if _row_id(row)
+        }
+        terminal_projects = {
+            str(row.get("projectId") or "")
+            for row in current.get("settlementIssues", [])
+            if str(row.get("type") or "") in TERMINAL_SETTLEMENT_ISSUE_TYPES
+        }
+
+        for project in current.get("projects", []):
+            project_id = _row_id(project)
+            if not project_id or project.get("projectKind") == "personal":
+                continue
+            if str(project.get("status") or "") != "completed":
+                continue
+            prior = previous_projects.get(project_id)
+            if prior is not None and str(prior.get("status") or "") == "completed":
+                continue
+            if project_id in terminal_projects:
+                continue
+            customer_id = str(project.get("customerId") or "")
+            customer = customers.get(customer_id)
+            if customer is None:
+                continue
+            if str(customer.get("followUpStatus") or "new") in FOLLOWING_CUSTOMER_STATUSES:
+                customer["followUpStatus"] = "won"
+
+    @staticmethod
     def _preserve_derived_delivery_fields(
         session: Session,
         snapshot: dict[str, Any],
+        *,
+        preserve_task_trace: bool = True,
     ) -> None:
         """Reject legacy snapshot overwrites of phase-four derived values."""
 
@@ -1012,6 +1102,8 @@ class LedgerService:
             row["actualHours"] = (
                 round(float(existing.actual_hours), 6) if existing else 0.0
             )
+        if preserve_task_trace:
+            LedgerService._enrich_task_trace_fields(session, snapshot)
 
         # Old clients used physical removal as "delete". Phase four keeps
         # delivery history and requires an explicit retirement operation, so an
@@ -1043,9 +1135,48 @@ class LedgerService:
                     "dueDate": task.due_date,
                     "estimatedHours": float(task.estimated_hours),
                     "actualHours": round(float(task.actual_hours), 6),
+                    "taskKey": task.task_key,
+                    "stageKey": task.stage_key,
+                    "workspaceKey": task.workspace_key,
+                    "dependencyTaskKeys": _safe_json_list(task.dependency_task_keys_json),
+                    "deliverables": _safe_json_list(task.deliverables_json),
+                    "requirementVersionId": task.requirement_version_id,
                     "stage": _safe_json_object(task.stage_payload_json),
                 }
             )
+
+    @staticmethod
+    def _enrich_task_trace_fields(
+        session: Session,
+        snapshot: dict[str, Any],
+    ) -> None:
+        """Project immutable task provenance into the canonical ledger view."""
+
+        task_ids = [
+            str(row.get("id") or "")
+            for row in snapshot.get("tasks", [])
+            if str(row.get("id") or "")
+        ]
+        if not task_ids:
+            return
+        existing = {
+            row.id: row
+            for row in session.scalars(
+                select(BusinessTask).where(BusinessTask.id.in_(task_ids))
+            )
+        }
+        for row in snapshot.get("tasks", []):
+            task = existing.get(str(row.get("id") or ""))
+            if task is None:
+                continue
+            row["taskKey"] = task.task_key
+            row["stageKey"] = task.stage_key
+            row["workspaceKey"] = task.workspace_key
+            row["dependencyTaskKeys"] = _safe_json_list(
+                task.dependency_task_keys_json
+            )
+            row["deliverables"] = _safe_json_list(task.deliverables_json)
+            row["requirementVersionId"] = task.requirement_version_id
 
     def _sync_normalized(self, session: Session, snapshot: dict[str, Any]) -> None:
         def put(model, record_id: str, values: dict[str, Any]):
@@ -1166,6 +1297,14 @@ class LedgerService:
                 "due_date": str(row.get("dueDate") or ""),
                 "estimated_hours": float(row.get("estimatedHours") or 0),
                 "actual_hours": float(row.get("actualHours") or 0),
+                "task_key": row.get("taskKey"),
+                "stage_key": row.get("stageKey"),
+                "workspace_key": row.get("workspaceKey"),
+                "dependency_task_keys_json": canonical_json(
+                    row.get("dependencyTaskKeys") or []
+                ),
+                "deliverables_json": canonical_json(row.get("deliverables") or []),
+                "requirement_version_id": row.get("requirementVersionId"),
                 "stage_payload_json": canonical_json(row.get("stage") or {}),
             })
         for row in snapshot["payments"]:
