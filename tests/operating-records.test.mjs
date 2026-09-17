@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
+import { recordsHistorySnapshot as snapshot } from "./records-history-fixture.mjs";
+
+const require = createRequire(import.meta.url);
+const { buildSync } = createRequire(require.resolve("vite/package.json"))("esbuild");
+const built = buildSync({
+  entryPoints: [fileURLToPath(new URL("../src/data/operatingRecords.ts", import.meta.url))],
+  bundle: true, write: false, platform: "node", format: "cjs", logLevel: "silent",
+});
+const scope = vm.createContext({ module: { exports: {} }, require });
+vm.runInContext(built.outputFiles[0].text, scope);
+const { buildRecords } = scope.module.exports;
 
 const appPath = new URL("../src/App.tsx", import.meta.url);
 const pagesPath = new URL("../src/pages/OtherPages.tsx", import.meta.url);
@@ -22,12 +36,16 @@ test("income and expense navigation converge on one operating-record workspace",
 test("operating records derive real cashflow and preserve the existing write paths", async () => {
   const source = await readFile(recordsPath, "utf8");
 
-  assert.match(source, /getBusinessSummary\(snapshot\)/);
-  assert.match(source, /snapshot\.payments\.forEach/);
-  assert.match(source, /snapshot\.expenses\.forEach/);
-  assert.match(source, /snapshot\.settlementIssues/);
-  assert.match(source, /payment\.status === "refunded"/);
-  assert.match(source, /type: "refund"/);
+  const records = buildRecords(snapshot);
+  assert.equal(records.filter(row => row.lane === "income").reduce((sum, row) => sum + row.amount, 0), 645);
+  assert.equal(records.filter(row => row.type === "expense").reduce((sum, row) => sum + row.amount, 0), -60);
+  assert.equal(records.find(row => row.id === "payment-refund-legacy-refund").amount, -50);
+  assert.equal(records.find(row => row.id === "settlement-refund-issue-refund").amount, -25);
+  assert.equal(records.some(row => row.type === "income" && row.paymentId === "pending"), false);
+  assert.equal(records.find(row => row.type === "receivable").amount, 9280);
+  const withoutPlan = buildRecords({ ...snapshot, payments: snapshot.payments.filter(row => row.status !== "pending") });
+  assert.equal(withoutPlan.find(row => row.type === "receivable").amount, 9280);
+  assert.equal(withoutPlan.find(row => row.type === "receivable").paymentId, undefined);
   assert.match(source, /onConfirmPayment\(record\.projectId!, record\.paymentId\)/);
   assert.match(source, /onRecordExpense/);
   assert.doesNotMatch(source, /projectName|customerName|contractTotal/);

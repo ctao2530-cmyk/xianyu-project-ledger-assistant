@@ -8,6 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .project_acceptance_api import acceptance_router
+from .maintenance_api import maintenance_router
+from .workbench_api import workbench_router
 from .api import router
 from .business_analysis_api import business_analysis_router
 from .customer_image_api import customer_image_router
@@ -213,6 +216,9 @@ async def rate_limit(request: Request, call_next):
     return response
 
 
+app.include_router(acceptance_router)
+app.include_router(maintenance_router)
+app.include_router(workbench_router)
 app.include_router(router)
 app.include_router(codex_plan_router)
 app.include_router(codex_sync_router)

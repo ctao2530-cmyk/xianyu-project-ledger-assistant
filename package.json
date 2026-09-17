@@ -16,7 +16,11 @@
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "test:interactions": "node --test tests/project-cockpit-interactions.test.mjs tests/connection-alerts.test.mjs tests/xunying-decision-workbench.test.mjs tests/business-analysis-center.test.mjs tests/prediction-ui.test.mjs tests/conversation-history-import.test.mjs tests/requirement-product-intake.test.mjs tests/product-exposure-v24.test.mjs tests/traffic-date-time.test.mjs tests/customer-workbench-simplification.test.mjs tests/customer-image-library.test.mjs tests/global-agent.test.mjs tests/customer-intake.test.mjs tests/phrase-library.test.mjs tests/operating-records.test.mjs tests/navigation-actual-traffic.test.mjs tests/closure-regressions.test.mjs tests/project-task-draft.test.mjs",
-    "test:sites": "node --test tests/sites-worker.test.mjs"
+    "test:sites": "node --test tests/sites-worker.test.mjs",
+    "demo": "npm run prepare:appica && node tests/information-architecture-preview.mjs",
+    "test:workbench": "node --test tests/operating-records-history.test.mjs tests/project-ordering.test.mjs tests/workbench-domain.test.mjs tests/project-relations.test.mjs tests/receivable-aging.test.mjs",
+    "check": "npm run typecheck && npm run build && npm run test:interactions && npm run test:workbench && npm run test:sites",
+    "check:all": "npm run check && npm run test:backend"
   },
   "dependencies": {
     "@appica/ui-react": "1.1.0",

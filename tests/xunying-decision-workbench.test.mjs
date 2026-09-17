@@ -10,9 +10,8 @@ test("循营 brand shell uses project-owned transparent assets and keeps the rou
   const app = await readFile(appPath, "utf8") + await readFile(new URL("../src/components/workspace/Sidebar.tsx", import.meta.url), "utf8") + await readFile(new URL("../src/components/GlobalAgentLauncher.tsx", import.meta.url), "utf8");
 
   assert.match(app, /displayLabel: "小策 · 今日判断"/);
-  assert.match(app, /\/assets\/xunying\/orbit-mark-reference\.png/);
+  assert.match(app, /\/assets\/xunying\/orbit-mark\.png/);
   assert.match(app, /\/assets\/xunying\/xiaoce-avatar\.png/);
-  assert.match(app, /<strong>循营<\/strong>/);
   assert.match(app, /<strong>循营<\/strong>/);
   assert.doesNotMatch(app, /duck-logo\.png|duck-laptop\.png/);
   await access(new URL("../public/assets/xunying/orbit-mark.png", import.meta.url));

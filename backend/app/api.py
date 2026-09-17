@@ -5,6 +5,7 @@ import json
 from datetime import timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
+from sqlalchemy.orm import joinedload
 from sqlalchemy import func, select
 
 from .ai import AIProviderError
@@ -686,31 +687,22 @@ async def list_conversations(
 ) -> list[ConversationListItem]:
     runtime = runtime_from(request)
     with runtime.database.session() as session:
-        statement = select(Conversation)
+        latest_text = (select(Message.content)
+            .where(Message.conversation_id == Conversation.id)
+            .order_by(Message.received_at.desc(), Message.id.desc())
+            .limit(1).correlate(Conversation).scalar_subquery())
+        statement = select(Conversation, latest_text).options(joinedload(Conversation.item))
         if channel != "all":
             statement = statement.where(Conversation.channel == channel)
-        conversations = list(
-            session.scalars(statement.order_by(Conversation.last_message_at.desc()))
-        )
-        result: list[ConversationListItem] = []
-        for conversation in conversations:
-            last_message = session.scalar(
-                select(Message)
-                .where(Message.conversation_id == conversation.id)
-                .order_by(Message.received_at.desc())
-                .limit(1)
-            )
-            result.append(
-                ConversationListItem(
-                    id=conversation.id,
-                    channel=conversation.channel,
-                    customer_name=conversation.customer_name,
-                    item_title=conversation.item.title if conversation.item else None,
-                    unread_count=conversation.unread_count,
-                    last_message=last_message.content if last_message else None,
-                    last_message_at=utc_from_storage(conversation.last_message_at),
-                )
-            )
+        rows = session.execute(statement.order_by(Conversation.last_message_at.desc(), Conversation.id.desc())).all()
+        result = [ConversationListItem(
+            id=conversation.id, channel=conversation.channel,
+            customer_name=conversation.customer_name,
+            item_title=conversation.item.title if conversation.item else None,
+            unread_count=conversation.unread_count,
+            last_message=latest_text,
+            last_message_at=utc_from_storage(conversation.last_message_at),
+        ) for conversation, latest_text in rows]
         return result
 
 

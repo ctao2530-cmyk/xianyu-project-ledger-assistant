@@ -46,7 +46,8 @@ test("project management uses a direct list and the confirmed single-page detail
   assert.match(detail, /合同与回款/);
   assert.match(detail, /最近记录/);
   assert.doesNotMatch(detail, /title="客户与商品"|title="执行摘要"/);
-  assert.match(detail, /管理关系/);
+  assert.match(detail, /onClick=\{onEdit\}[\s\S]*?编辑项目/);
+  assert.doesNotMatch(detail, />管理关系<|>编辑基本信息</);
   assert.match(detail, /附件与异常/);
   assert.doesNotMatch(detail, /Codex 同步|交付核验|需求报价|已验证交付进度/);
   assert.match(app, /const projectDetailTabs: ProjectDetailTab\[\] = \["overview", "immersive", "edit"\]/);

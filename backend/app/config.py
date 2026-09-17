@@ -111,6 +111,8 @@ class Settings(BaseSettings):
     customer_analysis_model: str = ""
     customer_analysis_timeout_seconds: float = Field(default=300, ge=30, le=900)
     customer_analysis_enabled: bool = True
+    customer_analysis_daily_run_limit: int = Field(default=100, ge=1, le=10000)
+    customer_analysis_max_output_tokens: int = Field(default=12000, ge=1000, le=64000)
     customer_analysis_debounce_seconds: int = Field(default=30, ge=5, le=300)
     customer_analysis_max_wait_seconds: int = Field(default=60, ge=10, le=600)
     customer_analysis_poll_seconds: float = Field(default=1, ge=0.2, le=30)

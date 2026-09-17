@@ -1,0 +1,13 @@
+.acceptance-panel { margin-top: 20px; padding: 16px; border: 1px solid #e7e2f5; border-radius: 12px; background: #fff; }
+.acceptance-panel h3 { margin: 0 0 8px; }
+.acceptance-panel p { color: #6f7185; line-height: 1.6; }
+.acceptance-panel article { border-bottom: 1px solid #eeeaf5; padding: 12px 0; }
+.acceptance-evidence { white-space: pre-wrap; overflow-wrap: anywhere; }
+.acceptance-panel summary { cursor: pointer; min-height: 44px; padding: 12px 0; }
+.acceptance-panel form { display: grid; gap: 12px; }
+.acceptance-panel label { display: grid; gap: 6px; }
+.acceptance-panel input:not([type=checkbox]), .acceptance-panel textarea, .acceptance-panel select { width: 100%; min-height: 44px; padding: 8px; border: 1px solid #ddd7ee; border-radius: 8px; font: inherit; background: white; color: inherit; }
+.acceptance-panel button { min-height: 44px; padding: 8px 14px; border: 1px solid #ddd7ee; border-radius: 8px; background: #f8f6ff; color: #6145d8; cursor: pointer; }
+.acceptance-panel button:disabled { opacity: .5; cursor: default; }
+.acceptance-panel .acceptance-confirm { display: flex; align-items: center; }
+.acceptance-panel :focus-visible { outline: 2px solid #6954d8; outline-offset: 2px; }

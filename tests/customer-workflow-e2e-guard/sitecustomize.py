@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from urllib.parse import urlsplit, unquote
 
 ROOT = Path(__file__).resolve().parents[2]
 GUARD = str(Path(__file__).resolve().parent)
@@ -14,7 +15,13 @@ def guard(event, args):
         if path == ROOT / ".env" or any(path.is_relative_to(ROOT / name) for name in ("data", "logs")):
             raise PermissionError("Synthetic QA denies real data/env/log access")
     if event == "sqlite3.connect" and str(args[0]) != ":memory:":
-        if Path(str(args[0])).absolute().is_relative_to(ROOT):
+        database = str(args[0])
+        if database.startswith('file:'):
+            parsed = urlsplit(database)
+            if parsed.netloc not in ('', 'localhost'):
+                raise PermissionError("Synthetic QA denies remote SQLite URI")
+            database = unquote(parsed.path)
+        if Path(database).resolve().is_relative_to(ROOT.resolve()):
             raise PermissionError("Synthetic QA requires a temporary SQLite database")
     if event == "socket.connect" and isinstance(args[1], tuple):
         raise PermissionError("Synthetic QA denies network connections")

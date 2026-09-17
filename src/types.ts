@@ -34,6 +34,8 @@ export type CustomerFollowUpStatus =
 export type CustomerLevel = "A" | "B" | "C";
 
 export interface Project {
+  /** Canonical project-row update time; absent for unsynchronized legacy records. */
+  updatedAt?: string | null;
   id: string;
   name: string;
   customerId: string;

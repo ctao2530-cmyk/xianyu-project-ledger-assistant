@@ -1,3 +1,6 @@
+import { ReceivablesBoard } from '../features/receivables/ReceivablesBoard';
+import { buildRecords, validDate, type OperatingRecord, type OperatingRecordType, type TrackLane } from "../data/operatingRecords";
+export { buildRecords } from "../data/operatingRecords";
 import {
   ArrowDown,
   ArrowRight,
@@ -15,29 +18,11 @@ import {
 } from "@phosphor-icons/react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { getBusinessSummary } from "../data/businessMetrics";
-import { isClientProject } from "../data/projectKinds";
-import type { LedgerSnapshot, PaymentType } from "../types";
+import type { LedgerSnapshot } from "../types";
 import "./operating-records.css";
 import { CashflowOverview } from "../components/workspace/CashflowOverview";
 import { readUiSession, writeUiSession } from '../data/uiSession';
 import { inLedgerPeriod, ledgerDateKey, ledgerMonthLabel, restoreRecordsPeriod, summarizeCashflow, validLedgerMonth } from './operatingRecordsPeriod';
-
-type OperatingRecordType = "income" | "refund" | "expense" | "receivable";
-type TrackLane = "income" | "expense" | "receivable";
-
-interface OperatingRecord {
-  id: string;
-  type: OperatingRecordType;
-  lane: TrackLane;
-  title: string;
-  detail: string;
-  amount: number;
-  occurredAt: string;
-  projectId?: string;
-  paymentId?: string;
-  expenseId?: string;
-  status: string;
-}
 
 interface OperatingRecordsPageProps {
   snapshot: LedgerSnapshot;
@@ -56,28 +41,6 @@ const money = new Intl.NumberFormat("zh-CN", {
   minimumFractionDigits: 2,
 });
 
-const paymentTypeLabels: Record<PaymentType, string> = {
-  deposit: "定金",
-  milestone: "阶段款",
-  final: "尾款",
-  full: "全款",
-};
-
-const expenseCategoryLabels: Record<string, string> = {
-  software: "软件订阅",
-  outsourcing: "外包服务",
-  server: "服务器",
-  office: "办公支出",
-  traffic: "流量曝光",
-  refund: "退款记录",
-  other: "其他支出",
-};
-
-function validDate(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 const dateKey = ledgerDateKey;
 
 function formatDate(value: string) {
@@ -88,104 +51,6 @@ function formatDate(value: string) {
 function formatShortDate(value: string) {
   const key = dateKey(value);
   return key === 'unknown' ? '--/--' : key.slice(5).split('-').map(Number).join('/');
-}
-
-export function buildRecords(snapshot: LedgerSnapshot): OperatingRecord[] {
-  const projects = new Map(snapshot.projects.map((project) => [project.id, project]));
-  const customers = new Map(snapshot.customers.map((customer) => [customer.id, customer]));
-  const records: OperatingRecord[] = [];
-
-  snapshot.payments.forEach((payment) => {
-    const project = projects.get(payment.projectId);
-    const customer = customers.get(payment.customerId);
-    const detail = `${paymentTypeLabels[payment.type]} · ${customer?.name || "未关联客户"}`;
-    if (payment.status === "confirmed" || payment.status === "refunded") {
-      records.push({
-        id: `payment-income-${payment.id}`,
-        type: "income",
-        lane: "income",
-        title: project?.name || "未关联项目收款",
-        detail,
-        amount: payment.amount,
-        occurredAt: payment.paidAt,
-        projectId: payment.projectId,
-        paymentId: payment.id,
-        status: payment.status === "refunded" ? "曾到账" : "已到账",
-      });
-    }
-    if (payment.status === "refunded") {
-      records.push({
-        id: `payment-refund-${payment.id}`,
-        type: "refund",
-        lane: "income",
-        title: `${project?.name || "项目"}退款`,
-        detail: `${detail} · 原收款已退回`,
-        amount: -payment.amount,
-        occurredAt: payment.paidAt,
-        projectId: payment.projectId,
-        paymentId: payment.id,
-        status: "已退款",
-      });
-    }
-  });
-
-  (snapshot.settlementIssues || []).forEach((issue) => {
-    if (issue.refundAmount <= 0) return;
-    const project = projects.get(issue.projectId);
-    records.push({
-      id: `settlement-refund-${issue.id}`,
-      type: "refund",
-      lane: "income",
-      title: `${project?.name || "项目"}结算退款`,
-      detail: issue.reason,
-      amount: -issue.refundAmount,
-      occurredAt: issue.occurredAt,
-      projectId: issue.projectId,
-      status: "已退款",
-    });
-  });
-
-  snapshot.expenses.forEach((expense) => {
-    const project = expense.projectId ? projects.get(expense.projectId) : null;
-    records.push({
-      id: `expense-${expense.id}`,
-      type: "expense",
-      lane: "expense",
-      title: expense.name,
-      detail: `${expenseCategoryLabels[expense.category] || "其他支出"} · ${project?.name || "未关联项目"}`,
-      amount: -expense.amount,
-      occurredAt: expense.paidAt,
-      projectId: expense.projectId,
-      expenseId: expense.id,
-      status: expense.category === "refund" ? "已记录退款" : "已支付",
-    });
-  });
-
-  const summary = getBusinessSummary(snapshot);
-  summary.projectFinancials
-    .filter(({ project, outstanding }) => isClientProject(project) && outstanding > 0)
-    .forEach((financial) => {
-      const pendingPayment = snapshot.payments
-        .filter((payment) => payment.projectId === financial.project.id && payment.status === "pending")
-        .sort((left, right) => new Date(left.dueAt).getTime() - new Date(right.dueAt).getTime())[0];
-      records.push({
-        id: `receivable-${financial.project.id}`,
-        type: "receivable",
-        lane: "receivable",
-        title: financial.project.name,
-        detail: pendingPayment ? `${paymentTypeLabels[pendingPayment.type]} · 待确认到账` : "合同余额 · 尚未建立收款节点",
-        amount: financial.outstanding,
-        occurredAt: pendingPayment?.dueAt || financial.project.dueDate,
-        projectId: financial.project.id,
-        paymentId: pendingPayment?.id,
-        status: "待收款",
-      });
-    });
-
-  return records.sort((left, right) => {
-    const timeDifference = (validDate(right.occurredAt)?.getTime() || 0) - (validDate(left.occurredAt)?.getTime() || 0);
-    return timeDifference || left.id.localeCompare(right.id);
-  });
 }
 
 function trackPosition(value: string, startDay: number, endDay: number) {
@@ -324,6 +189,8 @@ export function OperatingRecordsPage({
   useEffect(()=>{writeUiSession('records-period',period);writeUiSession('records-type',type);writeUiSession('records-project',projectId);},[period,type,projectId]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [analysisView, setAnalysisView] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState<'records' | 'receivables'>(() => readUiSession('records-view') === 'receivables' ? 'receivables' : 'records');
+  useEffect(() => writeUiSession('records-view', workspaceView), [workspaceView]);
   const [search, setSearch] = useState(()=>readUiSession('records-search'));
   useEffect(()=>writeUiSession('records-search',search),[search]);
   const incomeButtonRef = useRef<HTMLButtonElement>(null);
@@ -385,12 +252,15 @@ export function OperatingRecordsPage({
       <i aria-hidden="true" />
       <span><i className="record-summary-icon expense" aria-hidden="true"><Wallet size={26} weight="fill"/></i><small>支出</small><b className="expense">{money.format(cashflow.expenses)}</b></span>
       <i aria-hidden="true" />
-      <span><i className="record-summary-icon receivable" aria-hidden="true"><Clock size={26} weight="fill"/></i><small className="record-summary-heading">当前待回款<button type="button" aria-label="查看项目列表" onClick={() => onNavigateProject()}><ArrowRight size={18} /></button></small><b className="receivable">{money.format(summary.outstanding)}</b></span>
+      <span><i className="record-summary-icon receivable" aria-hidden="true"><Clock size={26} weight="fill"/></i><small className="record-summary-heading">当前待回款<button type="button" aria-label="查看回款跟进" onClick={() => setWorkspaceView('receivables')}><ArrowRight size={18} /></button></small><b className="receivable">{money.format(summary.outstanding)}</b></span>
     </section>
       <p className="operating-period-note">汇总按所选时间计算，收入已扣退款；待回款为当前余额。下方筛选仅影响明细。</p>
     </section>
 
     <section className="operating-track-card">
+      <nav className="operating-view-switch" aria-label="收支工作视图"><button type="button" aria-pressed={workspaceView === 'records'} onClick={() => setWorkspaceView('records')}>收支明细</button><button type="button" aria-pressed={workspaceView === 'receivables'} onClick={() => setWorkspaceView('receivables')}>回款跟进</button></nav>
+      {workspaceView === 'receivables' ? <ReceivablesBoard snapshot={snapshot} onConfirmPayment={onConfirmPayment} onCreatePaymentPlan={onCreatePaymentPlan} /> : <>
+
       <details className="operating-track-optional" open={analysisView} onToggle={e=>setAnalysisView(e.currentTarget.open)}><summary>{analysisView?'返回收支明细':'切换分析视图 · 月收支轨道'}</summary>
       <header className="operating-history-track-heading"><h2>{ledgerMonthLabel(trackMonth)}收支轨道</h2>{period === 'all' && <label className="operating-month-input"><CalendarBlank size={16} />轨道月份<input type="month" aria-label="轨道月份" value={selectedMonth} onChange={event => { if (validLedgerMonth(event.target.value)) setSelectedMonth(event.target.value); }} /></label>}</header>
       <p className="operating-period-note">按月查看全部类型及项目；待回款按当前计划到期日展示，不代表该月历史余额。</p>
@@ -449,6 +319,7 @@ export function OperatingRecordsPage({
           </article>)}
         </section>)}</div> : <div className="operating-record-empty"><Wallet size={28} weight="duotone" /><b>当前筛选下没有经营记录</b><small>{globalSearch ? "可以清除顶部搜索或调整筛选条件。" : "可切换月份、查看全部时间，或调整类型与项目筛选。"}</small>{period !== 'all' && <button type="button" className="record-analysis-switch" onClick={() => setPeriod('all')}>查看全部时间</button>}</div>}
       </section>
+      </>}
     </section>
 
     <aside className="reference-records-context" aria-label="收支操作与回款提醒">
@@ -456,7 +327,7 @@ export function OperatingRecordsPage({
         <button ref={incomeButtonRef} type="button" className="record-income-button" disabled={!receivables.length} title={receivables.length ? "从真实待回款项目中确认收入" : "当前没有待回款项目"} onClick={() => setPickerOpen(true)}><ArrowUp size={18} />记录收入</button>
         <button type="button" className="record-expense-button" onClick={onRecordExpense}><ArrowDown size={18} />记录支出</button>
       </div>
-      <section><h3>回款提醒</h3>{receivables.length?receivables.slice(0,5).map(record=><button key={record.id} onClick={()=>onConfirmPayment(record.projectId!,record.paymentId)}><span><strong>{record.title}</strong><small>{record.detail}</small><small>{formatDate(record.occurredAt)}</small></span><b>{money.format(record.amount)}</b></button>):<p>暂无待回款记录</p>}</section>
+
       <CashflowOverview income={cashflow.income} expenses={cashflow.expenses} period={periodLabel}/><section className="records-accounting-note"><Receipt size={24}/><p>收入以确认到账为准，<br/>待回款不计入已收收入。</p></section>
     </aside>
     <ReceivablePicker open={pickerOpen} records={receivables} onClose={closePicker} onConfirmPayment={onConfirmPayment} onCreatePaymentPlan={onCreatePaymentPlan} />

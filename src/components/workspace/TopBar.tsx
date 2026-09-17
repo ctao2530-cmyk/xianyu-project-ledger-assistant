@@ -150,7 +150,6 @@ export function TopBar({
         <h1>{activePage === "首页概览" ? <>你好，{profileName}！<span aria-hidden="true"><HandWaving size={25} weight="duotone"/></span></> : meta.title}{activePage === "数据统计" && <em className="page-context-tag">商品增长复盘</em>}{activePage === "经营分析中心" && <em className="page-context-tag">证据链优先</em>}</h1>
         <p>{meta.subtitle}</p>
       </div>
-      <img className="header-planet" src={activePage === "AI经营助手" ? "/assets/xunying/xiaoce-avatar.png" : "/assets/chrome-v2/header-planet.png"} alt="" aria-hidden="true" draggable={false}/>
       <GlobalSearch snapshot={snapshot}/>
       <div className="header-actions">
         <div className="popover-anchor" ref={notificationAnchorRef}>

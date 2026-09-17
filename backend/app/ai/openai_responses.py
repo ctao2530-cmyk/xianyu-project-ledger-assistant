@@ -28,6 +28,7 @@ class OpenAIImageInput:
 class OpenAIResponseResult:
     response_id: str
     result: BaseModel
+    usage: dict[str, int] | None = None
 
 
 class OpenAIResponsesClient:
@@ -117,6 +118,7 @@ class OpenAIResponsesClient:
         )
         payload = {
             "model": model,
+            "max_output_tokens": self.settings.customer_analysis_max_output_tokens,
             "conversation": conversation_id,
             "input": [{"role": "user", "content": content}],
             "instructions": (
@@ -146,7 +148,10 @@ class OpenAIResponsesClient:
             result = result_type.model_validate(json.loads(output_text))
             if not response_id:
                 raise ValueError("response id missing")
-            return OpenAIResponseResult(response_id=response_id, result=result)
+            usage = body.get("usage") or {}
+            safe_usage = {key: usage[key] for key in ("input_tokens", "output_tokens", "total_tokens")
+                          if type(usage.get(key)) is int and usage[key] >= 0}
+            return OpenAIResponseResult(response_id=response_id, result=result, usage=safe_usage or None)
         except OpenAIResponsesError:
             raise
         except httpx.TimeoutException as exc:

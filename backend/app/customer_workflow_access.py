@@ -12,3 +12,12 @@ def local_customer_workflow(request: Request) -> None:
     if forwarded or (not test_client and (peer not in loopback or host not in loopback)):
         raise HTTPException(403, detail={"code": "local_customer_workflow_only",
             "message": "网页图片和会话组接口仅允许本机使用；外部读取须使用已授权的MCP工具"})
+
+
+def local_operator_workflow(request: Request) -> None:
+    """Explicit local same-origin UI boundary shared by operator-only domains."""
+    from urllib.parse import urlsplit
+    local_customer_workflow(request)
+    origin = request.headers.get('origin')
+    if request.headers.get('x-yuda-desktop') != '1' or (origin and urlsplit(origin).netloc != request.url.netloc):
+        raise HTTPException(403, detail='此操作仅允许本机同源界面')

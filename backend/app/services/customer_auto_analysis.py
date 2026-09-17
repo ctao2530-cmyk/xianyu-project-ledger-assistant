@@ -1,4 +1,5 @@
 from __future__ import annotations
+from sqlalchemy import text
 
 import asyncio
 import base64
@@ -741,9 +742,20 @@ class CustomerAutoAnalysisService:
                     type(error).__name__,
                 )
 
+    def _daily_run_count(self, session, now):
+        # Conservative admission count includes failed/uncertain attempts; no automatic paid retry.
+        from datetime import timedelta, timezone
+        from sqlalchemy import func
+        local = self._aware(now).astimezone(timezone(timedelta(hours=8)))
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        return session.scalar(select(func.count()).select_from(CustomerAnalysisRun).where(
+            CustomerAnalysisRun.created_at >= start, CustomerAnalysisRun.created_at < start + timedelta(days=1))) or 0
+
     def _due_thread_ids(self, limit: int) -> list[str]:
         now = utcnow()
         with self.database.session() as session:
+            if self._daily_run_count(session, now) >= self.settings.customer_analysis_daily_run_limit:
+                return []
             return list(
                 session.scalars(
                     select(CustomerAnalysisThread.id)
@@ -761,6 +773,9 @@ class CustomerAutoAnalysisService:
     def _claim_run(self, thread_id: str) -> str | None:
         now = utcnow()
         with self.database.session() as session:
+            session.execute(text('BEGIN IMMEDIATE'))
+            if self._daily_run_count(session, now) >= self.settings.customer_analysis_daily_run_limit:
+                return None
             row = session.get(CustomerAnalysisThread, thread_id)
             if (
                 row is None
@@ -943,6 +958,7 @@ class CustomerAutoAnalysisService:
             self._complete_run(
                 run_id,
                 result=result,
+                usage=getattr(response, "usage", None),
                 response_id=response.response_id,
                 source_hash=context["source_hash"],
                 evidence_message_ids=sorted(context["allowed_message_ids"]),
@@ -1394,6 +1410,7 @@ class CustomerAutoAnalysisService:
         evidence_message_ids: list[int],
         evidence_image_ids: list[str],
         image_count: int,
+        usage: dict[str, int] | None = None,
     ) -> None:
         now = utcnow()
         content = result.model_dump(mode="json")
@@ -1438,6 +1455,7 @@ class CustomerAutoAnalysisService:
                 content_json=content_json,
                 diff_json=self._canonical(
                     {
+                        "provider_usage": usage,
                         "previous_version": previous.version if previous else None,
                         "changed_sections": changed_sections,
                         "change_summary": result.execution_plan.change_summary,

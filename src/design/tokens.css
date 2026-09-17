@@ -1,0 +1,26 @@
+/* Xunying workbench: one active visual contract. */
+:root {
+  --xy-canvas:#f4f6f9;
+  --xy-surface:#ffffff;
+  --xy-ink:#202b3d;
+  --xy-muted:#65738a;
+  --xy-line:#e1e6ee;
+  --xy-action:#2563eb;
+  --xy-action-soft:#edf3ff;
+  --xy-brand:#7155cc;
+  --xy-success:#16856a;
+  --xy-warning:#a86618;
+  --xy-danger:#bb414c;
+  --xy-radius:12px;
+  --xy-control-radius:8px;
+  --xy-font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  --xy-data-font:"SF Pro Display",-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+  --xy-shadow:0 1px 3px #24324b06;
+  --xy-overlay-shadow:0 18px 60px #24324b24;
+  --xy-sidebar:224px;
+  --xy-topbar:72px;
+  --purple:var(--xy-action);--purple-dark:#1d4ed8;--blue:var(--xy-action);
+  --text:var(--xy-ink);--muted:var(--xy-muted);--line:var(--xy-line);--card:var(--xy-surface);--shadow:var(--xy-shadow);
+  color:var(--xy-ink);font-family:var(--xy-font);background:var(--xy-canvas);
+}
+body {background:var(--xy-canvas);}

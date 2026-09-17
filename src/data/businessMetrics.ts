@@ -1,20 +1,10 @@
 import type { LedgerSnapshot, Project, ProjectSettlementIssue } from "../types";
 import { isClientProject } from "./projectKinds";
 
-const isSameMonth = (value: string, target = new Date()) => {
-  const date = new Date(value);
-  return date.getFullYear() === target.getFullYear() && date.getMonth() === target.getMonth();
-};
-
-const isSameYear = (value: string, target = new Date()) =>
-  new Date(value).getFullYear() === target.getFullYear();
-
-const isSameDay = (value: string, target = new Date()) => {
-  const date = new Date(value);
-  return date.getFullYear() === target.getFullYear()
-    && date.getMonth() === target.getMonth()
-    && date.getDate() === target.getDate();
-};
+import { businessDate, daysToBusinessDate } from '../shared/time/businessDate';
+const isSameMonth = (value: string, target = new Date()) => businessDate(value).slice(0,7) === businessDate(target).slice(0,7);
+const isSameYear = (value: string, target = new Date()) => businessDate(value).slice(0,4) === businessDate(target).slice(0,4);
+const isSameDay = (value: string, target = new Date()) => businessDate(value) === businessDate(target);
 
 const sumIssues = (
   issues: ProjectSettlementIssue[],
@@ -27,12 +17,7 @@ export const daysBetween = (startDate: string, dueDate: string) => {
   return Math.max(1, Math.ceil((due - start) / 86_400_000) + 1);
 };
 
-export const daysUntil = (dateValue: string) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const target = new Date(`${dateValue.slice(0, 10)}T00:00:00`);
-  return Math.ceil((target.getTime() - today.getTime()) / 86_400_000);
-};
+export const daysUntil = daysToBusinessDate;
 
 export interface ProjectFinancial {
   project: Project;

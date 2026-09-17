@@ -1,3 +1,4 @@
+import { BusinessOverviewDisclosure } from './components/workbench/BusinessOverviewDisclosure';
 import { Sidebar } from './components/workspace/Sidebar';
 import { AppShell } from './components/workspace/AppShell';
 import { TopBar, type HeaderReminder } from './components/workspace/TopBar';
@@ -1629,7 +1630,7 @@ function DashboardLayout({
         onClose={() => setSidebarOpen(false)}
       />
       <main className="dashboard-main">
-        <TopBar meta={pageMeta[activeNav] || pageMeta["首页概览"]} snapshot={snapshot} search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} reminders={headerReminders} onReminderAction={openHeaderReminder} onViewAllReminders={viewAllReminders} onRefreshReminders={() => setReminderRefreshVersion((value) => value + 1)} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "张同学"} profilePlan={snapshot.settings.accountPlan || "高级版"} />
+        <TopBar meta={pageMeta[activeNav] || pageMeta["首页概览"]} snapshot={snapshot} search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} reminders={headerReminders} onReminderAction={openHeaderReminder} onViewAllReminders={viewAllReminders} onRefreshReminders={() => setReminderRefreshVersion((value) => value + 1)} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "经营者"} profilePlan="本地工作空间" />
         <div className="page-route-view" key={`${activeNav}-${settingsSection}-${projectRoute?.projectId || ""}-${customerRoute?.caseId || customerRoute?.customerId || ""}`}>
           {activeNav === "首页概览" && normalizedSearch && (
             <div className="search-status">
@@ -1638,6 +1639,14 @@ function DashboardLayout({
             </div>
           )}
           {activeNav === "首页概览" ? <>
+            <section className="august-current-actions" aria-label="当前待处理事项">
+            <ActionWorkbench
+              snapshot={snapshot}
+              onConfirmPayment={(projectId) => setReceiptTarget({ projectId })}
+              connectionActions={headerReminders.filter(item=>item.kind==='connection')}
+            />
+            </section>
+            <BusinessOverviewDisclosure>
             <section className="metrics-grid" aria-label="经营核心指标">
               {metrics.map((metric, index) => <MetricCard key={metric.title} {...metric} chart={undefined} index={index} />)}
             </section>
@@ -1661,13 +1670,8 @@ function DashboardLayout({
                 </div>
               </div>
             </section>
-            <section className="august-current-actions" aria-label="当前待处理事项">
-            <ActionWorkbench
-              snapshot={snapshot}
-              onConfirmPayment={(projectId) => setReceiptTarget({ projectId })}
-              connectionActions={headerReminders.filter(item=>item.kind==='connection')}
-            />
-            </section>
+
+            </BusinessOverviewDisclosure>
           </> : <OtherPages page={activeNav as OtherPageName} snapshot={snapshot} onQuickAdd={() => openQuickAccounting()} onCreatePaymentPlan={(projectId) => openQuickAccounting(projectId)} onCreateChangeOrder={(projectId) => setChangeOrderTarget({ projectId })} onConfirmPayment={(projectId, paymentId) => setReceiptTarget({ projectId, paymentId })} onRecordSettlementIssue={(projectId) => setSettlementIssueTarget({ projectId })} onSnapshotChange={onSnapshotChange} onPersistedSnapshot={onPersistedSnapshot} onNavigate={changePage} globalSearch={search} initialSettingsSection={settingsSection} projectRoute={projectRoute} onProjectRouteChange={changeProjectRoute} customerRoute={customerRoute} onCustomerRouteChange={changeCustomerRoute} />}
         </div>
       </main>

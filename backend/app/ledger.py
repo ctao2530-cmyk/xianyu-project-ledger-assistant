@@ -59,12 +59,12 @@ def default_snapshot() -> dict[str, Any]:
         "settings": {
             "xianyuStartedAt": "2026-05-28",
             "monthlyIncomeGoal": 0,
-            "profileName": "张同学",
+            "profileName": "",
             "profileRole": "个人开发者",
             "profilePhone": "",
             "profileBio": "专注把每个接单项目做成可复用的长期能力。",
             "accountEmail": "",
-            "accountPlan": "高级版",
+            "accountPlan": "",
             "defaultDurationDays": 30,
             "defaultPaymentType": "full",
             "reminderDays": 3,
@@ -228,6 +228,7 @@ class LedgerService:
             state = self._state(session)
             snapshot = normalize_snapshot(json.loads(state.snapshot_json))
             self._enrich_task_trace_fields(session, snapshot)
+            self._enrich_project_update_times(session, snapshot)
             session.commit()
             return state.revision, snapshot
 
@@ -237,6 +238,7 @@ class LedgerService:
         state = self._state(session)
         snapshot = normalize_snapshot(json.loads(state.snapshot_json))
         self._enrich_task_trace_fields(session, snapshot)
+        self._enrich_project_update_times(session, snapshot)
         return state.revision, snapshot
 
     def save(
@@ -992,11 +994,14 @@ class LedgerService:
             )
         elif not trusted_task_trace_sync:
             self._enrich_task_trace_fields(session, normalized)
+        for project in normalized.get("projects", []):
+            project.pop("updatedAt", None)
         state.revision += 1
         state.snapshot_json = canonical_json(normalized)
         state.updated_at = utcnow()
         self._sync_normalized(session, normalized)
         session.flush()
+        self._enrich_project_update_times(session, normalized)
         return state.revision, normalized
 
     @staticmethod
@@ -1177,6 +1182,22 @@ class LedgerService:
             )
             row["deliverables"] = _safe_json_list(task.deliverables_json)
             row["requirementVersionId"] = task.requirement_version_id
+
+    @staticmethod
+    def _enrich_project_update_times(session: Session, snapshot: dict[str, Any]) -> None:
+        """Expose canonical project-row changes, not fabricated client timestamps."""
+        ids = [str(row.get("id") or "") for row in snapshot.get("projects", [])]
+        rows = dict(session.execute(
+            select(BusinessProject.id, BusinessProject.updated_at)
+            .where(BusinessProject.id.in_(ids))
+        ).all()) if ids else {}
+        for project in snapshot.get("projects", []):
+            value = rows.get(str(project.get("id") or ""))
+            project["updatedAt"] = (
+                value.replace(tzinfo=timezone.utc).isoformat()
+                if value is not None and value.tzinfo is None
+                else value.isoformat() if value is not None else None
+            )
 
     def _sync_normalized(self, session: Session, snapshot: dict[str, Any]) -> None:
         def put(model, record_id: str, values: dict[str, Any]):

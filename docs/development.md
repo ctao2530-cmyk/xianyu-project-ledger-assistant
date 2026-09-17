@@ -13,12 +13,11 @@
 ## 自动化检查
 
 ```bash
-pnpm run typecheck
-pnpm run build
-pnpm run test:sites
-pnpm run test:interactions
+pnpm run check
 .venv/bin/python -m pytest backend/tests
 ```
+
+`check` 按顺序执行类型检查、构建、交互回归、收支与排序行为测试、Sites 产物测试，任一步失败即停止。仓库提供前后端 GitHub Actions 作业，`pnpm run check:all` 串行执行本地前后端检查。远端结果需以实际运行记录为准。
 
 范围较小的授权与数据回归：
 
@@ -45,4 +44,6 @@ node --test tests/operating-records-history.test.mjs tests/customer-controls.tes
 
 ## 演示截图
 
-README 图片来自 `tests/information-architecture-preview.mjs` 的合成数据验收场景，与当前白紫色 UI 对应。图中的账户、客户、项目、金额和消息均为演示数据。截图用于展示界面，不代表实际经营成果。
+README 图片来自 `tests/information-architecture-preview.mjs` 的合成数据验收场景，与当前中性浅色与蓝色操作 UI 对应。图中的账户、客户、项目、金额和消息均为演示数据。截图用于展示界面，不代表实际经营成果。
+
+离线恢复工具与授权边界见 [备份恢复](local-recovery.md)。当前模块边界见 [重构记录](refactor-20260916.md)。

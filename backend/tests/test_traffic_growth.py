@@ -326,7 +326,7 @@ def test_0025_migration_upgrades_existing_schema_and_keeps_integrity(tmp_path: P
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert version == ("20260907_0045",)
+    assert version == ("20260908_0046",)
     assert GROWTH_TABLES.issubset(tables)
     assert integrity == ("ok",)
     assert violations == []

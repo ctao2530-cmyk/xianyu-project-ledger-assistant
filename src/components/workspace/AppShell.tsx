@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 
 export function AppShell({ children }: { children: ReactNode }) {
-  return <div className="app-shell retained-workspace-layout reference-workspace august-workspace">{children}</div>;
+  return <div className="app-shell retained-workspace-layout reference-workspace studio-workspace">{children}</div>;
 }
 
 export function ContextPanel({ title, children }: { title: string; children: ReactNode }) {

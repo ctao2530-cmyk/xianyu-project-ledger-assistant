@@ -1,3 +1,6 @@
+import '../features/receivables/receivables.css';
+import { businessDate } from '../shared/time/businessDate';
+import { ProjectRelations } from '../features/project-relations/ProjectRelations';
 import { DetailWorkspace, ContextPanel } from '../components/workspace/AppShell';
 import { TaskFacts } from '../components/workspace/TaskFacts';
 import {
@@ -310,6 +313,8 @@ export function ProjectDetail({
   };
   const [logComposerOpen, setLogComposerOpen] = useState(false);
   const [logText, setLogText] = useState("");
+  const [blueprintReload, setBlueprintReload] = useState(0);
+  const [blueprintReadState, setBlueprintReadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [projectBlueprints, setProjectBlueprints] = useState<ProjectRequirementBlueprintView[]>([]);
   const [caseCandidates,setCaseCandidates] = useState<{id:string;title:string}[]>([]);
   const [selectedCase,setSelectedCase] = useState('');
@@ -334,14 +339,14 @@ export function ProjectDetail({
 
   useEffect(() => {
     let active = true;
-    setProjectBlueprints([]);setSelectedCase('');setShowBlueprintDiff(false);
+    setProjectBlueprints([]);setBlueprintError('');setBlueprintReadState('loading');setSelectedCase('');setShowBlueprintDiff(false);
     const load=()=>localPlatformService.projectRequirementBlueprints(projectId)
-      .then((rows) => { if (active) setProjectBlueprints(rows); })
-      .catch((e) => { if (active) {setProjectBlueprints([]);setBlueprintError(e.message);} });
+      .then((rows) => { if (active) { setProjectBlueprints(rows); setBlueprintReadState('ready'); } })
+      .catch((e) => { if (active) {setProjectBlueprints([]);setBlueprintReadState('error');setBlueprintError(e.message);} });
     void load();window.addEventListener('focus',load);
     if(project.customerId) void localPlatformService.customerRequirements(project.customerId).then(rows=>{if(active)setCaseCandidates(rows);}).catch(()=>{if(active)setCaseCandidates([]);});
     return () => { active = false; window.removeEventListener('focus',load); };
-  }, [projectId, project.customerId]);
+  }, [projectId, project.customerId, blueprintReload]);
 
   const latestBlueprint = projectBlueprints.find(row=>row.case_id) || null;
   const formalBlueprint = latestBlueprint?.case_id ? latestBlueprint : null;
@@ -368,6 +373,7 @@ export function ProjectDetail({
       mockLedgerService.refreshDashboard(),
     ]);
     setProjectBlueprints(rows);
+    setBlueprintReadState('ready');
     onSnapshotChange(nextSnapshot);
   };
   const previewBlueprintFile = async (file: File) => {
@@ -563,11 +569,12 @@ export function ProjectDetail({
         {!isPersonal && <div className="project-simple-relations">
           <span>客户：<b>{customer?.name || "未关联客户"}</b></span>
           <span>来源商品：<b>{project.itemExternalId ? `商品 ${project.itemExternalId}` : "未关联商品"}</b></span>
-          <button type="button" onClick={onEdit}>管理关系</button>
+
         </div>}
       </section>
 
 
+      {!isPersonal && <ProjectRelations snapshot={snapshot} projectId={project.id} formal={formalBlueprint} requirementState={blueprintReadState} />}
       {!isPersonal && project.status === "delivered" && financial.outstanding > 0 && <section className="delivered-receivable-alert"><WarningCircle size={18} weight="fill" /><span><b>项目已交付，仍有 {money.format(financial.outstanding)} 待回款</b><small>到账后可直接在这里确认，不需要先建立付款节点。</small></span><button type="button" onClick={() => onConfirmPayment(project.id)}>确认到账 <ArrowRight size={14} /></button></section>}
       {!isPersonal && latestIssue && <section className="project-settlement-alert"><WarningCircle size={19} weight="fill" /><span><b>{settlementIssueLabels[latestIssue.type]} · 已记录 {projectIssues.length} 条异常</b><small>{latestIssue.reason}</small></span><button type="button" onClick={() => onRecordSettlementIssue(project.id)}>继续记录 <ArrowRight size={14} /></button></section>}
 
@@ -591,7 +598,7 @@ export function ProjectDetail({
         <div className="project-simple-column">
           <div hidden={section !== 'records'}>
           <Surface className="project-simple-card project-simple-info">
-            <SurfaceTitle eyebrow="PROJECT INFO" title="项目基本信息" action={<button type="button" onClick={onEdit}>编辑基本信息</button>} />
+            <SurfaceTitle eyebrow="PROJECT INFO" title="项目基本信息" />
             <div className="project-simple-info-grid">
               <span><small>预计工时</small><b>{project.estimatedHours || 0} 小时</b></span>
             </div>
@@ -604,9 +611,9 @@ export function ProjectDetail({
             <SurfaceTitle eyebrow="REQUIREMENT BLUEPRINT" title="需求蓝图" action={latestBlueprint ? <span className="project-requirement-version">V{latestBlueprint.version} · {formalBlueprint ? latestBlueprint.readiness === 'approved' ? '已确认' : '待确认' : '历史导入'}</span> : undefined} />
             {latestBlueprint ? <div className="project-requirement-current">
               <span><i><FileText size={20} weight="duotone" /></i><span><small>{latestBlueprint.source_label} · {latestBlueprint.schema_version}</small><b>{latestBlueprint.title}</b><em>{latestBlueprint.change_summary}</em></span></span>
-            </div> : <div className="project-simple-empty"><b>尚未确认正式需求</b><p>请在客户正式需求页确认 GPT 提案，再关联到此项目。</p></div>}
+            </div> : blueprintReadState === "loading" ? <p role="status">正在读取正式需求…</p> : blueprintReadState === "error" ? <div className="project-simple-empty"><b>正式需求暂时无法读取</b><p>现有记录没有被删除，请重试读取。</p><button type="button" onClick={() => setBlueprintReload(value => value + 1)}>重新读取需求</button></div> : <div className="project-simple-empty"><b>尚未确认正式需求</b><p>请在客户正式需求页确认 GPT 提案，再关联到此项目。</p></div>}
             {latestBlueprint && <div className="project-requirement-metrics">{[['capabilities','需求项'],['stages','实施阶段'],['deliverables','交付物'],['criteria','验收标准'],['questions','待确认问题']].map(([key,label])=><span key={key}><small>{label}</small><b>{latestBlueprint.metrics?.[key] ?? '—'}</b></span>)}</div>}
-            {formalBlueprint?.case_id && <ProjectDeliverySummary caseId={formalBlueprint.case_id} version={formalBlueprint.version} />}
+            {formalBlueprint?.case_id && <ProjectDeliverySummary projectId={project.id} caseId={formalBlueprint.case_id} version={formalBlueprint.version} />}
             <div className="project-requirement-actions">
               {customer&&<button type="button" onClick={openFormalBlueprint}>{formalBlueprint?'查看完整蓝图':'进入客户正式需求'}</button>}
               {latestBlueprint&&<><button type="button" aria-expanded={showBlueprintDiff} onClick={()=>setShowBlueprintDiff(v=>!v)}>版本变化</button><button ref={draftTriggerRef} type="button" disabled={blueprintBusy} onClick={()=>void openTaskDraft()}>生成任务差异</button></>}
@@ -647,6 +654,7 @@ export function ProjectDetail({
               <div><small>{group.id === "base-contract" ? "原合同" : "追加订单"}</small><b>{group.title}</b><span>{group.detail}</span></div>
               <strong>{money.format(group.amount)}</strong>
               <small>{group.payments.filter((item) => item.status === "confirmed").length}/{group.payments.length} 笔已到账</small>
+              <details className="project-payment-nodes"><summary>查看收款节点 · {group.payments.length} 笔</summary><ul>{group.payments.map(payment => <li key={payment.id}><span>{{deposit:'定金',milestone:'阶段款',final:'尾款',full:'全款'}[payment.type]}</span><small>约定日期：{businessDate(payment.dueAt) === 'unknown' ? '未约定' : businessDate(payment.dueAt)}{payment.status === 'confirmed' && ` · 到账日期：${businessDate(payment.paidAt) === 'unknown' ? '未记录' : businessDate(payment.paidAt)}`}</small><b>{money.format(payment.amount)}</b><span>{{pending:'待到账',confirmed:'已到账',refunded:'已退款',written_off:'已核销'}[payment.status]}</span>{payment.status === 'pending' && financial.outstanding > 0 && <button type="button" onClick={() => onConfirmPayment(project.id, payment.id)}>确认此笔到账</button>}</li>)}</ul></details>
             </article>)}</div> : <div className="project-simple-empty">当前没有付款节点，合同和已收金额仍按统一账本计算。</div>}
             <footer><span>合同合计 <b>{money.format(project.totalAmount)}</b></span><span>已收 {money.format(financial.income)} · 待收 {money.format(financial.outstanding)}</span></footer>
             <div className="project-simple-card-actions">

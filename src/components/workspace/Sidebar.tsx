@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, CaretDown, X, type Icon } from '@phosphor-icons/react';
+import { ArrowRight, CaretDown, GearSix, X, type Icon } from '@phosphor-icons/react';
 
 type NavItem = { label: string; displayLabel?: string; icon: Icon; hidden?: boolean };
 type Child = { key: string; label: string; route: string };
@@ -23,7 +23,7 @@ export function Sidebar({ active, onActiveChange, onSecondaryNavigate, open, onC
     {mobile && open && <button className="sidebar-scrim is-open" aria-label="关闭导航" onClick={onClose}/>}
     <aside className={`sidebar workspace-sidebar ${open ? 'is-open' : ''}`} aria-hidden={mobile && !open ? true : undefined} inert={mobile && !open ? true : undefined}>
       <div className="brand xunying-brand"><img src="/assets/xunying/orbit-mark.png" alt=""/><span className="reference-brand-copy"><strong>循营</strong><small>一人经营台</small></span>{mobile && <button aria-label="关闭导航" onClick={onClose}><X size={20}/></button>}</div>
-      <nav aria-label="主导航">{items.filter(i => !i.hidden).map(({label,displayLabel,icon: Icon}) => {
+      <nav aria-label="主导航">{items.filter(i => !i.hidden && i.label !== '设置中心').map(({label,displayLabel,icon: Icon}) => {
         const selected = active === label || (label === '客户消息' && active === '客户管理') || (label === '经营分析中心' && ['数据统计','AI经营助手'].includes(active));
         const children = secondary[label];
         return <div key={label} className={`sidebar-nav-group ${label === '设置中心' ? 'workspace-settings-nav' : ''}`}>
@@ -35,7 +35,10 @@ export function Sidebar({ active, onActiveChange, onSecondaryNavigate, open, onC
         </div>;
       })}</nav>
       <div className="sidebar-spacer" />
-      <div className="sidebar-promo xiaoce-sidebar-card"><div><small>小策 · AI 技术与商业合伙人</small><strong>把不确定，<br/>变成可验证行动</strong><button onClick={()=>{onActiveChange('AI经营助手');onClose();}}>查看今日判断 <ArrowRight size={15} weight="bold"/></button></div><div className="sidebar-promo-artwork" aria-hidden="true"><img src="/assets/xunying/xiaoce-avatar.png" alt="" draggable={false}/></div></div>
+      <div className="workspace-utilities">
+        <button type="button" className="workspace-partner-entry" onClick={()=>{onActiveChange('AI经营助手');onClose();}}><img src="/assets/xunying/xiaoce-avatar.png" alt=""/><span><b>小策</b><small>AI 技术与商业合伙人</small></span><ArrowRight size={15}/></button>
+        <button type="button" className={`workspace-settings-entry ${active === '设置中心' ? 'active' : ''}`} aria-current={active === '设置中心' ? 'page' : undefined} onClick={()=>{onActiveChange('设置中心');onClose();}}><GearSix size={20}/><span>设置中心</span></button>
+      </div>
     </aside>
   </>;
 }

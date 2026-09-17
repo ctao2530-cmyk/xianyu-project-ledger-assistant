@@ -1,8 +1,10 @@
+import { AcceptancePanel } from '../features/delivery/AcceptancePanel';
+import '../features/delivery/acceptance.css';
 import { useEffect, useState } from 'react';
 import { localPlatformService, type RequirementBlueprint } from '../data/localPlatformService';
 
 /** Read the formal version; task status is never interpreted as customer acceptance. */
-export function ProjectDeliverySummary({ caseId, version }: { caseId: string; version: number }) {
+export function ProjectDeliverySummary({ caseId, version, projectId }: { caseId: string; version: number; projectId?: string }) {
   const [document, setDocument] = useState<RequirementBlueprint | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -27,9 +29,10 @@ export function ProjectDeliverySummary({ caseId, version }: { caseId: string; ve
       {document.capabilities.map(capability => {
         const stages = document.stages.filter(stage => stage.capability_ids.includes(capability.id));
         const gates = document.acceptance_gates.filter(gate => gate.stage_ids.some(id => stages.some(stage => stage.id === id)));
-        return <tr key={capability.id}><th scope="row">{capability.title}</th><td>{capability.description || '待补充'}</td><td>{[...new Set(stages.flatMap(stage => stage.deliverables))].join('、') || '待明确交付物'}</td><td>{gates.flatMap(gate=>gate.criteria).map((criterion,i)=><div key={i}>{criterion}</div>)}<small>未记录客户验收结果</small></td></tr>;
+        return <tr key={capability.id}><th scope="row">{capability.title}</th><td>{capability.description || '待补充'}</td><td>{[...new Set(stages.flatMap(stage => stage.deliverables))].join('、') || '待明确交付物'}</td><td>{gates.flatMap(gate=>gate.criteria).map((criterion,i)=><div key={i}>{criterion}</div>)}<small>版本验收结论见下方记录</small></td></tr>;
       })}
     </tbody></table></div>
+    {projectId && <AcceptancePanel projectId={projectId} caseId={caseId} version={version}/>}
     {!document.capabilities.length && <p>此版本尚未记录具体需求项。</p>}
   </div>;
 }

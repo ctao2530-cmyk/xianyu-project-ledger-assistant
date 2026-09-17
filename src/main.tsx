@@ -7,7 +7,8 @@ import "./components/workspace/retained-workspace-layout.css";
 import "./components/workspace/page-controls.css";
 import "./components/workspace/customer-controls.css";
 import "./components/workspace/reading-workspace.css";
-import "./components/workspace/august-24-theme.css";
+import "./design/tokens.css";
+import "./design/workspace.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

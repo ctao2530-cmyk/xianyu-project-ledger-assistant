@@ -37,7 +37,7 @@
 .app-shell.august-workspace .main-grid {margin-top:14px;}
 .app-shell.august-workspace .bottom-grid {margin-top:14px;}
 /* New action and cashflow surfaces keep their existing controls and calculations. */
-.august-current-actions {margin-top:22px;}
+.august-current-actions {margin-top:0;}
 .august-current-actions .reference-welcome,.august-current-actions .reference-home-metrics {display:none;}
 .app-shell.august-workspace .reference-workbench-grid {display:grid;grid-template-columns:minmax(0,2.5fr) minmax(270px,1fr);gap:18px;align-items:start;}
 .app-shell.august-workspace .action-workbench {max-width:none;margin:0;padding:24px;border-radius:24px;border:1px solid #e9ebf5;background:#fff;box-shadow:var(--shadow);}
@@ -325,3 +325,9 @@
 .app-shell.august-workspace .project-hub-status button span {margin-left:5px;}
 @media(max-width:700px){.app-shell.august-workspace .customer-focus .messages-workbench.customer-resizable{border-radius:16px;}.app-shell.august-workspace .customer-focus .thread-header-actions summary{padding-inline:6px;}.app-shell.august-workspace .customer-focus .thread-header-actions .customer-context-toggle{padding-inline:6px;}}
 @media(max-width:700px){.app-shell.august-workspace .project-hub-toolbar>select{display:block;flex:1;min-width:0;min-height:44px;}.app-shell.august-workspace .project-hub-toolbar>.project-hub-status{flex-basis:100%;}.app-shell.august-workspace .project-filter-reset{display:inline-flex;}}
+
+/* One workbench entry; historical reporting remains explicitly expandable. */
+.workbench-business-overview { margin-top: 24px; }
+.workbench-business-overview > summary { cursor: pointer; padding: 14px 4px; color: #58488a; font-weight: 600; }
+.workbench-business-overview > summary:focus-visible { outline: 2px solid #6544f4; outline-offset: 3px; }
+.workbench-business-overview[open] > section { margin-top: 20px; }
