@@ -1,3 +1,7 @@
+import { createPortal } from 'react-dom';
+import { useVisualMode } from '../components/workspace/AppShell';
+import { useDialogFocus } from '../components/workspace/useDialogFocus';
+import { AnalysisFacts } from '../components/workspace/AnalysisFacts';
 import {
   ArrowClockwise,
   ArrowCounterClockwise,
@@ -369,10 +373,29 @@ function EvidenceDetails({
       <b><ShieldCheck size={15} />来源状态</b>
       {matchingSources.length > 0
         ? matchingSources.map((source) => <p key={source.id}><span className={source.available ? "is-ready" : "is-missing"}>{source.available ? "可用" : "缺失"}</span>{source.label} · {source.record_count} 条记录</p>)
-        : <p><span className="is-ready">已校验</span>证据引用属于当前分析白名单</p>}
+        : <p><span className="is-missing">未提供来源详情</span>请结合指标引用核对原始记录</p>}
     </div>
     <p className="analysis-manual-note"><Info size={15} weight="fill" />此建议只保存人工反馈，不会自动修改商品、发送消息、变更项目或购买推广。</p>
   </div>;
+}
+
+function AnalysisEvidenceDrawer({ overview, recommendation, onClose }: { overview: BusinessAnalysisOverview; recommendation: BusinessAnalysisRecommendation; onClose: () => void }) {
+  const dialog = useDialogFocus<HTMLElement>(onClose, '[aria-label="关闭建议依据"]');
+  return createPortal(<div className="aurora-theme aurora-analysis-evidence-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <aside ref={dialog} className="aurora-analysis-evidence-drawer" role="dialog" aria-modal="true" aria-labelledby="analysis-evidence-title">
+      <header><div><small>来源与适用范围</small><h2 id="analysis-evidence-title">建议依据</h2></div><button type="button" aria-label="关闭建议依据" onClick={onClose}><X size={20} /></button></header>
+      <h3>{recommendation.title}</h3>
+      <dl><div><dt>分析时间</dt><dd>{formatAnalysisTime(recommendation.analysis_snapshot_time)}</dd></div><div><dt>适用范围</dt><dd>{recommendationTarget(recommendation)}</dd></div><div><dt>置信度 / 观察周期</dt><dd>{confidenceLabels[recommendation.confidence]} · {observePeriodLabel(recommendation.observe_period)}</dd></div></dl>
+      {recommendation.stale && <p role="status">分析已过期，请核对最新事实。</p>}
+      <EvidenceDetails overview={overview} recommendation={recommendation} />
+      <button className="aurora-button" type="button" onClick={() => { onClose(); window.dispatchEvent(new CustomEvent('xunying:global-agent-open')); }}>打开小策，继续提问</button>
+    </aside>
+  </div>, document.body);
+}
+
+function AnalysisConfirmation({ titleId, onClose, children, className = '' }: { titleId: string; onClose: () => void; children: React.ReactNode; className?: string }) {
+  const dialog = useDialogFocus<HTMLElement>(onClose, 'header button');
+  return <section ref={dialog} className={`analysis-confirm-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>{children}</section>;
 }
 
 function RecommendationActions({
@@ -448,6 +471,7 @@ function RecommendationReviewDrawer({
   onSubmit: (input: RecommendationCompletionInput) => void;
   onOpenExperiment: (experimentId: string) => void;
 }) {
+  const dialog = useDialogFocus<HTMLElement>(onClose, 'header button');
   const [outcome, setOutcome] = useState<RecommendationOutcome | "">("");
   const [actualCost, setActualCost] = useState("");
   const [actualHours, setActualHours] = useState("");
@@ -464,7 +488,7 @@ function RecommendationReviewDrawer({
     });
   };
   return <div className="analysis-review-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <aside className="analysis-review-drawer" role="dialog" aria-modal="true" aria-labelledby="analysis-review-title">
+    <aside ref={dialog} className="analysis-review-drawer" role="dialog" aria-modal="true" aria-labelledby="analysis-review-title">
       <header className="analysis-review-header">
         <div><span><ClipboardText size={20} weight="duotone" /></span><div><small>{completed ? "RESULT REVIEW" : "RESULT INPUT"}</small><h2 id="analysis-review-title">{completed ? "结果复盘" : "提交观察结果"}</h2></div></div>
         <button type="button" aria-label="关闭结果复盘" onClick={onClose}><X size={19} /></button>
@@ -726,6 +750,9 @@ function EstimateCalibrationWorkbench({
 }
 
 export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string) => void }) {
+  const { mode } = useVisualMode();
+  const aurora = mode === 'aurora';
+  const [modelPanelOpen, setModelPanelOpen] = useState(false);
   const [analysis, setAnalysis] = useState<BusinessAnalysisOverview | null>(null);
   const [history, setHistory] = useState<BusinessAnalysisHistoryItem[]>([]);
   const [recommendationQueue, setRecommendationQueue] = useState<BusinessAnalysisRecommendationQueueResponse | null>(null);
@@ -862,6 +889,22 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [acceptTarget, reviewTarget, startTarget]);
+
+  useEffect(() => {
+    if (!aurora) return;
+    const closeEvidence = () => setExpandedEvidence(null);
+    window.addEventListener('xunying:global-agent-open', closeEvidence);
+    window.addEventListener('xunying:global-agent-visible', closeEvidence);
+    return () => {
+      window.removeEventListener('xunying:global-agent-open', closeEvidence);
+      window.removeEventListener('xunying:global-agent-visible', closeEvidence);
+    };
+  }, [aurora]);
+
+  const toggleEvidence = (id: string) => {
+    if (aurora && expandedEvidence !== id) window.dispatchEvent(new CustomEvent('xunying:analysis-evidence-open'));
+    setExpandedEvidence(expandedEvidence === id ? null : id);
+  };
 
   const recommendations = useMemo(() => {
     if (!analysis) return [];
@@ -1129,13 +1172,13 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
     }, 80);
   };
 
-  if (loading) return <div className="business-analysis-state" role="status">
+  if (loading) return <div className={`business-analysis-state ${aurora ? "aurora-theme aurora-analysis-state" : ""}`} role="status">
     <ArrowClockwise className="analysis-spin" size={34} />
     <h2>正在建立经营事实基线</h2>
     <p>读取商品、客户、项目和收支数据，不会调用模型或写入业务记录。</p>
   </div>;
 
-  if (error || !analysis) return <div className="business-analysis-state is-error">
+  if (error || !analysis) return <div className={`business-analysis-state is-error ${aurora ? "aurora-theme aurora-analysis-state" : ""}`}>
     <WarningCircle size={38} weight="duotone" />
     <h2>暂时无法读取经营分析</h2>
     <p>{error || "经营分析服务暂时不可用"}</p>
@@ -1182,7 +1225,7 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
     },
   ];
 
-  return <div className="business-analysis-page">
+  return <div className={`business-analysis-page ${aurora ? "aurora-theme aurora-analysis" : ""}`}>
 
     <section className="analysis-command-bar">
       <div className="analysis-command-copy">
@@ -1193,6 +1236,7 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
       <div className="analysis-command-actions">
         <p>{analysis.provider && <span className="analysis-used-model">{analysis.provider === "codex_cli" ? "GPT" : "DeepSeek"} · {analysis.model || "模型未知"}</span>}<AnalysisStateBadge overview={analysis} /></p>
         <div>
+          {aurora && <button type="button" className="analysis-model-toggle" aria-expanded={modelPanelOpen} aria-controls="analysis-model-controls" onClick={() => setModelPanelOpen(value => !value)}>分析模型 · {modelLoading ? '读取中' : selectionReady ? selectedModel : '需配置'}<CaretDown size={14} /></button>}
           {viewingHistory && <button className="analysis-return-latest" type="button" disabled={historyLoadingId === "latest"} onClick={() => void returnToLatest()}><ArrowClockwise size={15} />返回最新分析</button>}
           <button className="analysis-run-button" type="button" disabled={running || modelLoading || !selectionReady} onClick={() => void generateAnalysis()}>
             {running ? <><ArrowClockwise className="analysis-spin" size={17} />正在分析</> : <><Sparkle size={17} weight="fill" />使用{selectedProvider === "codex_cli" ? " GPT" : " DeepSeek"}生成分析报告</>}
@@ -1211,7 +1255,7 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
       <section className="reference-analysis-data"><h2>经营关键数据</h2><div className="analysis-metrics-grid" aria-label="经营概览">
         {metricCards.map((card) => <MetricCard key={card.label} {...card} />)}
       </div></section>
-      <aside className="analysis-model-panel" aria-label="分析模型选择">
+      <aside className="analysis-model-panel" id="analysis-model-controls" hidden={aurora && !modelPanelOpen} aria-label="分析模型选择">
         <header><div><span>MODEL SELECTION</span><h2>选择分析模型</h2></div><small className={selectionReady ? "is-ready" : "is-attention"}>{modelLoading ? "读取中" : selectionReady ? "已连接" : "需检查"}</small></header>
         <div className="analysis-provider-options">
           {(["codex_cli", "deepseek"] as BusinessAnalysisProvider[]).map((provider) => {
@@ -1230,7 +1274,7 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
       </aside>
     </section>
 
-    <div className="reference-execution-layout"><section className="analysis-execution-shell" id="business-recommendation-queue">
+    <div className="reference-execution-layout">{aurora && <AnalysisFacts overview={analysis} />}<section className="analysis-execution-shell" id="business-recommendation-queue">
       <header className="analysis-execution-heading">
         <div><span><ClipboardText size={17} weight="duotone" />EXECUTION & REVIEW</span><h2>执行与复盘</h2><p>跨历史跟踪每条建议：先人工采纳，再观察真实指标，最后保存结果。</p></div>
       <select className="reference-queue-filter" aria-label="建议生命周期筛选" value={queueFilter} onChange={event=>setQueueFilter(event.target.value as RecommendationQueueFilter)}>
@@ -1317,11 +1361,11 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
                 <div><RecommendationActions recommendation={recommendation} persisted={analysis.record_status === "completed"} busy={updatingId === recommendation.id} onUpdate={(status) => requestRecommendationUpdate(recommendation, status)} onStart={() => openStartConfirmation(recommendation)} onReview={() => setReviewTarget(recommendation)} /></div>
               </div>
               <div className="analysis-action-links">
-                <button type="button" aria-expanded={evidenceOpen} aria-controls={`analysis-evidence-${recommendation.id}`} onClick={() => setExpandedEvidence(evidenceOpen ? null : recommendation.id)}><Eye size={14} />{evidenceOpen ? "收起依据" : "查看依据"}</button>
+                <button type="button" aria-expanded={evidenceOpen} aria-controls={`analysis-evidence-${recommendation.id}`} onClick={() => toggleEvidence(recommendation.id)}><Eye size={14} />{evidenceOpen ? "收起依据" : "查看依据"}</button>
                 {["accepted", "observing"].includes(recommendation.status) && navigablePages.has(recommendation.target_page) && <button type="button" onClick={() => onNavigate(recommendation.target_page)}>前往人工处理 <CaretRight size={13} /></button>}
               </div>
             </div>
-            {evidenceOpen && <EvidenceDetails overview={analysis} recommendation={recommendation} />}
+            {evidenceOpen && !aurora && <EvidenceDetails overview={analysis} recommendation={recommendation} />}
           </article>;
         })}
       </div> : <div className="analysis-empty-recommendations">
@@ -1368,23 +1412,24 @@ export function BusinessAnalysisPage({ onNavigate }: { onNavigate: (page: string
     <aside className="analysis-safety-boundary"><ShieldCheck size={18} weight="fill" /><span><b>人工执行边界</b><small>AI只分析、解释和排序建议；不会自动修改商品、发布内容、发送客户消息、变更项目或购买推广。</small></span></aside>
 
     </details>
+    {aurora && expandedEvidence && analysis.recommendations.some(item => item.id === expandedEvidence) && <AnalysisEvidenceDrawer overview={analysis} recommendation={analysis.recommendations.find(item => item.id === expandedEvidence)!} onClose={() => setExpandedEvidence(null)} />}
     {acceptTarget && <div className="analysis-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setAcceptTarget(null); }}>
-      <section className="analysis-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="analysis-accept-title">
+      <AnalysisConfirmation titleId="analysis-accept-title" onClose={() => setAcceptTarget(null)}>
         <header><span><CheckCircle size={21} weight="duotone" /></span><div><small>MANUAL DECISION</small><h2 id="analysis-accept-title">确认采纳这条建议？</h2></div><button type="button" aria-label="关闭采纳确认" onClick={() => setAcceptTarget(null)}><X size={18} /></button></header>
         <div className="analysis-confirm-content"><em>{domainLabels[acceptTarget.domain]}</em><h3>{acceptTarget.title}</h3><p>{acceptTarget.action}</p><dl><div><dt>业务目标</dt><dd>{recommendationTarget(acceptTarget)}</dd></div><div><dt>观察周期</dt><dd>{observePeriodLabel(acceptTarget.observe_period)}</dd></div><div><dt>数据依据</dt><dd>{acceptTarget.data_source.join("、") || "经营事实指标"}</dd></div></dl></div>
         <p className="analysis-confirm-boundary"><ShieldCheck size={16} weight="fill" />采纳只会冻结服务端执行前基线，不会自动执行建议动作。</p>
         <footer><button type="button" onClick={() => setAcceptTarget(null)}>取消</button><button className="analysis-confirm-primary" type="button" disabled={updatingId === acceptTarget.id || acceptTarget.stale} onClick={() => void updateRecommendation(acceptTarget, "accepted")}>{updatingId === acceptTarget.id ? <><ArrowClockwise className="analysis-spin" size={16} />正在采纳</> : <><CheckCircle size={16} weight="fill" />确认采纳</>}</button></footer>
-      </section>
+      </AnalysisConfirmation>
     </div>}
 
     {startTarget && <div className="analysis-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setStartTarget(null); }}>
-      <section className="analysis-confirm-dialog analysis-start-dialog" role="dialog" aria-modal="true" aria-labelledby="analysis-start-title">
+      <AnalysisConfirmation className="analysis-start-dialog" titleId="analysis-start-title" onClose={() => setStartTarget(null)}>
         <header><span><Play size={21} weight="duotone" /></span><div><small>START OBSERVATION</small><h2 id="analysis-start-title">开始执行观察</h2></div><button type="button" aria-label="关闭开始观察确认" onClick={() => setStartTarget(null)}><X size={18} /></button></header>
         <div className="analysis-confirm-content"><em>{domainLabels[startTarget.domain]}</em><h3>{startTarget.title}</h3><p>{startTarget.action}</p><dl><div><dt>基线时间</dt><dd>{formatAnalysisTime(startTarget.baseline_metrics?.captured_at)}</dd></div><div><dt>预计周期</dt><dd>{observePeriodLabel(startTarget.observe_period)}</dd></div></dl></div>
         {startTarget.domain === "products" && <label className="analysis-experiment-select"><span><Flask size={16} />关联现有商品实验 <small>可选</small></span><select value={selectedExperimentId} disabled={experimentLoading} onChange={(event) => setSelectedExperimentId(event.target.value)}><option value="">不关联，按商品组合指标观察</option>{productExperiments.map((experiment) => <option value={experiment.id} key={experiment.id}>{experiment.item_title} · {experiment.variable} · {formatDeadline(experiment.observation_until)} 到期</option>)}</select>{experimentLoading ? <small>正在读取现有实验…</small> : productExperiments.length === 0 ? <small>当前没有正在观察的商品实验；可以先去商品经营人工建立。</small> : <small>关联后以商品实验的冻结基线和裁决结果为权威。</small>}</label>}
         <p className="analysis-confirm-boundary"><ShieldCheck size={16} weight="fill" />开始观察只记录时间线；商品修改、客户跟进和其他动作仍由你人工完成。</p>
         <footer>{startTarget.domain === "products" && <button className="analysis-go-experiment" type="button" onClick={() => { setStartTarget(null); onNavigate("商品经营"); }}>去商品经营</button>}<button type="button" onClick={() => setStartTarget(null)}>取消</button><button className="analysis-confirm-primary" type="button" disabled={updatingId === startTarget.id || experimentLoading} onClick={() => void startRecommendation()}>{updatingId === startTarget.id ? <><ArrowClockwise className="analysis-spin" size={16} />正在开始</> : <><Play size={16} weight="fill" />确认开始观察</>}</button></footer>
-      </section>
+      </AnalysisConfirmation>
     </div>}
 
     {reviewTarget && <RecommendationReviewDrawer key={`${reviewTarget.id}-${reviewTarget.version}`} recommendation={reviewTarget} busy={updatingId === reviewTarget.id} onClose={() => setReviewTarget(null)} onSubmit={(input) => void completeRecommendation(input)} onOpenExperiment={openProductExperiment} />}

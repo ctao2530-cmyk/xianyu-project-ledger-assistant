@@ -29,7 +29,16 @@ function render(values = {}, data = snapshot) {
   return renderToStaticMarkup(React.createElement(OperatingRecordsPage, { snapshot: data, globalSearch: '', onRecordExpense() {}, onConfirmPayment() {}, onCreatePaymentPlan() {}, onNavigateProject() {}, onEditExpense() {}, onDeleteExpense() {} }));
 }
 const summary = html => html.match(/<section class="operating-summary-strip"[\s\S]*?<\/section>/)[0];
-const details = html => html.match(/<section class="operating-record-list"[\s\S]*?<aside class="reference-records-context"/)[0];
+const details = html => {
+  const start = html.indexOf('<section class="operating-record-list"');
+  assert.notEqual(start, -1, 'record list must be rendered');
+  let depth = 0;
+  for (const match of html.slice(start).matchAll(/<\/?section\b[^>]*>/g)) {
+    depth += match[0].startsWith('</') ? -1 : 1;
+    if (depth === 0) return html.slice(start, start + match.index + match[0].length);
+  }
+  assert.fail('record list must have a closing section');
+};
 
 test('new session defaults to all history; explicitly chosen old filters remain compatible', () => {
   assert.equal(restoreRecordsPeriod(''), 'all');

@@ -1,3 +1,4 @@
+import { useDialogFocus } from '../components/workspace/useDialogFocus';
 import {
   ArrowClockwise,
   CalendarBlank,
@@ -129,15 +130,7 @@ export function ProjectChangeOrderModal({
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [onClose, submitting]);
+  const dialogRef = useDialogFocus<HTMLElement>(() => { if (!submitting) onClose(); }, 'input');
 
   const chooseMode = (nextMode: SettlementMode) => {
     setMode(nextMode);
@@ -251,7 +244,7 @@ export function ProjectChangeOrderModal({
   return <div className="payment-confirmation-layer" role="presentation" onMouseDown={(event) => {
     if (event.target === event.currentTarget && !submitting) onClose();
   }}>
-    <section className="payment-confirmation-modal change-order-modal" role="dialog" aria-modal="true" aria-labelledby="change-order-title">
+    <section ref={dialogRef} className="payment-confirmation-modal change-order-modal" role="dialog" aria-modal="true" aria-labelledby="change-order-title">
       <header>
         <i><Receipt size={24} weight="duotone" /></i>
         <div><span>PROJECT CHANGE ORDER</span><h2 id="change-order-title">新增追加订单</h2></div>

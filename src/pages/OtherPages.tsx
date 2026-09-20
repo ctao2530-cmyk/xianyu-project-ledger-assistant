@@ -1,5 +1,6 @@
 import { MaintenancePanel } from '../features/maintenance/MaintenancePanel';
 import '../features/delivery/acceptance.css';
+import { VisualPreferences } from '../components/workspace/AppShell';
 import { Tabs } from '../components/workspace/Tabs';
 import {
   ArrowClockwise,
@@ -79,6 +80,7 @@ import {
   type ProjectRouteMode,
 } from "./BusinessAssistantPages";
 import { OperatingRecordsPage } from "./OperatingRecordsPage";
+import { useDialogFocus } from '../components/workspace/useDialogFocus';
 import { ProjectWorkspacePage } from "./ProjectWorkspacePage";
 import "./other-pages.css";
 import { CustomerMessagesPage } from "./CustomerMessagesPage";
@@ -309,6 +311,7 @@ function localDateTimeInput(value?: string) {
 }
 
 function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "client", onClose, onCreated }: { kind: CrudActionKind; snapshot: LedgerSnapshot; editingExpenseId?: string | null; initialProjectKind?: ProjectKind; onClose: () => void; onCreated: (kind: CrudActionKind, value: CrudValue) => void }) {
+  const financeDialogRef = useDialogFocus<HTMLFormElement>(onClose, 'input', kind === 'expense');
   const editingExpense = snapshot.expenses.find((item) => item.id === editingExpenseId);
   const labels = kind === "project" ? { title: "新建项目", name: "项目名称", amount: "项目预算" } : { title: editingExpenseId ? "编辑支出" : "记录支出", name: "支出项目", amount: "支出金额" };
   const [name, setName] = useState(editingExpense?.name || "");
@@ -349,7 +352,7 @@ function CrudModal({ kind, snapshot, editingExpenseId, initialProjectKind = "cli
     if (kind === "project" && projectKind === "client" && !customerName.trim()) { setError("请填写关联客户"); return; }
     onCreated(kind, { name: name.trim(), amount: kind === "project" && projectKind === "personal" ? "0" : amount.trim(), paidAt, notes: notes.trim(), customerName: projectKind === "personal" ? "" : customerName.trim(), durationDays, projectId, category, projectKind, sourceItemExternalId: projectKind === "client" ? sourceItemExternalId : "" });
   };
-  return <div className="page-modal-layer"><button className="page-modal-backdrop" aria-label="关闭弹窗" onClick={onClose} /><form className="page-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label={labels.title}>
+  return <div className="page-modal-layer"><button className="page-modal-backdrop" aria-label="关闭弹窗" onClick={onClose} /><form ref={financeDialogRef} className="page-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label={labels.title}>
     <div className="page-modal-head"><div><span>快速录入</span><h2>{labels.title}</h2></div><button type="button" aria-label="关闭" onClick={onClose}><X size={20} /></button></div>
     {kind === "project" && <div className="modal-project-kind" role="group" aria-label="项目分类"><span>项目分类</span><div><button type="button" className={projectKind === "personal" ? "active" : ""} aria-pressed={projectKind === "personal"} onClick={() => setProjectKind("personal")}><Student size={17} />个人项目</button><button type="button" className={projectKind === "client" ? "active" : ""} aria-pressed={projectKind === "client"} onClick={() => setProjectKind("client")}><Briefcase size={17} />接单项目</button></div><small>{projectKind === "personal" ? "管理产品、开源项目或个人成长计划" : "关联客户、报价、回款与交付"}</small></div>}
     <label><span>{labels.name}</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder={`请输入${labels.name}`} autoFocus /></label>
@@ -642,7 +645,7 @@ function OperatingAnalysisHub({snapshot,onNavigate}:{snapshot:LedgerSnapshot;onN
   };
   const [view,setView]=useState(read);
   useEffect(()=>{const sync=()=>setView(read());window.addEventListener('hashchange',sync);window.addEventListener('popstate',sync);return()=>{window.removeEventListener('hashchange',sync);window.removeEventListener('popstate',sync);};},[]);
-  return <section><nav className="project-detail-sections" aria-label="经营分析视图">{[['insights','问题与建议'],['statistics','数据统计'],['judgment','今日判断']].map(([key,label])=><button type="button" key={key} aria-current={view===key?'page':undefined} onClick={()=>{setView(key);window.location.hash=encodeURIComponent(`经营分析中心/${key}`);}}>{label}</button>)}</nav>{view==='statistics'?<DataStatisticsHub snapshot={snapshot}/>:view==='judgment'?<AIWorkspacePage snapshot={snapshot} onNavigate={onNavigate}/>:<BusinessAnalysisPage onNavigate={onNavigate}/>}</section>;
+  return <section className="operating-analysis-hub"><nav className="project-detail-sections" aria-label="经营分析视图">{[['insights','问题与建议'],['statistics','数据统计'],['judgment','今日判断']].map(([key,label])=><button type="button" key={key} aria-current={view===key?'page':undefined} onClick={()=>{setView(key);window.location.hash=encodeURIComponent(`经营分析中心/${key}`);}}>{label}</button>)}</nav>{view==='statistics'?<DataStatisticsHub snapshot={snapshot}/>:view==='judgment'?<AIWorkspacePage snapshot={snapshot} onNavigate={onNavigate}/>:<BusinessAnalysisPage onNavigate={onNavigate}/>}</section>;
 }
 
 function DataStatisticsHub({ snapshot }: { snapshot: LedgerSnapshot }) {
@@ -1040,7 +1043,7 @@ function FunctionalSettingsCenterPage({ snapshot, onSnapshotChange, onToast, ini
     {section === "数据与同步" && <MaintenancePanel mode="readiness"/>}
     {section === "AI与回复" && <MaintenancePanel mode="analysis-usage"/>}
     {section === "数据与同步" && <SectionCard id="settings-live-数据与同步" className="settings-group settings-panel-card"><PanelHeader title="数据与备份设置" /><div className="settings-status-grid"><span><CheckCircle size={19} weight="fill" /><b>数据状态</b><small>{isLedgerBackendConnected() ? "统一服务已连接" : "浏览器兼容模式"}</small></span><span><DesktopTower size={19} weight="duotone" /><b>保存位置</b><small>{isLedgerBackendConnected() ? "本机 SQLite" : "当前浏览器"}</small></span><span><Database size={19} weight="duotone" /><b>业务数据</b><small>{recordCount} 条记录</small></span></div><SettingRow icon={CloudArrowUp} title="跨浏览器同步" description="Ego Lite 与其他浏览器连接同一本机服务后读取同一数据库" control={<span className="setting-control">{isLedgerBackendConnected() ? "已启用" : "等待本机服务"}</span>} tone="blue" /><SettingRow icon={DownloadSimple} title="导出数据" description="导出账本 JSON；不包含会话消息、图片原件与完整需求历史" control={<button className="outline-action" onClick={exportBackup}>导出备份</button>} tone="green" /><SettingRow icon={Trash} title="清理缓存" description="业务数据不是缓存，不会被删除" control={<button className="outline-action" onClick={() => onToast("无需清理：经营数据已安全保留")}>检查缓存</button>} tone="red" /></SectionCard>}
-    {section === "界面主题" && <SectionCard id="settings-live-界面主题" className="theme-settings settings-panel-card"><PanelHeader title="界面主题与外观" /><div className="mode-choice"><span><i />界面模式<small>当前产品保持浅色 SaaS 设计</small></span><button className="active" onClick={() => update({ colorMode: "light" })}>浅色模式</button><button disabled title="当前浅色设计暂未提供深色配色">深色模式</button></div><div className="theme-colors"><span><b>主题色彩</b><small>主要按钮与选中状态使用该颜色</small></span>{["#6544f4", "#4c8cf5", "#25c879", "#ffac18", "#f35b68", "#12b9cd"].map((color) => <button aria-label={`选择主题色 ${color}`} className={(settings.themeColor || "#6544f4") === color ? "active" : ""} style={{ background: color }} onClick={() => update({ themeColor: color })} key={color} />)}</div></SectionCard>}
+    {section === "界面主题" && <SectionCard id="settings-live-界面主题" className="theme-settings settings-panel-card"><PanelHeader title="界面主题与外观" /><section className="settings-local-appearance"><h3>本机外观</h3><p>仅保存在此浏览器，不改变业务设置或未保存的内容。</p><VisualPreferences /></section><div className="mode-choice"><span><i />界面模式<small>现有界面的基础配色；极光外观使用独立配色</small></span><button className="active" onClick={() => update({ colorMode: "light" })}>浅色模式</button><button disabled title="当前浅色设计暂未提供深色配色">深色模式</button></div><div className="theme-colors"><span><b>主题色彩</b><small>仅用于现有界面的主题色设置</small></span>{["#6544f4", "#4c8cf5", "#25c879", "#ffac18", "#f35b68", "#12b9cd"].map((color) => <button aria-label={`选择主题色 ${color}`} className={(settings.themeColor || "#6544f4") === color ? "active" : ""} style={{ background: color }} onClick={() => update({ themeColor: color })} key={color} />)}</div></SectionCard>}
   </section>;
 
   return <>

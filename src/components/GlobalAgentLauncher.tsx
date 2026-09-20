@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { GlobalAgentTargetPage } from "../data/localPlatformService";
 import { GlobalAgentPanel } from "./GlobalAgentPanel";
+import { useVisualMode } from './workspace/AppShell';
 
 
 interface Point { x: number; y: number; viewportWidth?: number; viewportHeight?: number; size?: number }
@@ -98,12 +99,18 @@ const blockingOverlaySelector = [
   ".task-editor-layer",
   ".product-plan-modal-layer",
   ".history-import-layer",
+  ".analysis-confirm-backdrop",
+  ".analysis-review-backdrop",
 ].join(",");
 
-export function GlobalAgentLauncher({ onNavigate }: {
+export function GlobalAgentLauncher({ onNavigate, home = false }: {
   onNavigate: (target: GlobalAgentTargetPage) => void;
+  home?: boolean;
 }) {
+  const { mode } = useVisualMode();
+  const homeEntry = home && mode === 'aurora';
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const homeOpenerRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; origin: Point } | null>(null);
   const suppressClickRef = useRef(false);
   const [position, setPosition] = useState<Point>(() => readPosition());
@@ -152,11 +159,20 @@ export function GlobalAgentLauncher({ onNavigate }: {
   useEffect(() => {
     const openAgent = () => {
       if (document.querySelector(blockingOverlaySelector)) return;
+      if (document.activeElement instanceof HTMLElement) homeOpenerRef.current = document.activeElement;
       setOpen(true);
     };
     window.addEventListener("xunying:global-agent-open", openAgent);
     return () => window.removeEventListener("xunying:global-agent-open", openAgent);
-  }, []);
+  }, [homeEntry]);
+
+  useEffect(() => {
+    if (mode !== 'aurora') return;
+    if (open) window.dispatchEvent(new CustomEvent('xunying:global-agent-visible'));
+    const closeForEvidence = () => setOpen(false);
+    window.addEventListener('xunying:analysis-evidence-open', closeForEvidence);
+    return () => window.removeEventListener('xunying:analysis-evidence-open', closeForEvidence);
+  }, [mode, open]);
 
   const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
@@ -200,7 +216,14 @@ export function GlobalAgentLauncher({ onNavigate }: {
 
   const close = () => {
     setOpen(false);
-    window.requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
+    window.requestAnimationFrame(() => {
+      // Navigation may have completed before this frame; never focus a hidden launcher.
+      const target = [homeOpenerRef.current, buttonRef.current,
+        document.querySelector<HTMLElement>('.aurora-menu-toggle'),
+        document.querySelector<HTMLElement>('.aurora-navigation button[aria-current="page"]')]
+        .find(element => element?.isConnected && element.getClientRects().length);
+      target?.focus({ preventScroll: true });
+    });
   };
 
   const panelGeometry = (() => {
@@ -224,6 +247,7 @@ export function GlobalAgentLauncher({ onNavigate }: {
 
   return <div className={`global-agent-root ${blocked && !open ? "is-blocked" : ""} ${hasMobileNav ? "has-mobile-nav" : ""}`}>
     <button
+      hidden={mode === 'aurora'}
       ref={buttonRef}
       type="button"
       className={`global-agent-launcher ${open ? "is-open" : ""}`}
@@ -240,6 +264,7 @@ export function GlobalAgentLauncher({ onNavigate }: {
           suppressClickRef.current = false;
           return;
         }
+        homeOpenerRef.current = buttonRef.current;
         setOpen((value) => !value);
       }}
       onKeyDown={(event) => {

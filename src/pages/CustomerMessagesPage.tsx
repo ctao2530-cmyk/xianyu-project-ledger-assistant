@@ -8,6 +8,7 @@ import { CustomerListResize, useCustomerListWidth } from '../components/workspac
 import { CustomerProfileWorkspace } from '../components/workspace/CustomerProfileWorkspace';
 import { CustomerContextPanel } from '../components/workspace/CustomerContextPanel';
 import { CustomerMessageSearch } from '../components/CustomerMessageSearch';
+import { useVisualMode } from '../components/workspace/AppShell';
 import {
   ArrowClockwise,
   ChatCircleDots,
@@ -344,6 +345,8 @@ export function CustomerMessagesPage(_props: {
   onProjectCreated?: (projectId: string) => void;
   onOpenRequirement?: (customerId: string, caseId: string) => void;
 }) {
+  const { mode } = useVisualMode();
+  const aurora = mode === 'aurora';
   const [primaryView, setPrimaryView] = useState<CustomerMessagesPrimaryView>(() => readCustomerMessagesPrimaryView());
   const readPane = () => {
     const q = new URLSearchParams(decodeURIComponent(location.hash).split('?')[1] || '');
@@ -354,7 +357,7 @@ export function CustomerMessagesPage(_props: {
   const readProfile = () => /^客户消息\/customer\/([^/?]+)/.exec(decodeURIComponent(location.hash.slice(1)))?.[1] || null;
   const [profileId,setProfileId] = useState(readProfile);
   const [contextVisible, setContextVisible] = useState(false);
-  const customerList = useCustomerListWidth(contextVisible);
+  const customerList = useCustomerListWidth(contextVisible, aurora);
   const contextVisibilityChosen = useRef(false);
   const contextTriggerRef = useRef<HTMLButtonElement>(null);
   const contextCloseRef = useRef<HTMLButtonElement>(null);
@@ -371,11 +374,11 @@ export function CustomerMessagesPage(_props: {
   }, [contextVisible]);
   useEffect(() => {
     const desktop = window.matchMedia('(min-width: 1500px)');
-    const sync = () => { if (!contextVisibilityChosen.current) setContextVisible(false); };
+    const sync = () => { if (!contextVisibilityChosen.current) setContextVisible(aurora && desktop.matches); };
     desktop.addEventListener('change', sync);
     sync();
     return () => desktop.removeEventListener('change', sync);
-  }, []);
+  }, [aurora]);
   const [mobileList, setMobileList] = useState(() => !readConversationRouteId() && !readProfile());
   const profile = _props.customers.find(c=>c.id===profileId);
   const selectPane = (view: typeof pane.view, caseId: string | null = null) => {
@@ -384,6 +387,12 @@ export function CustomerMessagesPage(_props: {
     const query = new URLSearchParams({ view });
     if (caseId) query.set('case', caseId);
     window.location.hash = encodeURIComponent(`客户消息/${profileId ? `customer/${profileId}` : `conversation/${selectedId}`}?${query}`);
+  };
+  const selectPaneFromContext = (view: typeof pane.view) => {
+    selectPane(view);
+    if (window.matchMedia('(max-width: 700px)').matches) requestAnimationFrame(() => {
+      customerList.container.current?.querySelector<HTMLButtonElement>('.customer-hub-tabs button[aria-current="page"]')?.focus();
+    });
   };
   const [filter, setFilter] = useState<ChannelFilter>(()=>{const saved=readUiSession('customer-channel');return saved==='xianyu'||saved==='wechat'?saved:'all'});
   useEffect(()=>writeUiSession('customer-channel',filter),[filter]);
@@ -581,16 +590,16 @@ export function CustomerMessagesPage(_props: {
     {notice && <div className="messages-notice" role="status"><CheckCircle size={17} weight="fill" />{notice}</div>}
   </div>;
 
-  if (loading) return <div className="customer-messages-page"><div className="messages-loading"><ArrowClockwise size={22} className="spin" />正在连接本机客户消息…</div></div>;
+  if (loading) return <div className={`customer-messages-page ${aurora ? 'aurora-theme aurora-customer' : ''}`}><div className="messages-loading" role="status"><ArrowClockwise size={22} className="spin" />正在连接本机客户消息…</div></div>;
 
-  const contextAction = !contextVisible && <Button ref={contextTriggerRef} type="button" variant="outline" className="customer-context-toggle customer-appica-button" aria-expanded={false} aria-controls="customer-context-panel" onClick={() => changeContextVisibility(true)}><UserCircle size={18}/><span>客户资料</span></Button>;
+  const contextAction = <>{aurora && <Button type="button" variant="outline" className="customer-agent-trigger customer-appica-button" aria-label="打开小策对话" onClick={() => window.dispatchEvent(new CustomEvent('xunying:global-agent-open'))}>小策</Button>}{!contextVisible && <Button ref={contextTriggerRef} type="button" variant="outline" className="customer-context-toggle customer-appica-button" aria-expanded={false} aria-controls="customer-context-panel" onClick={() => changeContextVisibility(true)}><UserCircle size={18}/><span>客户资料</span></Button>}</>;
 
-  return <div className={`customer-messages-page customer-focus airy-customer ${contextVisible ? 'context-visible' : ''} ${mobileList ? 'show-customer-list' : 'show-customer-detail'}`}>
+  return <div className={`customer-messages-page customer-focus airy-customer ${aurora ? 'aurora-theme aurora-customer' : ''} ${contextVisible ? 'context-visible' : ''} ${mobileList ? 'show-customer-list' : 'show-customer-detail'}`}>
     <button type="button" className="customer-list-back" onClick={() => {setContextVisible(false);setMobileList(true);window.location.hash=encodeURIComponent('客户消息');}}>← 客户列表</button>
     {!conversations.length && !_props.customers.length
       ? <><MessagesToolbar filter={filter} onFilter={setFilter} onRefresh={() => void refreshCurrent()} /><EmptyMessages offline={offline} onImportHistory={() => setHistoryImportOpen(true)} /></>
       : <section className="messages-workbench customer-resizable" ref={customerList.attach} style={{ '--customer-list-width': `${customerList.width}px` } as import('react').CSSProperties}>
-        <CustomerListResize container={customerList.container} width={customerList.width} maximum={customerList.maximum} onChange={customerList.update}/>
+        <CustomerListResize container={customerList.container} width={customerList.width} maximum={customerList.maximum} minimum={customerList.minimum} resetWidth={customerList.resetWidth} trackPointerOffset={aurora} onChange={customerList.update}/>
         <MasterList toolbar={<MessagesToolbar filter={filter} onFilter={setFilter} onRefresh={() => void refreshCurrent()} />} rows={conversations} customers={_props.customers} selectedId={profileId?null:selectedId} selectedCustomerId={profileId} onSelectCustomer={id=>{setMobileList(false);window.location.hash=encodeURIComponent(`客户消息/customer/${id}?view=requirements`);}} onSelect={id=>{setLatestMessageRequest(value=>value+1);setMobileList(false);setProfileId(null);setSelectedId(id);setPane({view:'conversation',caseId:null});window.history.pushState(window.history.state,'',conversationRouteHash(id));}}/>
         {profile ? <CustomerProfileWorkspace key={profile.id} customer={profile} snapshot={_props.snapshot} view={pane.view} caseId={pane.caseId} onView={selectPane} onSnapshotChange={_props.onSnapshotChange} headerActions={contextAction}/> : profileId ? <main className="message-thread"><EmptyState>该客户档案不存在或尚未加载，请从左侧重新选择。</EmptyState></main> : <main className="message-thread">
           {detail ? <>
@@ -607,7 +616,7 @@ export function CustomerMessagesPage(_props: {
               {contextAction}
               </div>
             </header>
-            <nav className="customer-hub-tabs" aria-label="当前客户内容">{([['conversation','会话'],['materials','资料'],['requirements','需求'],['projects','项目']] as const).map(([key,label])=><button key={key} type="button" aria-current={pane.view===key?'page':undefined} onClick={()=>selectPane(key)}>{label}</button>)}{pane.view==='conversation'&&<button type="button" className="message-search-trigger" onClick={()=>setMessageSearchOpen(true)} aria-haspopup="dialog"><MagnifyingGlass size={18}/><span>搜索消息</span></button>}</nav>
+            <nav className="customer-hub-tabs" aria-label="当前客户内容">{([['conversation','会话'],['materials','资料'],['requirements','需求'],['projects','项目']] as const).map(([key,label])=><button key={key} type="button" aria-current={pane.view===key?'page':undefined} onClick={()=>selectPane(key)}>{label}</button>)}{pane.view==='conversation'&&<button type="button" className="message-search-trigger" aria-label="搜索当前客户消息" onClick={()=>setMessageSearchOpen(true)} aria-haspopup="dialog"><MagnifyingGlass size={18}/><span>搜索消息</span></button>}</nav>
             {pane.view === 'materials' ? <div className="customer-hub-content"><CustomerImageLibrary key={detail.id} scoped initialConversationId={detail.id} onOpenConversation={openConversationFromLibrary} onSyncHistory={()=>setHistoryImportOpen(true)}/><p>图片引用原始归档，不复制文件。来源会话：{detail.customer_name} · {detail.item?.title || '商品来源未知'}</p>{_props.snapshot&&linkedCustomer&&<div className="customer-hub-projects">{_props.snapshot.attachments.filter(a=>_props.snapshot!.projects.some(p=>p.customerId===linkedCustomer.id&&p.id===a.projectId)).map(a=><p key={a.id}>{a.name} <a href={`#${encodeURIComponent(`项目管理/${a.projectId}/overview`)}`}>查看来源项目附件</a></p>)}</div>}</div> :
             pane.view === 'requirements' ? linkedCustomer&&_props.onSnapshotChange ? <div className="customer-hub-content"><CustomerRequirementBlueprintPage embedded key={linkedCustomer.id} customer={linkedCustomer} route={{customerId:linkedCustomer.id,caseId:pane.caseId}} onRouteChange={r=>selectPane('requirements',r?.caseId||null)} onSnapshotChange={_props.onSnapshotChange}/></div> : <div className="customer-hub-empty"><p>此会话尚未关联正式客户档案，不能按昵称推断需求归属。</p><button type="button" onClick={()=>_props.onCreateCustomer?.(detail.id)}>建立客户档案</button></div> :
             pane.view === 'projects' ? <div className="customer-hub-content customer-hub-projects">{linkedCustomer&&_props.snapshot?.projects.filter(p=>p.customerId===linkedCustomer.id).length ? _props.snapshot.projects.filter(p=>p.customerId===linkedCustomer.id).map(p=><a key={p.id} href={`#${encodeURIComponent(`项目管理/${p.id}/overview`)}`}><strong>{p.name}</strong><span>查看此项目 →</span></a>) : <p>{linkedCustomer?'当前客户尚无关联项目。':'请先确认客户档案关联，再查看其项目。'}</p>}</div> : <>
@@ -621,7 +630,7 @@ export function CustomerMessagesPage(_props: {
             </div>}</>}
           </> : <div className="message-thread-empty" role={detailLoading ? "status" : detailError ? "alert" : undefined}>{detailLoading ? <ArrowClockwise size={28} className="spin" /> : <ChatCircleDots size={28} weight="duotone" />}<p>{detailLoading ? "正在加载会话…" : detailError || "选择一条会话查看消息记录"}</p>{detailError && selectedId && <button type="button" className="messages-refresh" onClick={() => void loadConversation(selectedId)}>重试加载</button>}</div>}
         </main>}
-        {contextVisible&&(profile||(!profileId&&detail))&&<CustomerContextPanel onClose={()=>changeContextVisibility(false)} closeButtonRef={contextCloseRef} onViewProjects={()=>selectPane('projects')} customer={profile||linkedCustomer} projects={_props.snapshot?.projects.filter(p=>p.customerId===(profile||linkedCustomer)?.id)||[]} pane={pane.view} media={!profileId&&detail&&pane.view!=='materials'&&<section className="customer-context-media"><header><h3>当前会话图片</h3><button type="button" onClick={()=>selectPane('materials')}>查看全部</button></header><div>{detail.messages.flatMap(message=>message.images||message.customer_images||[]).slice(-3).map(image=><button key={image.id} type="button" aria-label="查看会话归档图片" onClick={()=>setSelectedImage(image)}><OriginalPreview image={image} compact/></button>)}</div><small>仅预览已加载消息；完整归档请查看资料。</small></section>}/>}
+        {contextVisible&&(profile||(!profileId&&detail))&&<CustomerContextPanel aurora={aurora} onViewRequirements={()=>selectPaneFromContext('requirements')} onClose={()=>changeContextVisibility(false)} closeButtonRef={contextCloseRef} onViewProjects={()=>selectPaneFromContext('projects')} customer={profile||linkedCustomer} projects={_props.snapshot?.projects.filter(p=>p.customerId===(profile||linkedCustomer)?.id)||[]} pane={pane.view} media={!profileId&&detail&&pane.view!=='materials'&&<section className="customer-context-media"><header><h3>当前会话图片</h3><button type="button" onClick={()=>selectPaneFromContext('materials')}>查看全部</button></header><div>{detail.messages.flatMap(message=>message.images||message.customer_images||[]).slice(-3).map(image=><button key={image.id} type="button" aria-label="查看会话归档图片" onClick={()=>setSelectedImage(image)}><OriginalPreview image={image} compact/></button>)}</div><small>仅预览已加载消息；完整归档请查看资料。</small></section>}/>}
       </section>}
     {historyImportDialog}
     {accessOpen && detail && <CustomerWorkflowDialog title="GPT 会话读取授权" onClose={() => setAccessOpen(false)}><ChatGPTConversationAccessCard onToast={showNotice} initialConversationId={group?.conversation_ids[0] || detail.id} selectedGroup={group} /></CustomerWorkflowDialog>}

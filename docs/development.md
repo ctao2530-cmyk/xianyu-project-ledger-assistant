@@ -44,6 +44,8 @@ node --test tests/operating-records-history.test.mjs tests/customer-controls.tes
 
 ## 演示截图
 
-README 图片来自 `tests/information-architecture-preview.mjs` 的合成数据验收场景，与当前中性浅色与蓝色操作 UI 对应。图中的账户、客户、项目、金额和消息均为演示数据。截图用于展示界面，不代表实际经营成果。
+README 首页、项目与收支图片来自 `demo.localhost:8877` 的独立虚构 SQLite 场景，与当前 Aurora UI 对应。项目、客户、金额和消息均为演示数据；既有经典界面截图仍保留用于历史说明。截图不代表实际经营成果。
+
+完整本地应用启动后可访问演示入口，初始化与录屏说明见 [HR 演示指南](HR演示数据与录屏脚本.md)。`pnpm run demo` 仍用于只读经典界面夹具，与完整后端演示入口不同。
 
 离线恢复工具与授权边界见 [备份恢复](local-recovery.md)。当前模块边界见 [重构记录](refactor-20260916.md)。

@@ -14,6 +14,15 @@ export function runPageTransition(update: () => void) {
     ? document.startViewTransition.bind(document)
     : undefined;
 
+  // A live WebGL background makes native full-document snapshots costly.
+  // Aurora uses the existing CSS entrance transition on the same business tree.
+  if (document.body.dataset.xunyingVisual === 'aurora') {
+    try { activeTransition?.skipTransition(); } catch { /* Already finished. */ }
+    activeTransition = null;
+    update();
+    return;
+  }
+
   if (!startViewTransition || prefersReducedMotion()) {
     update();
     return;

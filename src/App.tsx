@@ -1,6 +1,7 @@
-import { BusinessOverviewDisclosure } from './components/workbench/BusinessOverviewDisclosure';
+import { BusinessOverviewDisclosure, LegacyOverviewContent } from './components/workbench/BusinessOverviewDisclosure';
 import { Sidebar } from './components/workspace/Sidebar';
 import { AppShell } from './components/workspace/AppShell';
+import { AuroraTopNav } from './components/workspace/AuroraTopNav';
 import { TopBar, type HeaderReminder } from './components/workspace/TopBar';
 import {
   ArrowRight,
@@ -1311,7 +1312,7 @@ function DashboardLayout({
       setProjectRoute(null);
       setCustomerRoute(null);
       setSearch("");
-      window.history.pushState(null, "", nextPage === "首页概览" ? window.location.pathname : `#${encodeURIComponent(nextPage)}`);
+      window.history.pushState(null, "", nextPage === "首页概览" ? window.location.pathname + window.location.search : `#${encodeURIComponent(nextPage)}`);
     });
   };
 
@@ -1630,7 +1631,7 @@ function DashboardLayout({
         onClose={() => setSidebarOpen(false)}
       />
       <main className="dashboard-main">
-        <TopBar meta={pageMeta[activeNav] || pageMeta["首页概览"]} snapshot={snapshot} search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} reminders={headerReminders} onReminderAction={openHeaderReminder} onViewAllReminders={viewAllReminders} onRefreshReminders={() => setReminderRefreshVersion((value) => value + 1)} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "经营者"} profilePlan="本地工作空间" />
+        <TopBar navigation={<AuroraTopNav active={activeNav} items={navItems} secondary={secondaryNavItems} selectedChild={activeSecondaryKey} onActiveChange={changePage} onSecondaryNavigate={navigateSecondaryPage} />} meta={pageMeta[activeNav] || pageMeta["首页概览"]} snapshot={snapshot} search={search} onSearch={setSearch} onMenu={() => setSidebarOpen(true)} activePage={activeNav} reminders={headerReminders} onReminderAction={openHeaderReminder} onViewAllReminders={viewAllReminders} onRefreshReminders={() => setReminderRefreshVersion((value) => value + 1)} onOpenSettings={openSettings} profileName={snapshot.settings.profileName || "经营者"} profilePlan="本地工作空间" />
         <div className="page-route-view" key={`${activeNav}-${settingsSection}-${projectRoute?.projectId || ""}-${customerRoute?.caseId || customerRoute?.customerId || ""}`}>
           {activeNav === "首页概览" && normalizedSearch && (
             <div className="search-status">
@@ -1644,6 +1645,16 @@ function DashboardLayout({
               snapshot={snapshot}
               onConfirmPayment={(projectId) => setReceiptTarget({ projectId })}
               connectionActions={headerReminders.filter(item=>item.kind==='connection')}
+              homeContent={{
+                outstanding: businessSummary.outstanding,
+                outstandingCount: unsettledProjects.length,
+                onProjects: () => changePage("项目管理"),
+                onQuickAccounting: () => openQuickAccounting(),
+                onAnalysis: () => changePage("经营分析中心"),
+                reminders: <ReminderCard reminders={headerReminders} onOpen={openHeaderReminder} />,
+                projects: <ActiveProjectsCard snapshot={snapshot} projects={filteredProjects} onNavigate={() => changePage("项目管理")} onOpenProject={(projectId) => changeProjectRoute({ projectId, tab: "overview" }, "push")} />,
+                recent: <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("经营记录")} />,
+              }}
             />
             </section>
             <BusinessOverviewDisclosure>
@@ -1653,14 +1664,14 @@ function DashboardLayout({
             <OperatingInsightStrip snapshot={snapshot} onNavigate={changePage} />
             <section className="main-grid">
               <IncomeTrendCard snapshot={snapshot} />
-              <ActiveProjectsCard snapshot={snapshot} projects={filteredProjects} onNavigate={() => changePage("项目管理")} onOpenProject={(projectId) => changeProjectRoute({ projectId, tab: "overview" }, "push")} />
+              <LegacyOverviewContent><ActiveProjectsCard snapshot={snapshot} projects={filteredProjects} onNavigate={() => changePage("项目管理")} onOpenProject={(projectId) => changeProjectRoute({ projectId, tab: "overview" }, "push")} /></LegacyOverviewContent>
               <OperationDurationCard startedAt={snapshot.settings.xianyuStartedAt} />
             </section>
             <section className="bottom-grid">
-              <PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("经营记录")} />
+              <LegacyOverviewContent><PaymentTable payments={filteredPayments} projects={snapshot.projects} customers={snapshot.customers} onNavigate={() => changePage("经营记录")} /></LegacyOverviewContent>
               <div className="bottom-stack center-stack">
                 <DailyBalanceCard todayIncome={todayIncome} todayExpense={todayExpense} />
-                <ReminderCard reminders={headerReminders} onOpen={openHeaderReminder} />
+                <LegacyOverviewContent><ReminderCard reminders={headerReminders} onOpen={openHeaderReminder} /></LegacyOverviewContent>
               </div>
               <div className="bottom-stack right-stack">
                 <MonthlyGoalCard current={monthlyIncome} goal={snapshot.settings.monthlyIncomeGoal} onEdit={() => openSettings("记账设置")} />
@@ -1680,7 +1691,7 @@ function DashboardLayout({
         <Plus size={24} weight="bold" /><span>立即记账</span>
       </button>
 
-      <GlobalAgentLauncher onNavigate={navigateFromGlobalAgent} />
+      <GlobalAgentLauncher home={activeNav === "首页概览"} onNavigate={navigateFromGlobalAgent} />
 
       <QuickAccountingDrawer
         open={drawerOpen}

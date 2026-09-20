@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowRight, CaretDown, GearSix, X, type Icon } from '@phosphor-icons/react';
+import { useVisualMode } from './AppShell';
 
 type NavItem = { label: string; displayLabel?: string; icon: Icon; hidden?: boolean };
 type Child = { key: string; label: string; route: string };
@@ -7,6 +8,7 @@ export function Sidebar({ active, onActiveChange, onSecondaryNavigate, open, onC
   active: string; onActiveChange: (value: string) => void; onSecondaryNavigate: (parent: string, route: string) => void;
   open: boolean; onClose: () => void; items: NavItem[]; secondary: Record<string, Child[]>; selectedChild: (parent: string) => string;
 }) {
+  const { mode } = useVisualMode();
   const [mobile, setMobile] = useState(() => matchMedia('(max-width: 1100px)').matches);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [, updateRoute] = useState(0);
@@ -19,6 +21,7 @@ export function Sidebar({ active, onActiveChange, onSecondaryNavigate, open, onC
     const events = ['hashchange', 'popstate', 'xianyu:route-focus'];
     events.forEach(e => window.addEventListener(e, sync)); return () => events.forEach(e => window.removeEventListener(e, sync));
   }, []);
+  if (mode === 'aurora') return null;
   return <>
     {mobile && open && <button className="sidebar-scrim is-open" aria-label="关闭导航" onClick={onClose}/>}
     <aside className={`sidebar workspace-sidebar ${open ? 'is-open' : ''}`} aria-hidden={mobile && !open ? true : undefined} inert={mobile && !open ? true : undefined}>

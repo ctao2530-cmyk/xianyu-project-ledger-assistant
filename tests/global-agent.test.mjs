@@ -20,7 +20,7 @@ test("small strategy partner is globally mounted and home insight opens it", asy
   const app = await readFile(appPath, "utf8");
 
   assert.match(app, /import \{ GlobalAgentLauncher \} from "\.\/components\/GlobalAgentLauncher"/);
-  assert.match(app, /<GlobalAgentLauncher onNavigate=\{navigateFromGlobalAgent\} \/>/);
+  assert.match(app, /<GlobalAgentLauncher home=\{activeNav === "首页概览"\} onNavigate=\{navigateFromGlobalAgent\} \/>/);
   assert.match(app, /new CustomEvent\("xunying:global-agent-open"\)/);
   assert.match(app, /target === "settings"[\s\S]*openSettings\("AI与回复"\)/);
   assert.match(app, /products: "商品经营"/);

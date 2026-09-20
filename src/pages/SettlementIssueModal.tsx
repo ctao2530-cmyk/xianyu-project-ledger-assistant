@@ -1,3 +1,4 @@
+import { useDialogFocus } from '../components/workspace/useDialogFocus';
 import {
   ArrowClockwise,
   CalendarBlank,
@@ -6,7 +7,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { getProjectFinancials } from "../data/businessMetrics";
 import { LedgerRevisionConflictError } from "../data/mockService";
 import {
@@ -72,17 +73,7 @@ export function SettlementIssueModal({
   const refund = Number(refundAmount) || 0;
   const terminalIssue = terminalSettlementIssueTypes.has(type);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => reasonInput.current?.focus({ preventScroll: true }), 80);
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [onClose, submitting]);
+  const dialogRef = useDialogFocus<HTMLElement>(() => { if (!submitting) onClose(); }, 'textarea');
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -144,7 +135,7 @@ export function SettlementIssueModal({
   return <div className="payment-confirmation-layer settlement-issue-layer" role="presentation" onMouseDown={(event) => {
     if (event.target === event.currentTarget && !submitting) onClose();
   }}>
-    <section className="payment-confirmation-modal settlement-issue-modal" role="dialog" aria-modal="true" aria-labelledby="settlement-issue-title" aria-describedby="settlement-issue-description">
+    <section ref={dialogRef} className="payment-confirmation-modal settlement-issue-modal" role="dialog" aria-modal="true" aria-labelledby="settlement-issue-title" aria-describedby="settlement-issue-description">
       <header>
         <i><WarningCircle size={25} weight="duotone" /></i>
         <div><span>PROJECT EXCEPTION</span><h2 id="settlement-issue-title">记录项目异常</h2></div>

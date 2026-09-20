@@ -77,7 +77,9 @@ test('product controls occupy their object workspace without duplicate creation 
   assert.match(page,/management=\{overviewControls\} overview=\{overviewFacts\} onAdd=\{openRegistration\}/);
   assert.match(page,/!selected && <>\{overviewFacts\}\{overviewControls\}<\/>/);
   assert.match(page,/!selected && <button[^\n]+onClick=\{openRegistration\}/);
-  assert.match(workspace,/\{overview\}\s*<\/aside>/);
+  // S05 moves only the Aurora overview above the cards; legacy retains its slot.
+  assert.match(workspace,/\{aurora&&overview\}/);
+  assert.match(workspace,/\{!aurora&&overview\}\s*<\/aside>/);
   assert.match(workspace,/\{context\}\{management\}<\/ContextPanel>/);
 });
 

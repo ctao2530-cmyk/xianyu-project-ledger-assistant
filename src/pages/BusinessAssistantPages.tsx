@@ -1,3 +1,4 @@
+import { useVisualMode } from '../components/workspace/AppShell';
 import '../features/receivables/receivables.css';
 import { businessDate } from '../shared/time/businessDate';
 import { ProjectRelations } from '../features/project-relations/ProjectRelations';
@@ -253,6 +254,7 @@ export function ProjectDetail({
   onRecordSettlementIssue: (projectId: string) => void;
   onSnapshotChange: (snapshot: LedgerSnapshot) => void;
 }) {
+  const { mode: visualMode } = useVisualMode();
   const project = snapshot.projects.find((item) => item.id === projectId)!;
   const customer = snapshot.customers.find((item) => item.id === project.customerId);
   const financial = getProjectFinancials(snapshot).find((item) => item.project.id === project.id)!;
@@ -550,7 +552,7 @@ export function ProjectDetail({
   const visibleFiles = files.slice(0, 3);
   const projectStatus = latestIssue ? settlementIssueLabels[latestIssue.type] : projectStatusLabel[project.status];
 
-  return <div className="business-page project-detail-page">
+  return <div className={`business-page project-detail-page ${visualMode === "aurora" ? "aurora-theme aurora-project-detail" : ""}`}>
     <section className="project-workspace-shell project-detail-workspace project-simple-workspace">
       <header className="project-detail-workspace-head">
         <button className="business-back" onClick={onBack}><ArrowLeft size={17} />返回项目列表</button>

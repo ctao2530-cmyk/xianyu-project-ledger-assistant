@@ -127,6 +127,10 @@ async def lifespan(app: FastAPI):
         await runtime.customer_auto_analysis.close()
         await runtime.product_intelligence.stop()
         await runtime.global_agent.shutdown()
+        if "demo_app" in globals() and hasattr(demo_app.state, "runtime"):
+            await demo_app.state.runtime.global_agent.shutdown()
+            await demo_app.state.runtime.customer_auto_analysis.close()
+            demo_app.state.runtime.database.engine.dispose()
         await runtime.codex_development.close()
         await oauth_verifier.close()
         await mcp_lifespan.__aexit__(None, None, None)
@@ -253,4 +257,14 @@ app.mount(
 # navigation in index.html, while API and callback routes above remain FastAPI.
 client_dist = settings.project_root / "dist" / "client"
 if client_dist.is_dir():
+    from .demo import DemoOriginRouter, create_demo_app
+
+    demo_routes = [route for source in (
+        router, ledger_router, product_router, business_analysis_router, global_agent_router,
+        project_task_draft_router, acceptance_router, workbench_router,
+        customer_conversation_router, customer_image_router, phrase_library_router,
+        requirement_proposal_router, codex_plan_router, traffic_growth_router, prediction_router,
+    ) for route in source.routes]
+    demo_app = create_demo_app(settings, settings.project_root / "data" / "demo-recording", client_dist, demo_routes)
+    app.add_middleware(DemoOriginRouter, demo_app=demo_app)
     app.mount("/", StaticFiles(directory=client_dist, html=True), name="client")

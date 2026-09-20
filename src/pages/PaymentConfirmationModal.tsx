@@ -9,6 +9,7 @@ import {
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { getProjectFinancials } from "../data/businessMetrics";
 import { LedgerRevisionConflictError } from "../data/mockService";
+import { useDialogFocus } from '../components/workspace/useDialogFocus';
 import type {
   LedgerSnapshot,
   PaymentConfirmationValue,
@@ -93,23 +94,11 @@ export function PaymentConfirmationModal({
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const stableRequestId = useRef(requestId()).current;
-  const amountInput = useRef<HTMLInputElement>(null);
+  const dialogRef = useDialogFocus<HTMLElement>(() => { if (!submitting) onClose(); }, '.payment-money-input input');
   const maxAmount = Math.min(
     financial?.outstanding || 0,
     selectedNode?.amount ?? financial?.outstanding ?? 0,
   );
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => amountInput.current?.focus({ preventScroll: true }), 80);
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [onClose, submitting]);
 
   useEffect(() => {
     if (!selectedNode) return;
@@ -190,7 +179,7 @@ export function PaymentConfirmationModal({
   return <div className="payment-confirmation-layer" role="presentation" onMouseDown={(event) => {
     if (event.target === event.currentTarget && !submitting) onClose();
   }}>
-    <section className="payment-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="payment-confirmation-title">
+    <section ref={dialogRef} className="payment-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="payment-confirmation-title">
       <header>
         <i><Wallet size={24} weight="duotone" /></i>
         <div><span>RECEIPT CONFIRMATION</span><h2 id="payment-confirmation-title">确认项目到账</h2></div>
@@ -211,7 +200,7 @@ export function PaymentConfirmationModal({
           {pendingNodes.length === 0 && <div className="payment-selected-node is-new"><CalendarBlank size={16} weight="duotone" /><span>当前未建立付款节点，将直接按本次到账生成记录。</span></div>}
 
           <div className="payment-form-row">
-            <label><span>到账金额</span><div className="payment-money-input"><b>¥</b><input ref={amountInput} type="number" min="0.01" max={maxAmount || undefined} step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" /></div><small>最多可确认 {money.format(maxAmount)}</small></label>
+            <label><span>到账金额</span><div className="payment-money-input"><b>¥</b><input type="number" min="0.01" max={maxAmount || undefined} step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" /></div><small>最多可确认 {money.format(maxAmount)}</small></label>
             <label><span>收款类型</span><select value={type} onChange={(event) => setType(event.target.value as PaymentType)}>{Object.entries(paymentLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
           <label><span>到账时间</span><input type="datetime-local" value={paidAt} onChange={(event) => setPaidAt(event.target.value)} /></label>

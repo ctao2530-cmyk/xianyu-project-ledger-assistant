@@ -5,12 +5,14 @@ import "./customer-workflow.css";
 
 export function CustomerWorkflowDialog({ title, onClose, children, className = '', suspended = false }: { title: string; onClose: () => void; children: ReactNode; className?: string; suspended?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Capture before portal children with autoFocus are committed. The ref also
+  // survives StrictMode effect replay without capturing the dialog itself.
+  const openerRef = useRef<HTMLElement | null>(typeof document !== 'undefined' && document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const suspendedRef = useRef(suspended);
   suspendedRef.current = suspended;
   useEffect(() => {
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
     const key = (event: KeyboardEvent) => {
       if (suspendedRef.current || event.defaultPrevented) return;
@@ -23,7 +25,7 @@ export function CustomerWorkflowDialog({ title, onClose, children, className = '
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     };
     document.addEventListener("keydown", key);
-    return () => { document.removeEventListener("keydown", key); previous?.focus(); };
+    return () => { document.removeEventListener("keydown", key); if (openerRef.current?.isConnected) openerRef.current.focus(); };
   }, []);
   return createPortal(<div className={`customer-workflow-backdrop ${className}`} onMouseDown={(event) => { if (!suspended && event.target === event.currentTarget) onClose(); }}><div className="customer-workflow-dialog" role="dialog" aria-modal="true" aria-label={title} ref={ref}><header><h2>{title}</h2><button type="button" aria-label={`关闭${title}`} onClick={onClose}><X size={20} /></button></header>{children}</div></div>, document.body);
 }

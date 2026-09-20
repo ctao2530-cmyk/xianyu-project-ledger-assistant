@@ -1,4 +1,5 @@
 import { ProductOverviewWorkspace } from '../components/workspace/ProductOverviewWorkspace';
+import { useVisualMode } from '../components/workspace/AppShell';
 import { ProductMetricSummary } from '../components/workspace/ProductMetricSummary';
 import { ProductLinkedProjects } from '../components/workspace/ProductLinkedProjects';
 import {
@@ -404,6 +405,7 @@ function AttentionBadge({ value }: { value: string }) {
 }
 
 function ProductTrend({ product }: { product: ProductView }) {
+  const isAurora = useVisualMode().mode === "aurora";
   if (product.history.length < 2) {
     return <div className="product-trend-empty">
       <ChartLineUp size={34} weight="duotone" />
@@ -415,15 +417,15 @@ function ProductTrend({ product }: { product: ProductView }) {
       <AreaChart data={product.history} margin={{ top: 12, right: 8, left: -22, bottom: 0 }}>
         <defs>
           <linearGradient id="productBrowseArea" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#1670ff" stopOpacity={0.22} />
-            <stop offset="100%" stopColor="#1670ff" stopOpacity={0.02} />
+            <stop offset="0%" stopColor={isAurora ? "#41df92" : "#1670ff"} stopOpacity={0.22} />
+            <stop offset="100%" stopColor={isAurora ? "#41df92" : "#1670ff"} stopOpacity={0.02} />
           </linearGradient>
         </defs>
         <CartesianGrid vertical={false} stroke="#e9eaf4" strokeDasharray="3 3" />
         <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#8c91a5" }} />
         <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#8c91a5" }} />
         <Tooltip formatter={(value) => [`${value} 次`, "经营浏览"]} />
-        <Area type="monotone" dataKey="browse_count" stroke="#1670ff" strokeWidth={2.5} fill="url(#productBrowseArea)" />
+        <Area type="monotone" dataKey="browse_count" stroke={isAurora ? "#41df92" : "#1670ff"} strokeWidth={2.5} fill="url(#productBrowseArea)" />
       </AreaChart>
     </ResponsiveContainer>
   </div>;
@@ -457,6 +459,9 @@ function exposureDeltaStagesForBatch(batch: ProductTrafficBatchView) {
 }
 
 const exposureLineColors = ["#5f3df5", "#2f89ed", "#3fb562", "#f26b18", "#8a63f5"];
+function useExposureLineColors() {
+  return useVisualMode().mode === "aurora" ? ["#b6a4ff", "#67b6ff", "#64dc9a", "#ffb174", "#e4a0ff"] : exposureLineColors;
+}
 
 function useMediaQuery(query: string) {
   const [matches, setMatches] = useState(() => (
@@ -523,6 +528,7 @@ function ExposureDeltaTooltip({
   selectedProductId: string | null;
   compact: boolean;
 }) {
+  const lineColors = useExposureLineColors();
   if (!active) return null;
   const stage = exposureDeltaStagesForBatch(batch).find((value) => value.label === label);
   if (!stage) return null;
@@ -551,7 +557,7 @@ function ExposureDeltaTooltip({
   return <div className="exposure-delta-tooltip">
     <strong>{label} · {metric.label}</strong>
     {rows.length ? rows.map((row) => <div key={row.product.external_id}>
-      <i style={{ backgroundColor: exposureLineColors[batch.products.indexOf(row.product) % exposureLineColors.length] }} />
+      <i style={{ backgroundColor: lineColors[batch.products.indexOf(row.product) % lineColors.length] }} />
       <span><b>{row.product.title}</b><small>累计 {integer.format(row.total)} · 较 T0 +{integer.format(row.delta)}</small></span>
       <time>{row.recordedAt ? formatDate(row.recordedAt) : "时间未记录"}</time>
     </div>) : <small>这个检查点还没有真实记录</small>}
@@ -566,6 +572,7 @@ function ExposureProductDelta({
   initialBatchId?: string | null;
   embedded?: boolean;
 }) {
+  const lineColors = useExposureLineColors();
   const compact = useMediaQuery("(max-width: 560px)");
   const reduceMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [selectedMetricKey, setSelectedMetricKey] = useState<ExposureDeltaMetric>("browse");
@@ -597,7 +604,7 @@ function ExposureProductDelta({
     const exploratoryRanking = [...selectedBatch.products]
       .map((product, index) => ({
         product,
-        color: exposureLineColors[index % exposureLineColors.length],
+        color: lineColors[index % lineColors.length],
         change: productExploratoryMetricChange(product, selectedMetric),
       }))
       .sort((left, right) => right.change - left.change);
@@ -644,7 +651,7 @@ function ExposureProductDelta({
       </div>
       {compact && selectedProduct && <div className="exposure-product-switcher" aria-label="切换商品">
         <button aria-label="上一件商品" disabled={selectedProductIndex === 0} onClick={() => selectRelativeProduct(-1)} type="button"><CaretLeft size={18} /></button>
-        <strong><i style={{ backgroundColor: exposureLineColors[selectedProductIndex % exposureLineColors.length] }} />{selectedProduct.title}<em>{signedInteger(productExploratoryMetricChange(selectedProduct, selectedMetric))}</em></strong>
+        <strong><i style={{ backgroundColor: lineColors[selectedProductIndex % lineColors.length] }} />{selectedProduct.title}<em>{signedInteger(productExploratoryMetricChange(selectedProduct, selectedMetric))}</em></strong>
         <span>{selectedProductIndex + 1} / {selectedBatch.products.length}</span>
         <button aria-label="下一件商品" disabled={selectedProductIndex >= selectedBatch.products.length - 1} onClick={() => selectRelativeProduct(1)} type="button"><CaretRight size={18} /></button>
       </div>}
@@ -662,7 +669,7 @@ function ExposureProductDelta({
             </ResponsiveContainer>
           </div>
           <div className="exposure-delta-legend" aria-label="商品探索排名">
-            {selectedBatch.products.map((product, index) => <button aria-current={product.external_id === selectedProductId ? "true" : undefined} key={product.external_id} onClick={() => setSelectedProductId(product.external_id)} type="button"><i style={{ backgroundColor: exposureLineColors[index % exposureLineColors.length] }} />{product.title}</button>)}
+            {selectedBatch.products.map((product, index) => <button aria-current={product.external_id === selectedProductId ? "true" : undefined} key={product.external_id} onClick={() => setSelectedProductId(product.external_id)} type="button"><i style={{ backgroundColor: lineColors[index % lineColors.length] }} />{product.title}</button>)}
           </div>
           <p>参考记录：{selectedBatch.exploratory_reference_label} {formatTrafficDateTime(selectedBatch.exploratory_reference_at)} → {selectedBatch.exploratory_through_label} {formatTrafficDateTime(selectedBatch.exploratory_through_at)}。</p>
         </div>
@@ -689,7 +696,7 @@ function ExposureProductDelta({
   const ranking = [...selectedBatch.products]
     .map((product, index) => ({
       product,
-      color: exposureLineColors[index % exposureLineColors.length],
+      color: lineColors[index % lineColors.length],
       delta: productMetricDelta(product, currentCheckpoint, selectedMetric),
     }))
     .sort((left, right) => right.delta - left.delta);
@@ -740,7 +747,7 @@ function ExposureProductDelta({
 
     {compact && <div className="exposure-product-switcher" aria-label="切换商品">
       <button aria-label="上一件商品" disabled={selectedProductIndex === 0} onClick={() => selectRelativeProduct(-1)} type="button"><CaretLeft size={18} /></button>
-      <strong><i style={{ backgroundColor: exposureLineColors[selectedProductIndex % exposureLineColors.length] }} />{selectedBatch.products[selectedProductIndex]?.title}<em>+{productMetricDelta(selectedBatch.products[selectedProductIndex], currentCheckpoint, selectedMetric)}</em></strong>
+      <strong><i style={{ backgroundColor: lineColors[selectedProductIndex % lineColors.length] }} />{selectedBatch.products[selectedProductIndex]?.title}<em>+{productMetricDelta(selectedBatch.products[selectedProductIndex], currentCheckpoint, selectedMetric)}</em></strong>
       <span>{selectedProductIndex + 1} / {selectedBatch.products.length}</span>
       <button aria-label="下一件商品" disabled={selectedProductIndex >= selectedBatch.products.length - 1} onClick={() => selectRelativeProduct(1)} type="button"><CaretRight size={18} /></button>
     </div>}
@@ -778,7 +785,7 @@ function ExposureProductDelta({
                   isAnimationActive={!reduceMotion}
                   key={product.external_id}
                   name={product.title}
-                  stroke={exposureLineColors[index % exposureLineColors.length]}
+                  stroke={lineColors[index % lineColors.length]}
                   strokeOpacity={selectedProductId && !isSelected ? 0.72 : 1}
                   strokeWidth={isSelected ? 3 : 2.2}
                   type="linear"
@@ -803,7 +810,7 @@ function ExposureProductDelta({
             key={product.external_id}
             onClick={() => setSelectedProductId(product.external_id)}
             type="button"
-          ><i style={{ backgroundColor: exposureLineColors[index % exposureLineColors.length] }} />{product.title}</button>)}
+          ><i style={{ backgroundColor: lineColors[index % lineColors.length] }} />{product.title}</button>)}
         </div>
         <p>{excludedFromBusinessConclusion
           ? `${selectedBatch.baseline_quality_label}：真实检查点继续展示，但只作批次内观察，不进入时段、预算或商品优先级结论。`
@@ -844,6 +851,7 @@ function batchAggregateSeries(batch: ProductTrafficBatchView) {
 }
 
 function ExposureBatchMiniChart({ batch }: { batch: ProductTrafficBatchView }) {
+  const isAurora = useVisualMode().mode === "aurora";
   if (!batch.started_at) {
     return <div className="product-batch-no-chart"><ChartLineUp size={18} weight="duotone" /><span><b>尚未开始，没有真实曲线</b><small>完成整批 T0 并人工投放后，才会按实际开始时间绘制。</small></span></div>;
   }
@@ -857,7 +865,7 @@ function ExposureBatchMiniChart({ batch }: { batch: ProductTrafficBatchView }) {
         <LineChart data={series} margin={{ top: 7, right: 8, bottom: 3, left: 8 }}>
           <XAxis dataKey="stage" axisLine={false} tickLine={false} tick={{ fontSize: 8, fill: "#9397a8" }} />
           <YAxis hide domain={["auto", "auto"]} />
-          <Line connectNulls={false} dataKey="browse" dot={{ r: 2.5, fill: "#fff", strokeWidth: 1.5 }} isAnimationActive={false} stroke="#8b64db" strokeDasharray="5 3" strokeWidth={2.2} type="linear" />
+          <Line connectNulls={false} dataKey="browse" dot={{ r: 2.5, fill: "#fff", strokeWidth: 1.5 }} isAnimationActive={false} stroke={isAurora ? "#b6a4ff" : "#8b64db"} strokeDasharray="5 3" strokeWidth={2.2} type="linear" />
         </LineChart>
       </ResponsiveContainer>
       <span className="product-batch-inquiry-badge"><Flask size={13} />实测浏览 {signedInteger(batch.observed_browse_change)}</span>
@@ -871,7 +879,7 @@ function ExposureBatchMiniChart({ batch }: { batch: ProductTrafficBatchView }) {
       <LineChart data={batchAggregateSeries(batch)} margin={{ top: 7, right: 8, bottom: 3, left: 8 }}>
         <XAxis dataKey="stage" axisLine={false} tickLine={false} tick={{ fontSize: 8, fill: "#9397a8" }} />
         <YAxis hide domain={["auto", "auto"]} />
-        <Line connectNulls={false} dataKey="browse" dot={{ r: 2.5, fill: "#fff", strokeWidth: 1.5 }} isAnimationActive={false} stroke="#6544f4" strokeWidth={2.2} type="linear" />
+        <Line connectNulls={false} dataKey="browse" dot={{ r: 2.5, fill: "#fff", strokeWidth: 1.5 }} isAnimationActive={false} stroke={isAurora ? "#b6a4ff" : "#6544f4"} strokeWidth={2.2} type="linear" />
       </LineChart>
     </ResponsiveContainer>
     <span className="product-batch-inquiry-badge"><ChatCircleDots size={13} />咨询 +{integer.format(batch.inquiry_delta)}</span>
@@ -970,6 +978,8 @@ interface ModificationDraftState {
 type RegistrationMode = "account" | "share";
 
 export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: string }) {
+  const isAurora = useVisualMode().mode === 'aurora';
+  const isProductNarrow = useMediaQuery('(max-width:700px)');
   const initialRoute = readProductWorkspaceRoute();
   const [data, setData] = useState<ProductIntelligenceView | null>(null);
   const [trafficGrowth, setTrafficGrowth] = useState<TrafficGrowthOverviewView | null>(null);
@@ -2365,7 +2375,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
   };
 
   if (loading && !data) {
-    return <div className="product-intelligence-page product-loading">
+    return <div className={`product-intelligence-page product-loading${isAurora ? ' aurora-theme aurora-products' : ''}`}>
       <ArrowClockwise className="spin" size={30} />
       <h2>正在整理商品经营信号</h2>
       <p>读取本机快照、咨询和成交数据，不会操作闲鱼商品。</p>
@@ -2373,7 +2383,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
   }
 
   if (error && !data) {
-    return <div className="product-intelligence-page product-offline">
+    return <div className={`product-intelligence-page product-offline${isAurora ? ' aurora-theme aurora-products' : ''}`}>
       <Storefront size={52} weight="duotone" />
       <h2>需要连接本机经营服务</h2>
       <p>商品监测依赖本机 SQLite 与闲鱼只读连接；静态公开站点不会读取 Cookie，也不会显示失效的操作按钮。</p>
@@ -2491,7 +2501,7 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
       </div>
     </details>;
 
-  const overviewFacts = <details className="product-overview-facts"><summary>经营概况 · {managedProducts.length} 个启用商品</summary><section className="product-metrics-grid product-metrics-first" aria-label="商品经营指标">
+  const overviewFacts = <details className="product-overview-facts" open={(isAurora && !isProductNarrow) || undefined}><summary>经营概况 · {managedProducts.length} 个启用商品</summary><section className="product-metrics-grid product-metrics-first" aria-label="商品经营指标">
       <ProductMetric icon={Package} label="已验证本人商品" value={`${verifiedOwnedProducts.length}`} detail={`${managedProducts.length} 个启用 · ${inactiveOwnedProducts.length} 个历史停用 · ${data.summary.pending_products} 个待确认 · ${data.summary.excluded_products} 个他人排除`} tone="purple" />
       <ProductMetric icon={BellRinging} label="待补全信息" value={`${data.products.filter((product) => product.data_gaps.length > 0).length}`} detail="商品快照、咨询与实验基线" tone="orange" />
       <ProductMetric icon={Coins} label="本周曝光投入" value={moneyExact.format(data.traffic_summary.spent_this_week)} detail={`初始周上限 ${moneyExact.format(data.operating_plan.weekly_budget)}`} tone="green" />
@@ -2499,7 +2509,8 @@ export function ProductIntelligencePage({ globalSearch = "" }: { globalSearch?: 
       <ProductMetric icon={Gauge} label="交付负载" value={`${data.summary.active_projects}/${data.summary.delivery_capacity}`} detail="满载时自动建议收缩流量" tone="red" />
     </section></details>;
 
-  return <div className="product-intelligence-page">
+  return <div className={`product-intelligence-page${isAurora ? ' aurora-theme aurora-products' : ''}`}>
+    {isAurora && <header className="aurora-product-heading"><h1>服务与商品</h1><nav aria-label="商品经营视图">{([['overview','经营总览'],['exposure','曝光分析'],['launch','上新与修改'],['market','市场参考']] as const).map(([view,label])=><button type="button" key={view} aria-current={activeView===view?'page':undefined} onClick={()=>navigateWorkspace(view)}>{label}</button>)}</nav></header>}
     {activeView === 'overview' && !selected && <>{overviewFacts}{overviewControls}</>}
 
     {activeView === "exposure" && <section className="actual-traffic-observation-hero" aria-labelledby="actual-traffic-observation-title">

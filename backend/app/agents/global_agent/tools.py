@@ -114,11 +114,12 @@ class GlobalAgentBusinessTools:
             return quoted.group(1).strip()
         text = " ".join(prompt.strip().split())
         for noun in nouns:
-            match = re.search(rf"{re.escape(noun)}[：:\s]*([\w\u4e00-\u9fff·-]{{2,40}})", text)
+            # Only explicit “项目：名称” syntax is a filter. Ordinary prose such
+            # as “项目名称” or “任务完成不等于客户验收” must query the summary.
+            match = re.search(rf"{re.escape(noun)}\s*[：:]\s*([\w\u4e00-\u9fff·-]{{2,40}})", text)
             if match:
                 value = match.group(1).strip("，。！？?；;的")
-                if value not in {"信息", "数据", "情况", "分析", "相关", "有哪些"}:
-                    return value
+                return value
         return ""
 
     def plan(self, prompt: str, *, maximum: int) -> list[tuple[str, dict[str, Any]]]:
@@ -149,7 +150,10 @@ class GlobalAgentBusinessTools:
             )
         if any(word in lowered for word in ("收入", "支出", "成本", "利润", "财务", "回款", "应收")):
             planned.append(("finance_summary", {"query": ""}))
-        if any(word in lowered for word in ("经营", "分析", "下一步", "建议", "优先")):
+        if any(word in lowered for word in ("经营", "分析", "下一步", "建议", "优先")) or (
+            any(name == "finance_summary" for name, _ in planned)
+            and any(word in lowered for word in ("本月", "这个月", "上月", "上个月", "环比"))
+        ):
             planned.append(("business_analysis", {"query": ""}))
         return planned[:maximum]
 

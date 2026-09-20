@@ -1,4 +1,5 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useRef,useState,type ReactNode} from 'react';
+import { useVisualMode, VisualPreferences } from './AppShell';
 import {HandWaving,ArrowRight,Bell,List,UserCircle,CaretDown,GearSix,X,CheckCircle,ChatCircleDots,ShoppingBag,MagnifyingGlass,RocketLaunch,TrendUp,ChartBar,ClipboardText,Lightbulb,WifiSlash,type Icon as PhosphorIcon} from '@phosphor-icons/react';
 import type {LedgerSnapshot} from '../../types';
 import type {SettingsSectionName} from '../../pages/OtherPages';
@@ -43,6 +44,7 @@ export function TopBar({
   onOpenSettings,
   profileName,
   profilePlan,
+  navigation,
 }: {
   snapshot: LedgerSnapshot;
   meta: {title:string;subtitle:string;placeholder:string};
@@ -57,7 +59,9 @@ export function TopBar({
   onOpenSettings: (section: SettingsSectionName) => void;
   profileName: string;
   profilePlan: string;
+  navigation?: ReactNode;
 }) {
+  const { mode } = useVisualMode();
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const notificationAnchorRef = useRef<HTMLDivElement>(null);
@@ -65,6 +69,7 @@ export function TopBar({
   const notificationPanelRef = useRef<HTMLElement>(null);
   const profileAnchorRef = useRef<HTMLDivElement>(null);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
+  const profilePanelRef = useRef<HTMLDivElement>(null);
   const visibleReminders = reminders.slice(0, 4);
 
   useEffect(() => {
@@ -129,20 +134,30 @@ export function TopBar({
 
   useEffect(() => {
     if (!profileOpen) return;
+    const panel = profilePanelRef.current;
+    const frame = requestAnimationFrame(() => panel?.querySelector<HTMLElement>('button')?.focus());
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Tab" && panel) {
+        const controls = Array.from(panel.querySelectorAll<HTMLElement>('button:not([disabled]),select:not([disabled])'));
+        const first = controls[0], last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        return;
+      }
       if (event.key !== "Escape") return;
       event.preventDefault();
       setProfileOpen(false);
       window.requestAnimationFrame(() => profileButtonRef.current?.focus());
     };
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    return () => { cancelAnimationFrame(frame); document.removeEventListener("keydown", handleKeyDown); };
   }, [profileOpen]);
 
-  const closeNotifications = () => setNotificationsOpen(false);
+  const closeNotifications = () => { setNotificationsOpen(false); notificationButtonRef.current?.focus(); };
 
   return (
-    <><header className={`top-header compact-topbar ${activePage === "AI经营助手" ? "top-header-partner" : ""}`}>
+    <><header className={`top-header compact-topbar ${mode === 'aurora' ? 'aurora-topbar aurora-theme' : ''} ${activePage === "AI经营助手" ? "top-header-partner" : ""}`}>
+      {mode === 'aurora' && <><div className="aurora-brand" aria-label="循营工作台"><img src="/assets/xunying/orbit-mark.png" alt="" /><strong>循营<span>工作台</span></strong></div>{navigation}</>}
       <button className={`menu-button ${activePage === "AI经营助手" ? "partner-brand-menu" : ""}`} aria-label="打开导航" onClick={onMenu}>
         {activePage === "AI经营助手" ? <><img src="/assets/xunying/orbit-mark.png" alt="" aria-hidden="true" /><span>循营</span></> : <List size={24} />}
       </button>
@@ -150,7 +165,7 @@ export function TopBar({
         <h1>{activePage === "首页概览" ? <>你好，{profileName}！<span aria-hidden="true"><HandWaving size={25} weight="duotone"/></span></> : meta.title}{activePage === "数据统计" && <em className="page-context-tag">商品增长复盘</em>}{activePage === "经营分析中心" && <em className="page-context-tag">证据链优先</em>}</h1>
         <p>{meta.subtitle}</p>
       </div>
-      <GlobalSearch snapshot={snapshot}/>
+      <GlobalSearch snapshot={snapshot} onOpen={() => { setProfileOpen(false); setNotificationsOpen(false); }} dismiss={notificationsOpen || profileOpen}/>
       <div className="header-actions">
         <div className="popover-anchor" ref={notificationAnchorRef}>
           <button
@@ -246,6 +261,8 @@ export function TopBar({
             className="profile-button"
             aria-label="打开个人与账户设置"
             aria-expanded={profileOpen}
+            aria-haspopup="dialog"
+            aria-controls="profile-settings-popover"
             onClick={() => {
               setNotificationsOpen(false);
               setProfileOpen((value) => !value);
@@ -256,9 +273,10 @@ export function TopBar({
             <CaretDown size={16} />
           </button>
           {profileOpen && (
-            <div className="header-popover profile-popover">
+            <div ref={profilePanelRef} id="profile-settings-popover" className="header-popover profile-popover" role="dialog" aria-label="个人与本机外观">
               <button onClick={() => { onOpenSettings("个人资料"); setProfileOpen(false); }}>个人资料</button>
               <button onClick={() => { onOpenSettings("账号设置"); setProfileOpen(false); }}>账号设置</button>
+              <VisualPreferences />
             </div>
           )}
         </div>
@@ -268,4 +286,3 @@ export function TopBar({
     </>
   );
 }
-

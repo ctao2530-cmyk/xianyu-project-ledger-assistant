@@ -21,6 +21,7 @@ import { getBusinessSummary } from "../data/businessMetrics";
 import type { LedgerSnapshot } from "../types";
 import "./operating-records.css";
 import { CashflowOverview } from "../components/workspace/CashflowOverview";
+import { useVisualMode } from '../components/workspace/AppShell';
 import { readUiSession, writeUiSession } from '../data/uiSession';
 import { inLedgerPeriod, ledgerDateKey, ledgerMonthLabel, restoreRecordsPeriod, summarizeCashflow, validLedgerMonth } from './operatingRecordsPeriod';
 
@@ -175,6 +176,7 @@ export function OperatingRecordsPage({
   onEditExpense,
   onDeleteExpense,
 }: OperatingRecordsPageProps) {
+  const aurora = useVisualMode().mode === 'aurora';
   const currentMonth = dateKey(new Date().toISOString()).slice(0, 7);
   const [period, setPeriod] = useState(()=>restoreRecordsPeriod(readUiSession('records-period')));
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -227,7 +229,8 @@ export function OperatingRecordsPage({
 
   const closePicker = () => {
     setPickerOpen(false);
-    window.requestAnimationFrame(() => incomeButtonRef.current?.focus());
+    // Return to the persistent opener before a chained receipt dialog mounts.
+    incomeButtonRef.current?.focus({ preventScroll: true });
   };
 
   const laneRows: Array<{ lane: TrackLane; label: string }> = [
@@ -235,8 +238,13 @@ export function OperatingRecordsPage({
     { lane: "expense", label: "支出" },
     { lane: "receivable", label: "待回款" },
   ];
+  const recordActions = <div className="operating-record-actions" aria-label="经营记录操作">
+    {!aurora && <h3>快速操作</h3>}
+    <button ref={incomeButtonRef} type="button" className="record-income-button" disabled={!receivables.length} title={receivables.length ? "从真实待回款项目中确认收入" : "当前没有待回款项目"} onClick={() => setPickerOpen(true)}><ArrowUp size={18} />记录收入</button>
+    <button type="button" className="record-expense-button" onClick={onRecordExpense}><ArrowDown size={18} />记录支出</button>
+  </div>;
 
-  return <div className="operating-records-page">
+  return <div className={`operating-records-page${aurora ? ' aurora-theme aurora-finance' : ''}`}>
     <section className="operating-period-overview">
       <div className="operating-period-toolbar">
         <div className="operating-period-options" role="group" aria-label="记录时间范围">
@@ -245,7 +253,7 @@ export function OperatingRecordsPage({
           <button type="button" aria-pressed={period === 'history'} onClick={() => setPeriod('history')}>按月份</button>
         </div>
         {period === 'history' && <label className="operating-month-input">查看月份<input type="month" aria-label="查看月份" value={selectedMonth} onChange={event => { if (validLedgerMonth(event.target.value)) setSelectedMonth(event.target.value); }} /></label>}
-        <span className="operating-period-label" aria-live="polite">{periodLabel} · {periodRecords.filter(record => record.type !== 'receivable').length} 笔收支</span>
+        {aurora ? recordActions : <span className="operating-period-label" aria-live="polite">{periodLabel} · {periodRecords.filter(record => record.type !== 'receivable').length} 笔收支</span>}
       </div>
     <section className="operating-summary-strip" aria-label={`${periodLabel}经营摘要`}>
       <span><i className="record-summary-icon income" aria-hidden="true"><Receipt size={26} weight="fill"/></i><small>确认收入</small><b className="income">{money.format(cashflow.income)}</b></span>
@@ -262,6 +270,7 @@ export function OperatingRecordsPage({
       {workspaceView === 'receivables' ? <ReceivablesBoard snapshot={snapshot} onConfirmPayment={onConfirmPayment} onCreatePaymentPlan={onCreatePaymentPlan} /> : <>
 
       <details className="operating-track-optional" open={analysisView} onToggle={e=>setAnalysisView(e.currentTarget.open)}><summary>{analysisView?'返回收支明细':'切换分析视图 · 月收支轨道'}</summary>
+      {aurora && <div className="aurora-finance-analysis-summary"><CashflowOverview income={cashflow.income} expenses={cashflow.expenses} period={periodLabel}/></div>}
       <header className="operating-history-track-heading"><h2>{ledgerMonthLabel(trackMonth)}收支轨道</h2>{period === 'all' && <label className="operating-month-input"><CalendarBlank size={16} />轨道月份<input type="month" aria-label="轨道月份" value={selectedMonth} onChange={event => { if (validLedgerMonth(event.target.value)) setSelectedMonth(event.target.value); }} /></label>}</header>
       <p className="operating-period-note">按月查看全部类型及项目；待回款按当前计划到期日展示，不代表该月历史余额。</p>
       <div className="operating-track-axis" aria-hidden="true">
@@ -271,13 +280,22 @@ export function OperatingRecordsPage({
       <div className="operating-track-lanes">
         {laneRows.map(({ lane, label }) => {
           const laneRecords = buildTrackHighlights(trackRecords.filter((record) => record.lane === lane), lane === "receivable" ? 3 : 4);
+          // Presentation only: nearby dates share the axis but use separate label rows.
+          const rowEnds: number[] = [];
+          const labelRows = laneRecords.map(record => {
+            const position = trackPosition(record.occurredAt, startDay, clampedEndDay);
+            let row = rowEnds.findIndex(end => position - end >= 42);
+            if (row < 0) row = rowEnds.length;
+            rowEnds[row] = position;
+            return row;
+          });
           return <div className={`operating-track-lane lane-${lane}`} key={lane}>
             <strong>{label}</strong>
-            <div className="operating-track-line">
+            <div className="operating-track-line" style={aurora ? { height: `${Math.max(118, 94 + (rowEnds.length - 1) * 72)}px` } : undefined}>
               {axisDays.map((day) => <i key={day} style={{ left: `${trackPosition(`${trackMonth}-${String(day).padStart(2, '0')}`, startDay, clampedEndDay)}%` }} />)}
-              {laneRecords.map((record) => {
+              {laneRecords.map((record, index) => {
                 const position = trackPosition(record.occurredAt, startDay, clampedEndDay);
-                return <article className={`track-event event-${record.type}`} key={record.id} style={{ "--record-position": `${position}%` } as CSSProperties}>
+                return <article className={`track-event event-${record.type}`} key={record.id} style={{ "--record-position": `${position}%`, ...(aurora ? { '--record-label-offset': `${labelRows[index] * 72}px` } : {}) } as CSSProperties}>
                   <span />
                   <div><b>{record.title}</b><small>{record.amount > 0 && record.type === "income" ? "+" : ""}{money.format(record.amount)}</small></div>
                 </article>;
@@ -322,14 +340,11 @@ export function OperatingRecordsPage({
       </>}
     </section>
 
-    <aside className="reference-records-context" aria-label="收支操作与回款提醒">
-      <div className="operating-record-actions" aria-label="经营记录操作"><h3>快速操作</h3>
-        <button ref={incomeButtonRef} type="button" className="record-income-button" disabled={!receivables.length} title={receivables.length ? "从真实待回款项目中确认收入" : "当前没有待回款项目"} onClick={() => setPickerOpen(true)}><ArrowUp size={18} />记录收入</button>
-        <button type="button" className="record-expense-button" onClick={onRecordExpense}><ArrowDown size={18} />记录支出</button>
-      </div>
-
-      <CashflowOverview income={cashflow.income} expenses={cashflow.expenses} period={periodLabel}/><section className="records-accounting-note"><Receipt size={24}/><p>收入以确认到账为准，<br/>待回款不计入已收收入。</p></section>
-    </aside>
+    {!aurora && <aside className="reference-records-context" aria-label="收支操作与回款提醒">
+      {recordActions}
+      <CashflowOverview income={cashflow.income} expenses={cashflow.expenses} period={periodLabel}/>
+      <section className="records-accounting-note"><Receipt size={24}/><p>收入以确认到账为准，<br/>待回款不计入已收收入。</p></section>
+    </aside>}
     <ReceivablePicker open={pickerOpen} records={receivables} onClose={closePicker} onConfirmPayment={onConfirmPayment} onCreatePaymentPlan={onCreatePaymentPlan} />
   </div>;
 }

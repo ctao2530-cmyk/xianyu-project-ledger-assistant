@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 import logging
 import shutil
@@ -44,6 +45,29 @@ HEALTH_SCHEMA: dict[str, Any] = {
     "required": ["ok"],
     "additionalProperties": False,
 }
+
+
+def codex_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Codex strict output requires every closed-object property in required.
+
+    Pydantic marks defaulted fields optional in JSON Schema. Make those fields
+    explicit on the wire, retaining nullable unions, defaults and validators.
+    Leave open dictionary schemas intact instead of silently dropping keys.
+    """
+    result = deepcopy(schema)
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "object" and node.get("additionalProperties") is False:
+                node["required"] = list(node.get("properties", {}))
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    visit(result)
+    return result
 
 
 class CodexCliProvider(AIProvider):
@@ -378,7 +402,7 @@ class CodexCliProvider(AIProvider):
             workdir = workspace or artifact_dir
             schema_file = artifact_dir / "reply-schema.json"
             output_file = artifact_dir / "reply.json"
-            schema_file.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
+            schema_file.write_text(json.dumps(codex_output_schema(schema), ensure_ascii=False), encoding="utf-8")
             args = self._command_args(
                 workdir,
                 schema_file,

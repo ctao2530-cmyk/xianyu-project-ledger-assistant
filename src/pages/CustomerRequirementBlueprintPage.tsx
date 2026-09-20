@@ -1,3 +1,4 @@
+import { useDialogFocus } from '../components/workspace/useDialogFocus';
 import {
   ArrowLeft,
   ArrowRight,
@@ -408,6 +409,8 @@ function BlueprintEditorDrawer({ caseId, expectedVersion, initial, onClose, onSa
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  const dialogRef = useDialogFocus<HTMLDivElement>(() => { if (!saving) onClose(); }, 'input');
+
   const updateTop = <K extends keyof RequirementBlueprint>(key: K, value: RequirementBlueprint[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const updateNode = <K extends EditableLayer>(layer: K, index: number, patch: Partial<RequirementBlueprint[K][number]>) => setDraft((current) => {
     const rows = [...current[layer]] as RequirementBlueprint[K];
@@ -436,7 +439,7 @@ function BlueprintEditorDrawer({ caseId, expectedVersion, initial, onClose, onSa
   };
 
   const labels: Record<EditableLayer, string> = { objectives: "项目目标", capabilities: "功能能力", stages: "实施阶段", acceptance_gates: "交付验收" };
-  return <div className="blueprint-drawer-layer" role="dialog" aria-modal="true" aria-label="编辑需求蓝图">
+  return <div ref={dialogRef} className="blueprint-drawer-layer" role="dialog" aria-modal="true" aria-label="编辑需求蓝图">
     <button className="blueprint-drawer-scrim" aria-label="关闭编辑器" onClick={onClose} />
     <aside className="blueprint-editor-drawer">
       <header><span><small>IMMUTABLE VERSION</small><h3>{step === "edit" ? "编辑需求蓝图" : `预览 V${expectedVersion + 1}`}</h3><p>保存会创建新版本，V{expectedVersion} 保持只读且不会被覆盖。</p></span><button aria-label="关闭" onClick={onClose}><X size={18} /></button></header>
@@ -464,6 +467,7 @@ function RequirementTransferModal({ customer, detail, onClose, onTransferred }: 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const requestIdRef = useRef(`requirement-transfer-${crypto.randomUUID?.() || Date.now()}`);
+  const dialogRef = useDialogFocus<HTMLDivElement>(() => { if (!busy) onClose(); }, 'input');
   const submit = async () => {
     const revision = getLedgerRevision();
     if (revision === null) { setError("经营数据修订号尚未加载，请刷新页面后重试"); return; }
@@ -476,5 +480,5 @@ function RequirementTransferModal({ customer, detail, onClose, onTransferred }: 
     } catch (reason) { setError(reason instanceof Error ? reason.message : "需求案例转移失败"); }
     finally { setBusy(false); }
   };
-  return <div className="blueprint-modal-layer" role="dialog" aria-modal="true" aria-label="转移需求案例"><button className="blueprint-modal-scrim" aria-label="关闭" onClick={onClose} /><section className="requirement-transfer-modal"><header><i><UserSwitch size={21} weight="duotone" /></i><span><small>TRANSFER REQUIREMENT CASE</small><h3>转移到独立客户</h3><p>只移动这份需求蓝图、对应来源身份和商品关联。</p></span><button aria-label="关闭" onClick={onClose}><X size={18} /></button></header><div className="transfer-path"><article><small>当前客户</small><b>{customer.name}</b><span>{detail.title}</span></article><ArrowRight size={24} /><article className="target"><small>新建独立客户</small><input aria-label="新客户名称" value={name} onChange={(event) => setName(event.target.value)} /><span>{detail.sources[0]?.channel === "xianyu" ? "闲鱼来源" : "来源会话"} · {detail.item_title || "未关联商品"}</span></article></div><div className="transfer-boundary"><b>本次会转移</b><span>需求案例及全部版本</span><span>案例来源会话身份</span><span>本案例对应商品关联</span><b>明确不会转移</b><span>项目、任务与交付状态</span><span>收入、付款与支出</span><span>原客户的其他历史</span></div>{detail.project_id && <p className="transfer-blocked"><WarningCircle size={16} />该需求已经关联项目，为避免移动经营历史，当前不能转移。</p>}<label className="transfer-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>我确认创建独立客户，并且只转移上面列出的需求关系。</span></label>{error && <p className="blueprint-editor-error"><WarningCircle size={16} />{error}</p>}<footer><button onClick={onClose}>取消</button><button className="primary" disabled={busy || Boolean(detail.project_id)} onClick={() => void submit()}>{busy ? "正在原子转移…" : "确认转移"}</button></footer></section></div>;
+  return <div ref={dialogRef} className="blueprint-modal-layer" role="dialog" aria-modal="true" aria-label="转移需求案例"><button className="blueprint-modal-scrim" aria-label="关闭" onClick={onClose} /><section className="requirement-transfer-modal"><header><i><UserSwitch size={21} weight="duotone" /></i><span><small>TRANSFER REQUIREMENT CASE</small><h3>转移到独立客户</h3><p>只移动这份需求蓝图、对应来源身份和商品关联。</p></span><button aria-label="关闭" onClick={onClose}><X size={18} /></button></header><div className="transfer-path"><article><small>当前客户</small><b>{customer.name}</b><span>{detail.title}</span></article><ArrowRight size={24} /><article className="target"><small>新建独立客户</small><input aria-label="新客户名称" value={name} onChange={(event) => setName(event.target.value)} /><span>{detail.sources[0]?.channel === "xianyu" ? "闲鱼来源" : "来源会话"} · {detail.item_title || "未关联商品"}</span></article></div><div className="transfer-boundary"><b>本次会转移</b><span>需求案例及全部版本</span><span>案例来源会话身份</span><span>本案例对应商品关联</span><b>明确不会转移</b><span>项目、任务与交付状态</span><span>收入、付款与支出</span><span>原客户的其他历史</span></div>{detail.project_id && <p className="transfer-blocked"><WarningCircle size={16} />该需求已经关联项目，为避免移动经营历史，当前不能转移。</p>}<label className="transfer-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>我确认创建独立客户，并且只转移上面列出的需求关系。</span></label>{error && <p className="blueprint-editor-error"><WarningCircle size={16} />{error}</p>}<footer><button onClick={onClose}>取消</button><button className="primary" disabled={busy || Boolean(detail.project_id)} onClick={() => void submit()}>{busy ? "正在原子转移…" : "确认转移"}</button></footer></section></div>;
 }
